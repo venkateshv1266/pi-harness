@@ -28,7 +28,12 @@ mkdir -p "$AGENT/rules"
 rsync -a "$REPO_DIR/rules/" "$AGENT/rules/"
 echo ">> installed $(ls "$REPO_DIR/rules" | wc -l | tr -d ' ') TTSR rules"
 
-# 3. Skills (add-rule: authoring TTSR rules; add-mcp-server: wiring MCP servers)
+# 3. Subagent definitions
+mkdir -p "$AGENT/agents"
+rsync -a "$REPO_DIR/agents/" "$AGENT/agents/"
+echo ">> installed $(ls "$REPO_DIR/agents"/*.md | grep -v README | wc -l | tr -d ' ') agents"
+
+# 4. Skills (add-rule: authoring TTSR rules; add-mcp-server: wiring MCP servers)
 mkdir -p "$AGENT/skills"
 rsync -a --exclude='node_modules' "$REPO_DIR/skills/" "$AGENT/skills/"
 

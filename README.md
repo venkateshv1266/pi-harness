@@ -1,9 +1,9 @@
 # my-pi-setup
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup —
-the extensions in `extensions/`, a pack of generic TTSR rules in `rules/`, and
-an `add-rule` skill in `skills/` for authoring more. Clone this repo and run
-`./install.sh` to get the same setup.
+the extensions in `extensions/`, a pack of generic TTSR rules in `rules/`, six
+subagent definitions in `agents/`, and skills in `skills/`. Clone this repo
+and run `./install.sh` to get the same setup.
 
 ## Prerequisites
 
@@ -50,7 +50,28 @@ To uninstall an extension, delete its file (or directory) from
 | Extension | What it does |
 |---|---|
 | **mcp-bridge/** | Adds MCP server support to pi: lazy-connects servers from `~/.pi/agent/mcp-servers.json`, registers their tools as `mcp__<server>__<tool>`, does OAuth 2.0 PKCE login for remote servers (Slack, Linear, …), strips sensitive env vars from child processes, and truncates oversized tool results. Config lives in `~/.pi/agent/mcp-servers.json` (see below). |
-| **subagent/** | The `subagent` tool — delegate tasks to isolated `pi --mode json` child processes. Parallel task batches, sequential chains with a `{previous}` placeholder, per-agent tool allowlists, model-role aliases (`@smol`, `@slow`, …). Agents are defined as `.md` files in `~/.pi/agent/agents/`. |
+| **subagent/** | The `subagent` tool — delegate tasks to isolated `pi --mode json` child processes. Parallel task batches, sequential chains with a `{previous}` placeholder, per-agent tool allowlists, model-role aliases (`@smol`, `@slow`, …). Agent definitions ship in `agents/` below. |
+
+## Subagent definitions (`agents/`)
+
+Six agents, used with the `subagent` tool above. Full file-format docs in
+`agents/README.md`.
+
+| Agent | Role | Tools |
+|---|---|---|
+| **explorer** | Fast read-only codebase recon — "where is X?" lookups, returns a compressed map for handoff (`@smol`) | read, grep, find, ls, bash |
+| **research** | Open-ended investigation across files/logs/docs, returns a structured briefing with citations (`@smol`) | read-only + web_search, web_fetch |
+| **writer** | Code-typing executor for fully-decided specs — implements, doesn't design (`@smol`) | read, bash, edit, write, grep, find, ls |
+| **verifier** | Quality-gate pass — grades a writer's diff against the frozen spec and the lint/typecheck/test harness (`@slow`, xhigh thinking) | read-only |
+| **reviewer** | Backend review orchestrator — dispatches parallel lens sub-agents + a validator pass, synthesizes prioritized findings (`@slow`) | read-only + subagent |
+| **task** | General-purpose worker, can fan out to nested subagents (`@task`) | full set + subagent |
+
+The `@smol` / `@slow` / `@task` role aliases are optional tuning — set
+`PI_SMOL_MODEL` / `PI_SLOW_MODEL` env vars or `modelRoles` in
+`~/.pi/agent/settings.json`; unset, agents inherit your session model. The
+`writer` → `verifier` pair is the cascade pattern: a cheap model types, a
+strong model grades. Project-local agents can override these via
+`.pi/agents/<name>.md`.
 | **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). See `extensions/ttsr/README.md`. |
 
 ## TTSR rules (`rules/`)
@@ -149,8 +170,9 @@ Then `/reload` + `/mcp <name>` to connect, and the server's tools appear as
   subset. Rules referencing my employer's infra, internal docs, or personal
   context files stay local in `~/.pi/agent/rules/`. Author your own; the
   `add-rule` skill walks you through it.
-- **Subagent definitions** (`~/.pi/agent/agents/*.md`) — same deal: the tool is
-  here, the agents are yours.
+- **Project-local agents** (`.pi/agents/` in work repos) — those encode
+  team/project-specific workflows; the six generic user-scope agents ship in
+  `agents/`.
 - **`auth.json`, `settings.json`, prompts, skills** — account/session state and
   personal tooling, not shareable setup.
 
@@ -178,8 +200,9 @@ git add -A && git commit -m "update extensions" && git push
 
 `sync.sh` mirrors the whole `extensions/` dir, refreshes every rule listed in
 `rules/` (the file list there is the allowlist — private/work rules stay
-local), and refreshes both skills. `node_modules/`, lock files, and transient
-dotfiles are excluded on both `install.sh` and `sync.sh`.
+local), refreshes the shipped agent definitions, and refreshes both skills.
+`node_modules/`, lock files, and transient dotfiles are excluded on both
+`install.sh` and `sync.sh`.
 
 Note to self: keep this repo free of machine/employer-specific details —
 server names, endpoints, internal doc names, and personal paths belong in

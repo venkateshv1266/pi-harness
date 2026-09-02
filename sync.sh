@@ -28,7 +28,17 @@ for f in "$REPO_DIR"/rules/*.md; do
   fi
 done
 
-# 3. Skills (each has its own live location)
+# 3. Agent definitions (all shipped ones are generic)
+for f in "$REPO_DIR"/agents/*.md; do
+  name="$(basename "$f")"
+  if [ -f "$AGENT/agents/$name" ]; then
+    cp "$AGENT/agents/$name" "$f"
+  else
+    echo "WARN: no live source for agents/$name — removed live? Delete it from the repo."
+  fi
+done
+
+# 4. Skills (each has its own live location)
 cp "$AGENT/skills/add-rule/SKILL.md" "$REPO_DIR/skills/add-rule/SKILL.md"
 cp "$AGENT/skills/add-rule/scripts/validate-rule.js" "$REPO_DIR/skills/add-rule/scripts/validate-rule.js"
 cp "${HOME}/.agents/skills/add-mcp-server/SKILL.md" "$REPO_DIR/skills/add-mcp-server/SKILL.md"
