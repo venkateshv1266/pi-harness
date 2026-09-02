@@ -26,6 +26,25 @@ auto-discovers everything in `~/.pi/agent/extensions/`.
 To uninstall an extension, delete its file (or directory) from
 `~/.pi/agent/extensions/` and `/reload`.
 
+## Updating an existing setup
+
+Already installed? Pull and re-run the installer:
+
+```bash
+cd my-pi-setup
+git pull
+./install.sh
+```
+
+`install.sh` is idempotent — it overwrites the copies in `~/.pi/agent/` with
+the repo versions and re-runs `npm install` for the subdirectory extensions.
+It never *deletes* anything, so your own extensions, rules, and agents are
+safe. Then `/reload` + `/ttsr-reload` (or restart pi) to arm the new code.
+
+One caveat: if an extension was **removed or renamed** in the repo, the old
+copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
+`/reload`.
+
 ## Extensions
 
 ### Single-file extensions (`~/.pi/agent/extensions/*.ts`)
