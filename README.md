@@ -62,6 +62,7 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
 | **permission-gate.ts** | Asks for confirmation before dangerous bash commands (`rm -rf`, `sudo`, `chmod 777`, …). |
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
+| **plugins.ts** | `/plugins` — browse & install skills from Claude Code plugin marketplaces (local `.claude-plugin/marketplace.json` catalogs). Interactive searchable picker + detail views, or CLI: `/plugins install\|uninstall\|enable\|disable\|list <name>`, `/plugins marketplace add <path>`. Installed plugins load in place via `resources_discover` — `git pull` of the marketplace updates skills. State: `~/.pi/agent/plugins.json` (local, not synced); seed marketplaces there or via `PI_PLUGIN_MARKETPLACE`. |
 | **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. Skip it if you don't use cmux. |
 
 ### Subdirectory extensions (own `package.json`, `npm install` runs in `install.sh`)
