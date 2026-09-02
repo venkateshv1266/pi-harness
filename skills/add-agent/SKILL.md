@@ -33,7 +33,16 @@ Roles resolve via `~/.pi/agent/settings.json` (`smolModel` / `slowModel` / `plan
 | Design/UI-adjacent general work | `@designer` | `medium` | per task |
 | Ambiguous or mixed workload | *(omit — inherit session default)* | — | minimal sufficient set |
 
-Tool rules: read-only agents never get `write`/`edit`; add `bash` only when the task runs commands; a missing tool silently caps the agent, an extra one expands its privilege — pick the minimal sufficient set.
+## Tool allowlist rules (RFC 2119)
+
+The key words MUST, MUST NOT, SHOULD, and MAY are to be interpreted as described in RFC 2119.
+
+- The agent MUST discover the actual set of available tool names before writing the `tools` field. Discovery sources, in order: (1) the tool names exposed in the current session's system prompt; (2) extension-registered custom tools; (3) MCP tools, which are named `mcp__<server>__<tool>`.
+- The agent MUST NOT invent or assume tool names. Claude-style names (`Bash`, `Read`, `Glob`, `WebFetch`) are invalid in pi — the pi names are lowercase (`bash`, `read`, `find`, `web_fetch`).
+- Every entry in the allowlist MUST name a tool that exists in the discovered set. If a required capability has no corresponding tool, the agent MUST omit the entry and say so rather than guess.
+- Read-only agents MUST NOT be granted `write` or `edit`.
+- The agent SHOULD add `bash` only when the task requires running commands.
+- The allowlist SHOULD be the minimal sufficient set: a missing tool silently caps the agent mid-task, and an extra tool expands its privilege — so the final allowlist MUST be cross-checked against every step of the agent's procedure.
 
 ## Template
 
