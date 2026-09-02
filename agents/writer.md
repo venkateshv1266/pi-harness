@@ -1,6 +1,6 @@
 ---
 name: writer
-description: Cost-efficient code-typing executor running on GLM-5.2. Receives a frozen, fully-decided implementation spec and produces the code edit — nothing more. Does NOT make architectural decisions. The cheap-model worker slot in the cascade routing pattern; the verifier (GLM-5.2 at xhigh reasoning) grades its output. Use for scaffolding, implementations, refactors, test generation, and fix-application where the plan is already decided.
+description: Cost-efficient code-typing executor running on the @smol model role. Receives a frozen, fully-decided implementation spec and produces the code edit — nothing more. Does NOT make architectural decisions. The cheap-model worker slot in the cascade routing pattern; the verifier (@slow at xhigh reasoning) grades its output. Use for scaffolding, implementations, refactors, test generation, and fix-application where the plan is already decided.
 tools: read, bash, edit, write, grep, find, ls
 model: "@smol"
 thinking: medium

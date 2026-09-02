@@ -52,6 +52,7 @@ End with what the agent must return.>
 
 ## Pitfalls
 
+- Don't hardcode model names (e.g. "running on GLM-5.2") in the description — reference the role (`@smol`, `@slow`). Roles resolve via `settings.json` and change; hardcoded names go stale and mislead routing.
 - Don't reuse shipped agent names — the first-loaded file wins and routing gets confusing.
 - Don't pin a model role that isn't in `settings.json` — the spawn fails or silently inherits.
 - A `tools` allowlist that omits a needed tool fails mid-task with permission errors, not at spawn time.

@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Code-verification gate running on GLM-5.2 at xhigh reasoning effort. Reviews a writer agent's diff against the frozen implementation spec and the project harness (lint/typecheck/tests). Returns a structured findings list the orchestrator routes back to the writer for fixes. The verification slot in the cascade routing pattern; quality gate that makes the cheap writer safe to ship. Read-only over the working tree; does not edit.
+description: Code-verification gate running on the @slow model role at xhigh reasoning effort. Reviews a writer agent's diff against the frozen implementation spec and the project harness (lint/typecheck/tests). Returns a structured findings list the orchestrator routes back to the writer for fixes. The verification slot in the cascade routing pattern; quality gate that makes the cheap writer safe to ship. Read-only over the working tree; does not edit.
 tools: read, bash, grep, find, ls
 model: "@slow"
 thinking: xhigh
