@@ -37,6 +37,27 @@ echo ">> installed $(ls "$REPO_DIR/agents"/*.md | grep -v README | wc -l | tr -d
 mkdir -p "$AGENT/skills"
 rsync -a --exclude='node_modules' "$REPO_DIR/skills/" "$AGENT/skills/"
 
+# 5. Model-role defaults for the shipped agents (@smol/@slow/@plan/@task).
+#    Adds missing keys only — never overwrites your own choices.
+node -e '
+const fs = require("fs");
+const p = process.env.HOME + "/.pi/agent/settings.json";
+let s = {};
+try { s = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+const defaults = {
+  smolModel: "openrouter/openai/gpt-5.6-luna",
+  slowModel: "openrouter/z-ai/glm-5.3",
+  planModel: "openrouter/openai/gpt-5.6-terra",
+  taskModel: "openrouter/z-ai/glm-5.3-flash",
+};
+const added = Object.keys(defaults).filter((k) => !s[k]);
+for (const k of added) s[k] = defaults[k];
+fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
+console.log(added.length
+  ? ">> set model roles: " + added.join(", ") + " (add-only; existing keys untouched)"
+  : ">> model roles already configured — left untouched");
+'
+
 echo
 echo "Done. Restart pi (or /reload + /ttsr-reload in an open session) to arm everything."
 echo "See rules/ in this repo — remove any you don't want before installing."

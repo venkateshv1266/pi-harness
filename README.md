@@ -85,12 +85,16 @@ Six agents, used with the `subagent` tool above. Full file-format docs in
 | **reviewer** | Backend review orchestrator — dispatches parallel lens sub-agents + a validator pass, synthesizes prioritized findings (`@slow`) | read-only + subagent |
 | **task** | General-purpose worker, can fan out to nested subagents (`@task`) | full set + subagent |
 
-The `@smol` / `@slow` / `@task` role aliases are optional tuning — set
-`PI_SMOL_MODEL` / `PI_SLOW_MODEL` env vars or `modelRoles` in
-`~/.pi/agent/settings.json`; unset, agents inherit your session model. The
-`writer` → `verifier` pair is the cascade pattern: a cheap model types, a
-strong model grades. Project-local agents can override these via
-`.pi/agents/<name>.md`.
+`install.sh` auto-configures the role aliases (add-only — it never
+overwrites keys you've already set): `@smol` → OpenAI GPT-5.6 Luna,
+`@slow` → GLM-5.3, `@plan` → GPT-5.6 Terra, `@task` → GLM-5.3 Flash, all
+routed via OpenRouter (needs an OpenRouter key configured in pi). Thinking
+levels are pinned per-agent in the frontmatter (e.g. verifier runs `xhigh`).
+Override anytime via `smolModel` / `slowModel` / `planModel` / `taskModel` in
+`~/.pi/agent/settings.json` or `PI_SMOL_MODEL` / `PI_SLOW_MODEL` env vars;
+fully unset, agents inherit your session model. The `writer` → `verifier`
+pair is the cascade pattern: a cheap model types, a strong model grades.
+Project-local agents can override these via `.pi/agents/<name>.md`.
 | **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). See `extensions/ttsr/README.md`. |
 
 ## TTSR rules (`rules/`)
