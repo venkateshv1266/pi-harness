@@ -139,6 +139,7 @@ copies them all into `~/.pi/agent/rules/` without deleting yours.
 | Skill | What it does |
 |---|---|
 | **add-rule/** | Full procedure for authoring a new TTSR rule: failure analysis, bucket decision tree, quality gates, trigger crafting (regex / ast-grep / globs), the rule-file template, and a validator script (`node skills/add-rule/scripts/validate-rule.js <rule.md> --sample "..."`) that must print `OK — rule is valid.` before a rule ships. |
+| **add-agent/** | Procedure for creating a new pi-native subagent (`~/.pi/agent/agents/` or `.pi/agents/`): scope + naming rules, a task-profile → model-role table (`@smol`/`@slow`/`@plan`/`@task`/`@designer` with matching thinking + tool allowlists), description and system-prompt authoring guidance, and a copy-paste template. |
 | **add-mcp-server/** | How to add an MCP server to pi via `mcp-bridge` — local `stdio` launchers AND remote `http`/`sse` endpoints (OAuth 2.0 PKCE browser flow, static Bearer headers, or public unauthenticated), the config-file shape, the lazy-connect model, the env denylist security model, and verification steps. |
 
 ### Adding an HTTP-type MCP server (quick version)
