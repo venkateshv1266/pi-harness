@@ -72,6 +72,8 @@ export interface RenderSingleResult {
 	abortReason?: string;
 	error?: string;
 	truncated?: boolean;
+	/** `details` of nested `subagent` calls this agent made, keyed by toolCallId. */
+	nestedResults?: NestedResultStash[];
 }
 
 export interface RenderSubagentDetails {
@@ -129,6 +131,11 @@ function formatToolDetail(name: string, args: Record<string, unknown>): string {
 			return (args.pattern || "*") as string;
 		case "ls":
 			return shortenPath((args.path || ".") as string);
+		case "subagent": {
+			const agent = typeof args.agent === "string" ? args.agent : "";
+			const batch = Array.isArray(args.tasks) ? args.tasks.length : Array.isArray(args.chain) ? args.chain.length : 0;
+			return agent ? (batch > 1 ? `${agent} +${batch - 1}` : agent) : "";
+		}
 		default: {
 			const s = JSON.stringify(args);
 			return previewLine(s, 40);
@@ -184,6 +191,162 @@ function getFinalOutput(messages: Message[]): string {
 		}
 	}
 	return "";
+}
+
+// ============================================================================
+// Nested subagents (a spawned agent delegating via `subagent` itself)
+// ============================================================================
+
+interface NestedResultStash {
+	toolCallId: string;
+	results: unknown[];
+}
+
+interface NestedItem {
+	agent: string;
+	taskBrief: string;
+}
+
+interface NestedAgentRow {
+	agent: string;
+	brief: string;
+	state: "running" | "completed" | "failed";
+}
+
+interface NestedDetails {
+	agent?: string;
+	description?: string;
+	exitCode?: number;
+	aborted?: boolean;
+	error?: string;
+}
+
+const NESTED_ROWS_COLLAPSED = 3;
+const NESTED_ROWS_EXPANDED = 8;
+
+function firstTextLine(text: string): string {
+	return previewLine(text.split("\n").map((l) => l.trim()).find(Boolean) ?? "", 64);
+}
+
+function nestedCallItems(args: Record<string, unknown>): NestedItem[] {
+	const items: NestedItem[] = [];
+	if (typeof args.agent === "string" && args.agent.trim()) {
+		items.push({ agent: args.agent.trim(), taskBrief: taskFirstLine(args.task) });
+	}
+	for (const key of ["tasks", "chain"] as const) {
+		const arr = args[key];
+		if (!Array.isArray(arr)) continue;
+		for (const t of arr) {
+			if (!t || typeof t !== "object") continue;
+			const record = t as Record<string, unknown>;
+			if (typeof record.agent === "string" && record.agent.trim()) {
+				items.push({ agent: record.agent.trim(), taskBrief: taskFirstLine(record.task) });
+			}
+		}
+	}
+	return items;
+}
+
+function rowsFromDetails(items: NestedItem[], details: unknown[]): NestedAgentRow[] {
+	const used = new Set<number>();
+	return items.map((item) => {
+		let idx = details.findIndex((d, i) => !used.has(i) && (d as NestedDetails)?.agent === item.agent);
+		if (idx === -1) idx = details.findIndex((d, i) => !used.has(i));
+		if (idx === -1) return { agent: item.agent, brief: item.taskBrief, state: "completed" as const };
+		used.add(idx);
+		const d = details[idx] as NestedDetails;
+		// exitCode -1 is the "still running" sentinel, not a failure.
+		if (d.exitCode === -1 && !d.aborted && !d.error) return { agent: item.agent, brief: item.taskBrief, state: "running" as const };
+		const failed = d.aborted === true || !!d.error || (d.exitCode !== undefined && d.exitCode !== 0);
+		const brief =
+			typeof d.description === "string" && d.description.trim()
+				? previewLine(sanitizeText(d.description), 64)
+				: item.taskBrief;
+		return { ...item, brief, state: failed ? ("failed" as const) : ("completed" as const) };
+	});
+}
+
+function rowsFromText(items: NestedItem[], text: string, isError: boolean): NestedAgentRow[] {
+	const callFailed =
+		isError ||
+		/^(Agent (failed|error|aborted)|Chain stopped|Canceled:|Invalid parameters|Unknown agent|Too many parallel)/.test(text);
+	const brief = firstTextLine(text);
+	return items.map((item) => {
+		const escaped = item.agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const section = text.match(new RegExp(`^### \\[${escaped}\\] (completed|failed)`, "m"));
+		if (section) return { ...item, brief, state: section[1] === "failed" ? ("failed" as const) : ("completed" as const) };
+		return { ...item, brief, state: callFailed ? ("failed" as const) : ("completed" as const) };
+	});
+}
+
+function extractNestedRows(r: RenderSingleResult, agentDone: boolean): NestedAgentRow[] {
+	const calls: Array<{ id: string; items: NestedItem[] }> = [];
+	for (const msg of r.messages) {
+		if (msg.role !== "assistant") continue;
+		for (const part of msg.content) {
+			if (part.type === "toolCall" && part.name === "subagent") {
+				calls.push({ id: part.id, items: nestedCallItems(part.arguments) });
+			}
+		}
+	}
+	if (calls.length === 0) return [];
+
+	const textResults = new Map<string, { text: string; isError: boolean }>();
+	for (const msg of r.messages) {
+		if (msg.role !== "toolResult" || msg.toolName !== "subagent") continue;
+		textResults.set(msg.toolCallId, {
+			text: msg.content.map((c) => (c.type === "text" ? c.text : "")).join("").trim(),
+			isError: msg.isError === true,
+		});
+	}
+
+	const rows: NestedAgentRow[] = [];
+	for (const call of calls) {
+		if (call.items.length === 0) continue;
+		const details = r.nestedResults?.find((n) => n.toolCallId === call.id)?.results;
+		if (details && details.length > 0) {
+			rows.push(...rowsFromDetails(call.items, details));
+			continue;
+		}
+		const textResult = textResults.get(call.id);
+		if (textResult && textResult.text) {
+			rows.push(...rowsFromText(call.items, textResult.text, textResult.isError));
+			continue;
+		}
+		// No result on the wire yet; once the parent agent is done the call must
+		// have ended with it, so avoid a spinner that never settles.
+		rows.push(...call.items.map((item) => ({ agent: item.agent, brief: item.taskBrief, state: agentDone ? ("completed" as const) : ("running" as const) })));
+	}
+	return rows;
+}
+
+function renderNestedRows(
+	rows: NestedAgentRow[],
+	continuePrefix: string,
+	expanded: boolean,
+	theme: ThemeLike,
+	spinnerFrame?: number,
+): string[] {
+	if (rows.length === 0) return [];
+	const limit = expanded ? NESTED_ROWS_EXPANDED : NESTED_ROWS_COLLAPSED;
+	const lines: string[] = [];
+	if (rows.length > limit) {
+		lines.push(`${continuePrefix}  ${theme.fg("dim", formatMoreItems(rows.length - limit, "agent"))}`);
+	}
+	const visible = rows.slice(-limit);
+	for (let i = 0; i < visible.length; i++) {
+		const row = visible[i]!;
+		const connector = theme.fg("dim", i === visible.length - 1 ? SYMBOLS.tree.last : SYMBOLS.tree.branch);
+		const icon = formatCircleStatusIcon(
+			row.state === "running" ? "running" : row.state === "failed" ? "failed" : "completed",
+			theme,
+			spinnerFrame,
+		);
+		let line = `${continuePrefix}${connector} ${icon}${theme.fg("accent", theme.bold(row.agent))}`;
+		if (row.brief) line += `${theme.fg("accent", ":")} ${theme.fg("dim", row.brief)}`;
+		lines.push(line);
+	}
+	return lines;
 }
 
 // ============================================================================
@@ -621,20 +784,21 @@ function renderAgentRow(
 	if (r.truncated) statusLine += ` ${theme.fg("warning", "[truncated]")}`;
 	lines.push(statusLine);
 
+	lines.push(
+		...renderNestedRows(extractNestedRows(r, status !== "running"), continuePrefix, expanded, theme, spinnerFrame),
+	);
+
 	// Task brief (expanded only)
 	lines.push(...renderTaskSection(r.task, continuePrefix, expanded, theme));
 
-	// Current / recent tool
+	// Current / recent tool (nested `subagent` calls render as their own rows above)
 	if (status === "running") {
-		if (currentTool) {
-			let toolLine = `${continuePrefix}${SYMBOLS.tree.hook} ${theme.fg("muted", sanitizeText(currentTool.name))}`;
-			const detail = formatToolDetail(currentTool.name, currentTool.args);
-			if (detail) toolLine += `: ${theme.fg("dim", previewLine(sanitizeText(detail), 40))}`;
-			lines.push(toolLine);
-		} else if (recentTools.length > 0) {
-			const rt = recentTools[0]!;
-			let toolLine = `${continuePrefix}${SYMBOLS.tree.hook} ${theme.fg("dim", sanitizeText(rt.name))}`;
-			const detail = formatToolDetail(rt.name, rt.args);
+		const active =
+			currentTool ??
+			(recentTools.length > 0 ? { name: recentTools[0]!.name, args: recentTools[0]!.args } : undefined);
+		if (active && active.name !== "subagent") {
+			let toolLine = `${continuePrefix}${SYMBOLS.tree.hook} ${theme.fg("muted", sanitizeText(active.name))}`;
+			const detail = formatToolDetail(active.name, active.args);
 			if (detail) toolLine += `: ${theme.fg("dim", previewLine(sanitizeText(detail), 40))}`;
 			lines.push(toolLine);
 		}

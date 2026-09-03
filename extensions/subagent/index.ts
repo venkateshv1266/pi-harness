@@ -303,6 +303,13 @@ async function runSingleAgent(
 				}, effectiveTimeout);
 			}
 
+			const stashNestedResults = (toolCallId: string, results: unknown[]) => {
+				currentResult.nestedResults = [
+					...(currentResult.nestedResults ?? []).filter((n) => n.toolCallId !== toolCallId),
+					{ toolCallId, results },
+				];
+			};
+
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
 				let event: any;
@@ -315,6 +322,10 @@ async function runSingleAgent(
 				if (event.type === "message_end" && event.message) {
 					const msg = event.message as Message;
 					currentResult.messages.push(msg);
+
+					if (msg.role === "toolResult" && msg.toolName === "subagent" && Array.isArray(msg.details?.results)) {
+						stashNestedResults(msg.toolCallId, msg.details.results);
+					}
 
 					if (msg.role === "assistant") {
 						currentResult.usage.turns++;
@@ -332,6 +343,16 @@ async function runSingleAgent(
 						if ((msg as any).errorMessage) currentResult.errorMessage = (msg as any).errorMessage;
 					}
 					emitUpdate();
+				}
+
+				// Live + final `details` of nested subagent calls, for the parent widget's nested rows.
+				if ((event.type === "tool_execution_update" || event.type === "tool_execution_end") && event.toolName === "subagent") {
+					const payload = event.type === "tool_execution_update" ? event.partialResult : event.result;
+					const nested = payload?.details?.results;
+					if (Array.isArray(nested)) {
+						stashNestedResults(event.toolCallId, nested);
+						emitUpdate();
+					}
 				}
 
 				if (event.type === "tool_result_end" && event.message) {
