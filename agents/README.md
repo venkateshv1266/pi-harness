@@ -7,13 +7,20 @@ markdown file named `<name>.md`.
 
 ```
 ~/.pi/agent/agents/
-├── explorer.md    # fast read-only codebase recon, returns a compressed map (@smol)
-├── research.md    # thorough investigation, returns a structured briefing (@smol)
-├── writer.md      # code execution layer (@smol)
-├── verifier.md    # quality gate verification (@slow)
-├── reviewer.md    # backend code review orchestrator (@slow)
-└── task.md        # flexible multi-step worker with subagent tool (@task)
+├── explorer.md             # fast read-only codebase recon, returns a compressed map (@smol)
+├── research.md             # thorough investigation, returns a structured briefing (@smol)
+├── writer.md               # code execution layer (@smol)
+├── verifier.md             # quality gate verification (@slow)
+├── reviewer.md             # backend code review orchestrator (@slow) — fans out to lens agents below
+├── security-auditor.md     # dedicated security lens for reviewer fan-outs (@slow, high)
+├── concurrency-auditor.md  # dedicated concurrency/state lens for reviewer fan-outs (@slow, high)
+├── review-validator.md     # fact-checker for review findings — CONFIRM/DOWNGRADE/REFUTE (@slow, xhigh)
+└── task.md                 # flexible multi-step worker with subagent tool (@task)
 ```
+
+The three dedicated lens/validator agents are read-only (no `subagent` tool)
+and are spawned by `reviewer` as depth-2 leaves; they also work standalone for
+a single-lens pass on a diff.
 
 Project-local agents live in `.pi/agents/<name>.md` and override same-named
 user agents when the tool is invoked with `agentScope: "both"` (or `"project"`).

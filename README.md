@@ -1,7 +1,7 @@
 # my-pi-setup
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup —
-the extensions in `extensions/`, a pack of generic TTSR rules in `rules/`, six
+the extensions in `extensions/`, a pack of generic TTSR rules in `rules/`, nine
 subagent definitions in `agents/`, and skills in `skills/`. Clone this repo
 and run `./install.sh` to get the same setup.
 
