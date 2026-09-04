@@ -1,7 +1,7 @@
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Markdown, matchesKey } from "@earendil-works/pi-tui";
+import { Markdown, matchesKey, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { parseModelRef, resolveModelRole } from "../utils/model-role.ts";
 
 type ContentBlock = {
@@ -106,6 +106,9 @@ const buildConversationText = (entries: SessionEntry[]): string => {
 
 const DEFAULT_ROLE = "@smol";
 
+let lastSummary: string | undefined;
+let generationInProgress = false;
+
 const buildSummaryPrompt = (conversationText: string): string =>
 	[
 		"Summarize this conversation so I can resume it later.",
@@ -158,7 +161,7 @@ const showSummaryUi = async (summary: string, ctx: ExtensionCommandContext) => {
 					const scrollLabel = dim(
 						totalLines > pageLines ? ` ${scrollTop + 1}-${Math.min(scrollTop + body.length, totalLines)}/${totalLines} ` : " ",
 					);
-					const hint = dim(" ↑/↓ · PgUp/PgDn scroll · Esc close ");
+					const hint = dim(" ↑/↓ scroll · Esc close · /summarize view reopen ");
 
 					const title = accent(theme.bold(" Conversation Summary "));
 					const out: string[] = [];
@@ -170,7 +173,14 @@ const showSummaryUi = async (summary: string, ctx: ExtensionCommandContext) => {
 					);
 					for (let i = 0; i < pageLines; i++) {
 						const line = body[i] ?? "";
-						out.push(accent("│") + " " + line + " ".repeat(Math.max(0, innerWidth + 2 - visibleLength(line))) + accent("│"));
+						let gutter = " ".repeat(Math.max(0, innerWidth + 2 - visibleLength(line)));
+						if (totalLines > pageLines) {
+							// Scrollbar: thumb sized to viewport ratio, positioned by scroll fraction
+							const thumbSize = Math.max(1, Math.round((pageLines / totalLines) * pageLines));
+							const thumbStart = Math.round((scrollTop / (totalLines - pageLines)) * (pageLines - thumbSize));
+							gutter = gutter.slice(0, -1) + (i >= thumbStart && i < thumbStart + thumbSize ? accent("█") : dim("│"));
+						}
+						out.push(accent("│") + " " + line + gutter + accent("│"));
 					}
 					out.push(
 						accent("╰─") +
@@ -211,6 +221,13 @@ const showSummaryUi = async (summary: string, ctx: ExtensionCommandContext) => {
 						return;
 					}
 				},
+				handleMouse(event: TuiMouseEvent) {
+					if (event.type === "wheel" && event.wheelDelta) {
+						scroll(event.wheelDelta);
+						return { handled: true };
+					}
+					return undefined;
+				},
 			};
 		},
 		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 } },
@@ -221,6 +238,21 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("summarize", {
 		description: "Summarize the current conversation in a custom UI",
 		handler: async (args, ctx) => {
+			const subcommand = args?.trim().toLowerCase();
+			if (subcommand === "view" || subcommand === "show" || subcommand === "last") {
+				if (!lastSummary) {
+					if (ctx.hasUI) ctx.ui.notify("No summary yet — run /summarize first", "warning");
+					return;
+				}
+				await showSummaryUi(lastSummary, ctx);
+				return;
+			}
+
+			if (generationInProgress) {
+				if (ctx.hasUI) ctx.ui.notify("Summary already in progress — /summarize view to see the last one", "warning");
+				return;
+			}
+
 			const branch = ctx.sessionManager.getBranch();
 			const conversationText = buildConversationText(branch);
 
@@ -229,10 +261,6 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify("No conversation text found", "warning");
 				}
 				return;
-			}
-
-			if (ctx.hasUI) {
-				ctx.ui.notify("Preparing summary...", "info");
 			}
 
 			const { resolvedModel, role } = resolveModelRole(args?.trim() || DEFAULT_ROLE);
@@ -261,22 +289,37 @@ export default function (pi: ExtensionAPI) {
 				},
 			];
 
-			const response = await ctx.modelRegistry.complete(
-				model,
-				{ messages: summaryMessages },
-				{
-					reasoningEffort: ref.thinking ?? "high",
-					effort: ref.thinking ?? "high",
-					cacheRetention: "none",
-					sessionId: uuidv7(),
-				},
-			);
+			generationInProgress = true;
+			if (ctx.hasUI) ctx.ui.notify("Generating summary…", "info");
+			let summary: string;
+			try {
+				const response = await ctx.modelRegistry.complete(
+					model,
+					{ messages: summaryMessages },
+					{
+						reasoningEffort: ref.thinking ?? "high",
+						effort: ref.thinking ?? "high",
+						cacheRetention: "none",
+						sessionId: uuidv7(),
+					},
+				);
+				summary = response.content
+					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.map((c) => c.text)
+					.join("\n");
+			} catch (err) {
+				if (ctx.hasUI) ctx.ui.notify(`Summary failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+				return;
+			} finally {
+				generationInProgress = false;
+			}
+			if (!summary.trim()) {
+				if (ctx.hasUI) ctx.ui.notify("Model returned an empty summary", "warning");
+				return;
+			}
+			lastSummary = summary;
 
-			const summary = response.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
-
+			if (ctx.hasUI) ctx.ui.notify("Summary ready — /summarize view to review again", "info");
 			await showSummaryUi(summary, ctx);
 		},
 	});

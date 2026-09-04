@@ -79,7 +79,7 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **rewind.ts** | `/rewind` — Claude-Code-style checkpoints & rewind. Tracks every file the agent edits and snapshots state at each user prompt. |
 | **handoff.ts** | `/handoff <task>` — instead of a lossy compact, extracts what matters and spawns a fresh focused session with a generated prompt. |
 | **todo.ts** | `todo` tool + `/todos` command — todo state persisted in session entries, not files. |
-| **summarize.ts** | `/summarize` — renders a session/conversation summary in the TUI. |
+| **summarize.ts** | `/summarize` — full-terminal scrollable summary overlay (mouse wheel + keyboard); model selected via role alias (`@smol` by default, any alias accepted as the command arg); `/summarize view` reopens the last summary from cache without re-running the model. |
 | **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
 | **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
