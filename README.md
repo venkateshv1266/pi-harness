@@ -59,6 +59,7 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
 | **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
 | **model-status.ts** | Shows model changes in the status bar when switching via `/model` or Ctrl+P. |
+| **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
 | **permission-gate.ts** | Asks for confirmation before dangerous bash commands (`rm -rf`, `sudo`, `chmod 777`, …). |
@@ -138,6 +139,32 @@ switching (default `1` = switch on first failure)
 Config is re-read on every failure, so edits apply immediately — no reload
 needed. When a run dies after retries are exhausted, the failed prompt is
 automatically re-sent on the fallback so the turn resumes where it left off.
+
+### Model roles
+
+**model-roles.ts** provides `/roles` for assigning the model roles that the
+subagent engine resolves via `@smol` / `@slow` / `@plan` / `@task` /
+`@designer` aliases. Keys live at the top level of
+`~/.pi/agent/settings.json` using the same `provider/model:thinking` syntax
+as fallback pairs:
+
+```jsonc
+"smolModel": "openrouter/openai/gpt-5.6-luna:xhigh",
+"slowModel": "openrouter/z-ai/glm-5.3:max",
+"planModel": "openrouter/z-ai/glm-5.3:max",
+"taskModel": "openrouter/z-ai/glm-5.3-flash",
+"designerModel": "google/gemini-3.7-flash"
+```
+
+| Command | What it does |
+|---|---|
+| `/roles` | Interactive: role picker (shows each alias's purpose and current model) → searchable model picker → thinking level |
+| `/roles <role> <model:thinking>` | One-liner, e.g. `/roles smolModel openai/gpt-5.6-luna:xhigh` |
+| `/roles clear [role]` | Remove a role assignment (falls back to its alias chain) |
+
+`PI_SMOL_MODEL` / `PI_SLOW_MODEL` / etc. env vars take precedence over these
+settings, and an unset role falls back through its chain to `defaultModel`
+(see the subagent section above). Restart pi or `/reload` after changing.
 
 ## TTSR rules (`rules/`)
 

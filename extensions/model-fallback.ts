@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const THINKING_LEVELS: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+export const THINKING_LEVELS: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** primary ref → fallback ref, same "provider/model:thinking" syntax as model roles in settings.json */
 interface ModelFallbackSettings {
@@ -88,10 +88,10 @@ function trunc(s: string, max: number): string {
 	return visibleWidth(s) <= max ? s : truncateToWidth(s, max, "");
 }
 
-type PickerRow = { label: string; meta?: string; description?: string };
+export type PickerRow = { label: string; meta?: string; description?: string };
 
 // Searchable fuzzy picker: type to filter, ↑↓ navigate, Enter to pick, Esc to cancel.
-class FilterablePicker implements Component, Focusable {
+export class FilterablePicker implements Component, Focusable {
 	private readonly tui: TUI;
 	private readonly theme: Theme;
 	private readonly kb: KeybindingsManager;
@@ -120,7 +120,8 @@ class FilterablePicker implements Component, Focusable {
 		this.kb = opts.keybindings;
 		this.title = opts.title;
 		this.rows = opts.rows;
-		this.maxVisible = opts.maxVisible ?? 12;
+		// Description lines double row height — halve the visible window so the picker stays a sane size.
+		this.maxVisible = opts.maxVisible ?? (opts.rows.some((r) => r.description) ? 6 : 12);
 		this.onPick = opts.onPick;
 		this.onCancel = opts.onCancel;
 		this.filtered = opts.rows;
@@ -168,8 +169,11 @@ class FilterablePicker implements Component, Focusable {
 				const prefix = isSel ? "→ " : "  ";
 				const label = row.label + " ".repeat(Math.max(1, nameWidth - visibleWidth(row.label)));
 				const styledLabel = isSel ? theme.fg("accent", prefix + label) : prefix + label;
-				const meta = row.meta ? (isSel ? theme.fg("dim", row.meta) : theme.fg("dim", row.meta)) : "";
+				const meta = row.meta ? theme.fg("dim", row.meta) : "";
 				lines.push(truncateToWidth(styledLabel + meta, width, ""));
+				if (row.description) {
+					lines.push(truncateToWidth(theme.fg("dim", `     ${row.description}`), width, ""));
+				}
 			}
 			if (start > 0 || end < this.filtered.length) {
 				lines.push(theme.fg("dim", `  (${this.selected + 1}/${this.filtered.length})`));
