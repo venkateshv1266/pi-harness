@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if [ -n "${CMUX_SOCKET_PATH:-}" ] || [ -n "${CMUX_SOCKET:-}" ]; then
+  nohup cmux notify \
+    --title "YubiKey touch needed" \
+    --body "Git is starting SSH authentication — touch your YubiKey." \
+    >/dev/null 2>&1 </dev/null &
+  nohup cmux trigger-flash >/dev/null 2>&1 </dev/null &
+  sound="${PI_YUBIKEY_NOTIFICATION_SOUND:-$HOME/.pi/agent/sounds/yubikey-alert-1-ascending.wav}"
+  [ -f "$sound" ] || sound="/System/Library/Sounds/Sosumi.aiff"
+  nohup afplay "$sound" >/dev/null 2>&1 </dev/null &
+fi
+
+exec ssh "$@"

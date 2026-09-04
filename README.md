@@ -26,6 +26,30 @@ auto-discovers everything in `~/.pi/agent/extensions/`.
 To uninstall an extension, delete its file (or directory) from
 `~/.pi/agent/extensions/` and `/reload`.
 
+## Optional: YubiKey alerts for Git in cmux
+
+If Git uses a YubiKey for SSH authentication or signing, install the optional
+cmux alert wrappers:
+
+```bash
+./scripts/install-yubikey-notifications.sh
+```
+
+This installs wrappers and the selected alert sound under `~/.pi/agent/`, then
+configures Git's global `core.sshCommand` and `gpg.program` settings:
+
+- SSH-backed `git pull`, `fetch`, `push`, and similar operations alert before
+  SSH authentication starts. SSH cannot expose in advance whether the agent
+  will require a hardware touch, so this may alert when an existing session
+  does not need one.
+- GPG signing operations alert when Git actually invokes GPG. Verification
+  operations remain silent.
+
+The default sound is `~/.pi/agent/sounds/yubikey-alert-1-ascending.wav`. Set
+`PI_YUBIKEY_NOTIFICATION_SOUND` before launching Git or pi to use another
+`.wav`/`.aiff` file. The installer preserves an existing custom Git setting
+instead of overwriting it.
+
 ## Updating an existing setup
 
 Already installed? Pull and re-run the installer:
