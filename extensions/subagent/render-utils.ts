@@ -156,6 +156,6 @@ export function formatCircleStatusIcon(status: AgentStatus, theme: ThemeLike, sp
 		case "failed":
 			return `${theme.fg("error", "✘")} `;
 		case "aborted":
-			return `${theme.fg("error", "⏹")} `;
+			return `${theme.fg("error", "▪")} `;
 	}
 }

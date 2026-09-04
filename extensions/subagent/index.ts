@@ -165,7 +165,7 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 	return { dir: tmpDir, filePath };
 }
 
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	// Only treat argv[1] as a JS entrypoint if it really is one. A launcher may
@@ -527,6 +527,9 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate tasks to specialized subagents with isolated context.",
+			"Use this for one-shot delegation where you wait for the full result — including parallel batches and chains. " +
+			"If the child must outlive a single call (long-running work you will poll or steer, iterative follow-up turns), " +
+			"use subagent_spawn/subagent_send/subagent_result instead.",
 			"MODES (choose exactly one):",
 			"- PARALLEL: { tasks: [{ agent, task }, { agent, task }, ...] } — Spawns multiple subagents concurrently in a single grouped batch. ALWAYS use this shape instead of emitting multiple separate tool calls.",
 			"- CHAIN: { chain: [{ agent, task }, { agent, task: '... {previous}' }] } — Sequential pipeline.",

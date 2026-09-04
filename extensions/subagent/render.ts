@@ -809,19 +809,16 @@ function renderAgentRow(
 		lines.push(`${continuePrefix}${theme.fg("error", SYMBOLS.status.aborted)} ${theme.fg("dim", previewLine(sanitizeText(r.abortReason), 80))}`);
 	}
 
-	// Structured data (JSON tree) or raw output
+	// Structured data (JSON tree) or raw output — hidden when collapsed; the
+	// status line alone is the at-a-glance view, Ctrl+O expands.
 	const finalOutput = getFinalOutput(r.messages);
 	const showStructured = r.structuredData !== undefined && r.structuredData !== null;
-	if (showStructured) {
-		if (!expanded) {
-			lines.push(`${continuePrefix}${theme.fg("dim", formatOutputInline(r.structuredData))}`);
-		} else {
-			lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
-			const tree = renderJsonTreeLines(r.structuredData, theme, 6, 24);
-			for (const l of tree.lines) lines.push(`${continuePrefix}  ${l}`);
-			if (tree.truncated) lines.push(`${continuePrefix}  ${theme.fg("dim", "…")}`);
-		}
-	} else if (finalOutput) {
+	if (showStructured && expanded) {
+		lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+		const tree = renderJsonTreeLines(r.structuredData, theme, 6, 24);
+		for (const l of tree.lines) lines.push(`${continuePrefix}  ${l}`);
+		if (tree.truncated) lines.push(`${continuePrefix}  ${theme.fg("dim", "…")}`);
+	} else if (finalOutput && expanded) {
 		lines.push(...renderOutputSection(finalOutput, continuePrefix, expanded, theme, 3, 12));
 	} else if (status === "running" && expanded) {
 		const previewRows = previewWindowRows();
@@ -907,6 +904,9 @@ export function renderResult(
 	const contextSection = createContextSectionRenderer(args, theme);
 
 	if (!details || details.results.length === 0) {
+		// In-flight with nothing streamed yet: render nothing instead of an
+		// empty frame that pops in and out at call start.
+		if (options.isPartial) return emptyFramedComponent();
 		const errored = result.isError === true;
 		const header = renderStatusLine(
 			{ icon: errored ? "error" : undefined, iconOverride: errored ? undefined : styledSymbol(SYMBOLS.status.done, "accent", theme), title: "Task", description: args?.agent?.trim() || undefined },
@@ -997,18 +997,20 @@ export function renderResult(
 				lines.push(`${theme.fg("dim", formatMoreItems(ordered.length - visible.length, "agent"))}${hint ? ` ${hint}` : ""}`);
 			}
 
-			// Summary footer (omp-style bracketed run summary)
-			const summaryParts: string[] = [];
-			if (abortedCount > 0) summaryParts.push(theme.fg("error", `${abortedCount} aborted`));
-			if (successCount > 0) summaryParts.push(theme.fg("success", `${successCount} succeeded`));
-			if (failCount > 0) summaryParts.push(theme.fg("error", `${failCount} failed`));
-			if (requestTotal > 0) summaryParts.push(theme.fg("dim", `${formatNumber(requestTotal)} req`));
-			summaryParts.push(theme.fg("dim", formatDuration(details.totalDurationMs)));
-			lines.push(
-				theme.fg("dim", SYMBOLS.format.bracketLeft) +
-				summaryParts.join(theme.fg("dim", SYMBOLS.sep.dot)) +
-				theme.fg("dim", SYMBOLS.format.bracketRight),
-			);
+			// Summary footer only when expanded — collapsed rows are one line each.
+			if (expanded) {
+				const summaryParts: string[] = [];
+				if (abortedCount > 0) summaryParts.push(theme.fg("error", `${abortedCount} aborted`));
+				if (successCount > 0) summaryParts.push(theme.fg("success", `${successCount} succeeded`));
+				if (failCount > 0) summaryParts.push(theme.fg("error", `${failCount} failed`));
+				if (requestTotal > 0) summaryParts.push(theme.fg("dim", `${formatNumber(requestTotal)} req`));
+				summaryParts.push(theme.fg("dim", formatDuration(details.totalDurationMs)));
+				lines.push(
+					theme.fg("dim", SYMBOLS.format.bracketLeft) +
+					summaryParts.join(theme.fg("dim", SYMBOLS.sep.dot)) +
+					theme.fg("dim", SYMBOLS.format.bracketRight),
+				);
+			}
 		}
 
 		const state: State = isPartial && runningCount > 0 ? "running" : isError ? "error" : "success";
