@@ -18,6 +18,10 @@ rsync -a --delete \
   --exclude='.DS_Store' \
   "$AGENT/extensions/" "$REPO_DIR/extensions/"
 
+# 1b. Shared utils imported by extensions
+mkdir -p "$REPO_DIR/utils"
+rsync -a --delete --exclude='.DS_Store' "$AGENT/utils/" "$REPO_DIR/utils/"
+
 # 2. Generic rules (allowlist-driven, per file)
 for f in "$REPO_DIR"/rules/*.md; do
   name="$(basename "$f")"

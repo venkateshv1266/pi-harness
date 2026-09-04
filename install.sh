@@ -17,6 +17,10 @@ fi
 # 1. Extensions
 mkdir -p "$AGENT/extensions"
 rsync -a --exclude='node_modules' --exclude='.DS_Store' "$REPO_DIR/extensions/" "$AGENT/extensions/"
+
+# 1b. Shared utils imported by extensions
+mkdir -p "$AGENT/utils"
+rsync -a --exclude='.DS_Store' "$REPO_DIR/utils/" "$AGENT/utils/"
 find "$AGENT/extensions" -maxdepth 2 -name package.json -not -path '*/node_modules/*' | while read -r pkg; do
   dir="$(dirname "$pkg")"
   echo ">> npm install in $dir"

@@ -36,8 +36,8 @@ import {
 	discoverAgents,
 	extractStructuredOutput,
 	formatOutputSchemaPrompt,
-	resolveModelRole,
 } from "./agents.ts";
+import { resolveModelRole } from "../../utils/model-role.ts";
 import {
 	renderCall as renderCallImpl,
 	renderResult as renderResultImpl,

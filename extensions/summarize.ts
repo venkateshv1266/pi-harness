@@ -2,6 +2,7 @@ import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
+import { parseModelRef, resolveModelRole } from "../utils/model-role.ts";
 
 type ContentBlock = {
 	type?: string;
@@ -103,6 +104,8 @@ const buildConversationText = (entries: SessionEntry[]): string => {
 	return sections.join("\n\n");
 };
 
+const DEFAULT_ROLE = "@smol";
+
 const buildSummaryPrompt = (conversationText: string): string =>
 	[
 		"Summarize this conversation so I can resume it later.",
@@ -145,7 +148,7 @@ const showSummaryUi = async (summary: string, ctx: ExtensionCommandContext) => {
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("summarize", {
 		description: "Summarize the current conversation in a custom UI",
-		handler: async (_args, ctx) => {
+		handler: async (args, ctx) => {
 			const branch = ctx.sessionManager.getBranch();
 			const conversationText = buildConversationText(branch);
 
@@ -160,13 +163,21 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Preparing summary...", "info");
 			}
 
-			const model = ctx.modelRegistry.find("openai", "gpt-5.2");
+			const { resolvedModel, role } = resolveModelRole(args?.trim() || DEFAULT_ROLE);
+			if (!resolvedModel) {
+				if (ctx.hasUI) ctx.ui.notify("Could not resolve model alias", "warning");
+				return;
+			}
+			const ref = parseModelRef(resolvedModel);
+			const model = ref.provider
+				? ctx.modelRegistry.find(ref.provider, ref.modelId)
+				: ctx.modelRegistry.getAvailable().find((m) => m.id === ref.modelId || m.id.includes(ref.modelId));
 			if (!model) {
-				if (ctx.hasUI) ctx.ui.notify("Model openai/gpt-5.2 not found", "warning");
+				if (ctx.hasUI) ctx.ui.notify(`Model ${role ?? resolvedModel} (${resolvedModel}) not found`, "warning");
 				return;
 			}
 			if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
-				if (ctx.hasUI) ctx.ui.notify("No authentication configured for openai/gpt-5.2", "warning");
+				if (ctx.hasUI) ctx.ui.notify(`No authentication configured for ${resolvedModel}`, "warning");
 				return;
 			}
 
@@ -182,7 +193,8 @@ export default function (pi: ExtensionAPI) {
 				model,
 				{ messages: summaryMessages },
 				{
-					reasoningEffort: "high",
+					reasoningEffort: ref.thinking ?? "high",
+					effort: ref.thinking ?? "high",
 					cacheRetention: "none",
 					sessionId: uuidv7(),
 				},

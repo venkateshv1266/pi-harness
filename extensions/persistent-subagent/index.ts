@@ -44,8 +44,8 @@ import {
 	type AgentScope,
 	discoverAgents,
 	formatOutputSchemaPrompt,
-	resolveModelRole,
 } from "../subagent/agents.ts";
+import { resolveModelRole } from "../../utils/model-role.ts";
 import { getPiInvocation } from "../subagent/index.ts";
 import {
 	renderCall as renderSubagentCall,
