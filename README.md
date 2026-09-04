@@ -58,7 +58,6 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **summarize.ts** | `/summarize` — renders a session/conversation summary in the TUI. |
 | **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
 | **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
-| **model-status.ts** | Shows model changes in the status bar when switching via `/model` or Ctrl+P. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
@@ -73,6 +72,7 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 |---|---|
 | **mcp-bridge/** | Adds MCP server support to pi: lazy-connects servers from `~/.pi/agent/mcp-servers.json`, registers their tools as `mcp__<server>__<tool>`, does OAuth 2.0 PKCE login for remote servers (Slack, Linear, …), strips sensitive env vars from child processes, and truncates oversized tool results. Config lives in `~/.pi/agent/mcp-servers.json` (see below). |
 | **subagent/** | The `subagent` tool — delegate tasks to isolated `pi --mode json` child processes. Parallel task batches, sequential chains with a `{previous}` placeholder, per-agent tool allowlists, model-role aliases (`@smol`, `@slow`, …). Agent definitions ship in `agents/` below. |
+| **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). See `extensions/ttsr/README.md`. |
 
 ## Subagent definitions (`agents/`)
 
@@ -87,6 +87,9 @@ Six agents, used with the `subagent` tool above. Full file-format docs in
 | **verifier** | Quality-gate pass — grades a writer's diff against the frozen spec and the lint/typecheck/test harness (`@slow`, xhigh thinking) | read-only |
 | **reviewer** | Backend review orchestrator — dispatches parallel lens sub-agents + a validator pass, synthesizes prioritized findings (`@slow`) | read-only + subagent |
 | **task** | General-purpose worker, can fan out to nested subagents (`@task`) | full set + subagent |
+| **security-auditor** | Dedicated security lens for review fan-outs — threat-models new entry points (authn/authz bypasses, IDOR, injection, secrets, PII). Spawned by `reviewer` on non-trivial diffs; usable standalone (`@slow`) | read, bash, grep, find, ls |
+| **concurrency-auditor** | Dedicated concurrency & state lens — transaction/isolation gaps, idempotency violations, races, lock ordering, outbox/dual-write, saga rollback. Spawned by `reviewer` on diffs touching state, queues, or money paths (`@slow`) | read, bash, grep, find, ls |
+| **review-validator** | Fact-checker for review findings — independently verifies each finding against the cited code, classifies as CONFIRMED / DOWNGRADE / REFUTED / UNVERIFIABLE; never generates new findings (`@slow`, xhigh thinking) | read, bash, grep, find, ls |
 
 `install.sh` auto-configures the role aliases (add-only — it never
 overwrites keys you've already set): `@smol` → OpenAI GPT-5.6 Luna,
@@ -98,7 +101,6 @@ Override anytime via `smolModel` / `slowModel` / `planModel` / `taskModel` in
 fully unset, agents inherit your session model. The `writer` → `verifier`
 pair is the cascade pattern: a cheap model types, a strong model grades.
 Project-local agents can override these via `.pi/agents/<name>.md`.
-| **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). See `extensions/ttsr/README.md`. |
 
 ### Model fallback
 
