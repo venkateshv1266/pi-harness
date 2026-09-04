@@ -59,6 +59,7 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
 | **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
 | **model-status.ts** | Shows model changes in the status bar when switching via `/model` or Ctrl+P. |
+| **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
 | **permission-gate.ts** | Asks for confirmation before dangerous bash commands (`rm -rf`, `sudo`, `chmod 777`, …). |
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
@@ -97,6 +98,46 @@ fully unset, agents inherit your session model. The `writer` → `verifier`
 pair is the cascade pattern: a cheap model types, a strong model grades.
 Project-local agents can override these via `.pi/agents/<name>.md`.
 | **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). See `extensions/ttsr/README.md`. |
+
+### Model fallback
+
+**model-fallback.ts** watches every provider response and switches to a fallback
+model when the current one fails for real — HTTP 429 (rate limit), 5xx, or
+stream-level errors (timeouts, mid-body disconnects). User aborts (Esc) never
+trigger a switch, and each failure is attributed to the model that produced it.
+It covers the main session and subagents (subagents are spawned `pi` processes
+that load global extensions).
+
+**Setup** — pairs live in `~/.pi/agent/settings.json` under a `modelFallback`
+map, using the same `provider/model:thinking` syntax as the model roles:
+
+```jsonc
+"modelFallback": {
+  "openrouter/z-ai/glm-5.3": "openrouter/openai/gpt-5.6-terra:high",
+  "openrouter/openai/gpt-5.6-luna:xhigh": "openrouter/z-ai/glm-5.3:max"
+}
+```
+
+- Key = primary model: full `provider/modelId`, bare `modelId`, or a
+distinctive substring of the model id
+- Value = fallback; a `:thinking` suffix (`high`, `xhigh`, `max`, …)
+auto-applies that thinking level on switch
+- Optional `"failThreshold": N` tolerates N−1 transient failures before
+switching (default `1` = switch on first failure)
+- Chains work: a fallback can have its own fallback (cycles are blocked)
+
+**Manage with `/fallback`:**
+
+| Command | What it does |
+|---|---|
+| `/fallback` | Show configured pairs, threshold, and live failure counters |
+| `/fallback add` | Interactive: searchable picker for primary → fallback → thinking level, saved to settings.json |
+| `/fallback add <primary> <fallback> [thinking]` | One-liner, e.g. `/fallback add glm-5.3 openrouter/openai/gpt-5.6-terra high` |
+| `/fallback remove [primary]` | Drop a pair (picker if no arg) |
+
+Config is re-read on every failure, so edits apply immediately — no reload
+needed. When a run dies after retries are exhausted, the failed prompt is
+automatically re-sent on the fallback so the turn resumes where it left off.
 
 ## TTSR rules (`rules/`)
 
