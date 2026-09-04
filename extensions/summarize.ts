@@ -1,7 +1,7 @@
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Markdown, matchesKey } from "@earendil-works/pi-tui";
 import { parseModelRef, resolveModelRole } from "../utils/model-role.ts";
 
 type ContentBlock = {
@@ -122,27 +122,99 @@ const showSummaryUi = async (summary: string, ctx: ExtensionCommandContext) => {
 		return;
 	}
 
-	await ctx.ui.custom((_tui, theme, _kb, done) => {
-		const container = new Container();
-		const border = new DynamicBorder((s: string) => theme.fg("accent", s));
-		const mdTheme = getMarkdownTheme();
+	await ctx.ui.custom(
+		(tui, theme, _kb, done) => {
+			const md = new Markdown(summary, 1, 1, getMarkdownTheme());
+			let scrollTop = 0;
+			let totalLines = 0;
+			let pageLines = 1;
 
-		container.addChild(border);
-		container.addChild(new Text(theme.fg("accent", theme.bold("Conversation Summary")), 1, 0));
-		container.addChild(new Markdown(summary, 1, 1, mdTheme));
-		container.addChild(new Text(theme.fg("dim", "Press Enter or Esc to close"), 1, 0));
-		container.addChild(border);
+			// Chrome: top border + blank padding rows around the markdown
+			const verticalChrome = 4;
+			const horizontalChrome = 4;
 
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
-					done(undefined);
-				}
-			},
-		};
-	});
+			const dim = (s: string) => theme.fg("dim", s);
+			const accent = (s: string) => theme.fg("accent", s);
+			// Strip ANSI escapes so border fills align regardless of styling
+			const visibleLength = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+
+			const close = () => done(undefined);
+
+			const scroll = (delta: number) => {
+				scrollTop = Math.max(0, Math.min(scrollTop + delta, Math.max(0, totalLines - pageLines)));
+			};
+
+			return {
+				render(width: number): string[] {
+					const termHeight = tui.terminal.rows;
+					pageLines = Math.max(1, termHeight - verticalChrome);
+					const innerWidth = Math.max(1, width - horizontalChrome - 2);
+
+					const lines = md.render(innerWidth);
+					totalLines = lines.length;
+					scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, totalLines - pageLines)));
+
+					const body = lines.slice(scrollTop, scrollTop + pageLines);
+					const scrollLabel = dim(
+						totalLines > pageLines ? ` ${scrollTop + 1}-${Math.min(scrollTop + body.length, totalLines)}/${totalLines} ` : " ",
+					);
+					const hint = dim(" ↑/↓ · PgUp/PgDn scroll · Esc close ");
+
+					const title = accent(theme.bold(" Conversation Summary "));
+					const out: string[] = [];
+					out.push(
+						accent("╭─") +
+							title +
+							accent("─".repeat(Math.max(0, width - 4 - visibleLength(title)))) +
+							accent("╮"),
+					);
+					for (let i = 0; i < pageLines; i++) {
+						const line = body[i] ?? "";
+						out.push(accent("│") + " " + line + " ".repeat(Math.max(0, innerWidth + 2 - visibleLength(line))) + accent("│"));
+					}
+					out.push(
+						accent("╰─") +
+							scrollLabel +
+							accent("─".repeat(Math.max(0, width - 4 - visibleLength(scrollLabel) - visibleLength(hint)))) +
+							hint +
+							accent("╯"),
+					);
+					return out;
+				},
+				invalidate() {
+					md.invalidate();
+				},
+				handleInput(data: string) {
+					if (matchesKey(data, "escape")) {
+						close();
+					} else if (matchesKey(data, "up")) {
+						scroll(-1);
+					} else if (matchesKey(data, "down")) {
+						scroll(1);
+					} else if (matchesKey(data, "pageup")) {
+						scroll(-pageLines);
+					} else if (matchesKey(data, "pagedown")) {
+						scroll(pageLines);
+					} else if (matchesKey(data, "home")) {
+						scrollTop = 0;
+					} else if (matchesKey(data, "end")) {
+						scrollTop = Number.MAX_SAFE_INTEGER;
+					} else if (data === "k") {
+						scroll(-1);
+					} else if (data === "j" || data === " ") {
+						scroll(1);
+					} else if (data === "g") {
+						scrollTop = 0;
+					} else if (data === "G") {
+						scrollTop = Number.MAX_SAFE_INTEGER;
+					} else {
+						return;
+					}
+				},
+			};
+		},
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 } },
+	);
 };
 
 export default function (pi: ExtensionAPI) {
