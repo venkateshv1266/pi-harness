@@ -1,0 +1,15 @@
+{
+  "name": "omp-stats",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@oh-my-pi/omp-stats": "18.1.10"
+  }
+}

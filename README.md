@@ -88,6 +88,31 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
 | **plugins.ts** | `/plugins` — browse & install skills from Claude Code plugin marketplaces (local `.claude-plugin/marketplace.json` catalogs). Interactive searchable picker + detail views, or CLI: `/plugins install\|uninstall\|enable\|disable\|list <name>`, `/plugins marketplace add <path>`. Installed plugins load in place via `resources_discover` — `git pull` of the marketplace updates skills. State: `~/.pi/agent/plugins.json` (local, not synced); seed marketplaces there or via `PI_PLUGIN_MARKETPLACE`. |
 | **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. Skip it if you don't use cmux. |
+| **stats.ts** | `/stats [port]` — opens a browser-based usage dashboard for pi session cost, token, and cache statistics. |
+
+### Usage statistics
+
+The `/stats` command launches the `@oh-my-pi/omp-stats` dashboard with Bun.
+The dashboard is installed under `~/.pi/agent/utils/omp-stats/` and reads the
+session logs from the same pi agent directory.
+
+After running `./install.sh`, install the dashboard dependency once:
+
+```bash
+cd ~/.pi/agent/utils/omp-stats
+bun install
+```
+
+Then reload pi and run:
+
+```text
+/stats
+```
+
+Pass a port to use something other than the default `3847`, for example
+`/stats 4000`. Set `PI_STATS_HOST` to change the bind host. The command opens
+the dashboard in the system browser and writes startup errors to
+`~/.pi/agent/utils/omp-stats/server.log`.
 
 ### Subdirectory extensions (own `package.json`, `npm install` runs in `install.sh`)
 
