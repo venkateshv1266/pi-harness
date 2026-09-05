@@ -81,14 +81,32 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 | **todo.ts** | `todo` tool + `/todos` command — todo state persisted in session entries, not files. |
 | **summarize.ts** | `/summarize` — full-terminal scrollable summary overlay (mouse wheel + keyboard); model selected via role alias (`@smol` by default, any alias accepted as the command arg); `/summarize view` reopens the last summary from cache without re-running the model. |
 | **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
-| **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
+| **custom-footer.ts** | Two-line status footer: cwd, git branch, permission-gate mode, context %, cost, and model. Toggle with `/footer`. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
-| **permission-gate.ts** | Asks for confirmation before dangerous bash commands (`rm -rf`, `sudo`, `chmod 777`, …). |
+| **permission-gate.ts** | Claude-Code-style bash permission gate. Defaults to `auto` mode, protects critical/protected paths, and prompts for unrecognized or dangerous commands. |
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
 | **plugins.ts** | `/plugins` — browse & install skills from Claude Code plugin marketplaces (local `.claude-plugin/marketplace.json` catalogs). Interactive searchable picker + detail views, or CLI: `/plugins install\|uninstall\|enable\|disable\|list <name>`, `/plugins marketplace add <path>`. Installed plugins load in place via `resources_discover` — `git pull` of the marketplace updates skills. State: `~/.pi/agent/plugins.json` (local, not synced); seed marketplaces there or via `PI_PLUGIN_MARKETPLACE`. |
 | **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. Skip it if you don't use cmux. |
+
+### Permission gate
+
+`permission-gate.ts` starts in `auto` mode. The footer shows the active mode as
+`🛡 auto`, `🛡 ask`, or `🛡 off`.
+
+```text
+/gate          # cycle: ask → auto → off → ask
+/gate auto     # fail-closed allowlist; unknown and dangerous commands prompt
+/gate ask      # only recognized dangerous commands and protected-path writes prompt
+/gate off      # disable the gate
+```
+
+Auto mode runs recognized read-only and routine development commands without
+prompting. It still prompts for commands such as force-pushes, destructive Git
+operations, writes to shell/env/config files, protected paths, system paths,
+credential directories, download-and-execute pipelines, and unrecognized
+commands. In non-interactive mode, commands that would prompt are blocked.
 
 ### Subdirectory extensions (own `package.json`, `npm install` runs in `install.sh`)
 
