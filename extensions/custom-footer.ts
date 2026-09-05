@@ -2,7 +2,7 @@
  * Custom Footer Extension — two-line colourful status bar, enabled by default.
  *
  * Line 1: 📁 <cwd>  🌿 <branch>            (directory + git branch)
- * Line 2: 🛡 <gate-mode> %ctx (max) $cost   <model>   (permission mode + context + cost + model)
+ * Line 2: ↑in ↓out %ctx (max) $cost   <model>   (tokens + context + cost + model)
  *
  * Auto-enabled on session start. Toggle with /footer.
  */
@@ -20,16 +20,22 @@ function installFooter(ctx: ExtensionContext) {
 			dispose: unsub,
 			invalidate() {},
 			render(width: number): string[] {
-				// --- session cost total ---
-				let cost = 0;
+				// --- session token + cost totals ---
+				let input = 0,
+					output = 0,
+					cost = 0;
 				for (const e of ctx.sessionManager.getBranch()) {
 					if (e.type === "message" && e.message.role === "assistant") {
-						cost += (e.message as AssistantMessage).usage.cost.total;
+						const m = e.message as AssistantMessage;
+						input += m.usage.input;
+						output += m.usage.output;
+						cost += m.usage.cost.total;
 					}
 				}
 
 				const branch = footerData.getGitBranch();
 				const cwdName = nodePath.basename(process.cwd());
+				const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
 				const fmtCtx = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M` : `${Math.round(n / 1000)}k`);
 
 				// --- context-window usage ---
@@ -47,13 +53,11 @@ function installFooter(ctx: ExtensionContext) {
 					: theme.fg("dim", "  🌿 -");
 				const line1Left = dirLabel + dirText + branchPart;
 
-				// --- permission gate mode (published by permission-gate.ts) ---
-				const gateMode = ((globalThis as Record<string, unknown>).__permissionGateMode as string) ?? "auto";
-				const gateColor: ThemeColor = gateMode === "auto" ? "success" : gateMode === "ask" ? "warning" : "dim";
-
-				// --- Line 2: gate mode + context/cost stats + model ---
+				// --- Line 2: token/cost stats + model ---
 				const stats =
-					theme.fg(gateColor, `🛡 ${gateMode}`) +
+					theme.fg("syntaxNumber", `↑${fmt(input)}`) +
+					theme.fg("dim", " ") +
+					theme.fg("syntaxString", `↓${fmt(output)}`) +
 					theme.fg("dim", " ") +
 					theme.fg(ctxColor, `${ctxPct}%`) +
 					theme.fg("dim", ` (${fmtCtx(ctxMax)})`) +
