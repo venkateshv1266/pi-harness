@@ -2,7 +2,7 @@
  * Custom Footer Extension — two-line colourful status bar, enabled by default.
  *
  * Line 1: 📁 <cwd>  🌿 <branch>            (directory + git branch)
- * Line 2: ↑in ↓out %ctx (max) $cost   <model>   (tokens + context + cost + model)
+ * Line 2: ↑in ↓out %ctx (max) $cost   <model> (<thinking>)   (tokens + context + cost + model + thinking level)
  *
  * Auto-enabled on session start. Toggle with /footer.
  */
@@ -63,7 +63,7 @@ function installFooter(ctx: ExtensionContext) {
 					theme.fg("dim", ` (${fmtCtx(ctxMax)})`) +
 					theme.fg("dim", " ") +
 					theme.fg("warning", `$${cost.toFixed(3)}`);
-				const modelText = theme.fg("mdHeading", `🤖 ${ctx.model?.id || "no-model"}`);
+				const modelText = theme.fg("mdHeading", `🤖 ${ctx.model?.id || "no-model"} (${ctx.thinkingLevel})`);
 
 				const pad1 = " ".repeat(Math.max(1, width - visibleWidth(line1Left)));
 				const pad2 = " ".repeat(Math.max(1, width - visibleWidth(stats) - visibleWidth(modelText)));
