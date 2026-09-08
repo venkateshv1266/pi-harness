@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the extensions, generic TTSR rules, and the add-rule skill from this
+# Install the extensions, themes, generic TTSR rules, and the add-rule skill from this
 # repo into ~/.pi/agent/. Safe to re-run.
 #
 # NOTE: rules are copied WITHOUT --delete so your own rules are never removed.
@@ -27,21 +27,26 @@ find "$AGENT/extensions" -maxdepth 2 -name package.json -not -path '*/node_modul
   (cd "$dir" && npm install --silent)
 done
 
-# 2. Generic TTSR rules
+# 2. Themes
+mkdir -p "$AGENT/themes"
+rsync -a --exclude='.DS_Store' "$REPO_DIR/themes/" "$AGENT/themes/"
+echo ">> installed $(find "$REPO_DIR/themes" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ') themes"
+
+# 3. Generic TTSR rules
 mkdir -p "$AGENT/rules"
 rsync -a "$REPO_DIR/rules/" "$AGENT/rules/"
 echo ">> installed $(ls "$REPO_DIR/rules" | wc -l | tr -d ' ') TTSR rules"
 
-# 3. Subagent definitions
+# 4. Subagent definitions
 mkdir -p "$AGENT/agents"
 rsync -a "$REPO_DIR/agents/" "$AGENT/agents/"
 echo ">> installed $(ls "$REPO_DIR/agents"/*.md | grep -v README | wc -l | tr -d ' ') agents"
 
-# 4. Skills (add-rule: authoring TTSR rules; add-mcp-server: wiring MCP servers)
+# 5. Skills (add-rule: authoring TTSR rules; add-mcp-server: wiring MCP servers)
 mkdir -p "$AGENT/skills"
 rsync -a --exclude='node_modules' "$REPO_DIR/skills/" "$AGENT/skills/"
 
-# 5. Model-role defaults for the shipped agents (@smol/@slow/@plan/@task).
+# 6. Model-role defaults for the shipped agents (@smol/@slow/@plan/@task).
 #    Adds missing keys only — never overwrites your own choices.
 node -e '
 const fs = require("fs");

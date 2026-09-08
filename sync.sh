@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Owner maintenance: pull the LIVE extensions, generic rules, and add-rule skill
-# from ~/.pi/agent/ back into this repo, ready to commit and push.
+# Owner maintenance: pull the LIVE extensions, themes, generic rules, and
+# add-rule skill from ~/.pi/agent/ back into this repo, ready to commit and push.
 #
 # The repo's rules/ file list IS the allowlist: only those rule files sync back
 # (the live rules dir also holds private/work rules that must not be published).
@@ -21,6 +21,18 @@ rsync -a --delete \
 # 1b. Shared utils imported by extensions
 mkdir -p "$REPO_DIR/utils"
 rsync -a --delete --exclude='.DS_Store' "$AGENT/utils/" "$REPO_DIR/utils/"
+
+# 1c. Themes (allowlist-driven, per file)
+mkdir -p "$REPO_DIR/themes"
+for f in "$REPO_DIR"/themes/*.json; do
+  [ -e "$f" ] || break
+  name="$(basename "$f")"
+  if [ -f "$AGENT/themes/$name" ]; then
+    cp "$AGENT/themes/$name" "$f"
+  else
+    echo "WARN: no live source for themes/$name — delete it from the repo if removed."
+  fi
+done
 
 # 2. Generic rules (allowlist-driven, per file)
 for f in "$REPO_DIR"/rules/*.md; do

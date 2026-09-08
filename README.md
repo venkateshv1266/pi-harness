@@ -1,8 +1,9 @@
 # my-pi-setup
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup —
-the extensions in `extensions/`, a pack of generic TTSR rules in `rules/`, nine
-subagent definitions in `agents/`, and skills in `skills/`. Clone this repo
+the extensions in `extensions/`, themes in `themes/`, a pack of generic TTSR
+rules in `rules/`, nine subagent definitions in `agents/`, and skills in
+`skills/`. Clone this repo
 and run `./install.sh` to get the same setup.
 
 ## Prerequisites
@@ -21,7 +22,7 @@ cd my-pi-setup
 ```
 
 Then restart pi (or run `/reload` in an open session). That's it — pi
-auto-discovers everything in `~/.pi/agent/extensions/`.
+auto-discovers the installed extensions and themes in `~/.pi/agent/`.
 
 To uninstall an extension, delete its file (or directory) from
 `~/.pi/agent/extensions/` and `/reload`.
@@ -62,12 +63,29 @@ git pull
 
 `install.sh` is idempotent — it overwrites the copies in `~/.pi/agent/` with
 the repo versions and re-runs `npm install` for the subdirectory extensions.
-It never *deletes* anything, so your own extensions, rules, and agents are
-safe. Then `/reload` + `/ttsr-reload` (or restart pi) to arm the new code.
+It never *deletes* anything, so your own extensions, themes, rules, and agents
+are safe. Then `/reload` + `/ttsr-reload` (or restart pi) to arm the new code.
 
 One caveat: if an extension was **removed or renamed** in the repo, the old
 copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 `/reload`.
+
+## Themes
+
+Custom Pi themes are stored in `themes/` and installed to
+`~/.pi/agent/themes/` by `./install.sh`.
+
+| Theme | Description |
+|---|---|
+| **onedark-obsidian** | One Dark-inspired dark theme with a softened steel-blue accent (`#789bbd`). |
+| **quiet-night** | Warm, low-glare dark theme with muted accents for long sessions. |
+
+Select either theme from `/settings`, or use one for a single run:
+
+```bash
+pi --use-theme onedark-obsidian
+pi --use-theme quiet-night
+```
 
 ## Extensions
 
@@ -340,12 +358,13 @@ push:
 
 ```bash
 ./sync.sh
-git add -A && git commit -m "update extensions" && git push
+git add -A && git commit -m "feat(themes): add a new Pi theme" && git push
 ```
 
-`sync.sh` mirrors the whole `extensions/` dir, refreshes every rule listed in
-`rules/` (the file list there is the allowlist — private/work rules stay
-local), refreshes the shipped agent definitions, and refreshes both skills.
+`sync.sh` mirrors the whole `extensions/` dir, refreshes the allowlisted
+`themes/` and rules in the repo (their file lists are the allowlists —
+private/work rules stay local), refreshes the shipped agent definitions, and
+refreshes both skills.
 `node_modules/`, lock files, and transient dotfiles are excluded on both
 `install.sh` and `sync.sh`.
 
