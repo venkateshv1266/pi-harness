@@ -79,12 +79,14 @@ Custom Pi themes are stored in `themes/` and installed to
 |---|---|
 | **onedark-obsidian** | One Dark-inspired dark theme with a softened steel-blue accent (`#789bbd`). |
 | **quiet-night** | Warm, low-glare dark theme with muted accents for long sessions. |
+| **low-lumen** | Deep dark theme with low-saturation colors, warm text, and high readability contrast. |
 
-Select either theme from `/settings`, or use one for a single run:
+Select a theme from `/settings`, or use one for a single run:
 
 ```bash
 pi --use-theme onedark-obsidian
 pi --use-theme quiet-night
+pi --use-theme low-lumen
 ```
 
 ## Extensions
