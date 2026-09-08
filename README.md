@@ -102,6 +102,7 @@ pi --use-theme low-lumen
 | **summarize.ts** | `/summarize` — full-terminal scrollable summary overlay (mouse wheel + keyboard); model selected via role alias (`@smol` by default, any alias accepted as the command arg); `/summarize view` reopens the last summary from cache without re-running the model. |
 | **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
 | **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
+| **openrouter-guardrail-header.ts** | Sticky top header showing daily/monthly OpenRouter usage and configured caps. Reads the current session key via `GET /api/v1/key`; no MCP or Management API key is required. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
@@ -171,6 +172,22 @@ Override anytime via `smolModel` / `slowModel` / `planModel` / `taskModel` in
 fully unset, agents inherit your session model. The `writer` → `verifier`
 pair is the cascade pattern: a cheap model types, a strong model grades.
 Project-local agents can override these via `.pi/agents/<name>.md`.
+
+### OpenRouter guardrail header
+
+The installer adds this block to `~/.pi/agent/settings.json` without overwriting an existing value:
+
+```json
+"openrouterGuardrails": {
+  "monthlyLimit": 500,
+  "dailyLimit": 50
+}
+```
+
+The header combines OpenRouter credit usage and BYOK usage for the active key,
+refreshes every five minutes, and displays the configured monthly (`M`) and daily
+(`D`) caps. Update the two limits in `settings.json` if the dashboard budgets
+change, then run `/reload`.
 
 ### Model fallback
 
