@@ -353,12 +353,20 @@ Then `/reload` + `/mcp <name>` to connect, and the server's tools appear as
 
 ## Maintenance (repo owner)
 
-After tweaking things live in `~/.pi/agent/`, pull them back into the repo and
-push:
+After tweaking things live in `~/.pi/agent/`, pull them back into the repo,
+review the README, then commit and push. See `AGENTS.md` for the complete
+workflow:
 
 ```bash
 ./sync.sh
-git add -A && git commit -m "feat(themes): add a new Pi theme" && git push
+git status --short
+git diff -- README.md
+# Update README.md if it does not document the change.
+git add README.md
+# Stage only the other relevant files for this change.
+git diff --cached --check
+git commit -m "type(scope): describe the change"
+git push origin "$(git branch --show-current)"
 ```
 
 `sync.sh` mirrors the whole `extensions/` dir, refreshes the allowlisted
