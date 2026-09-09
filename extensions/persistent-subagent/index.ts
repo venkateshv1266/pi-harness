@@ -679,7 +679,7 @@ function deliverResult(child: LiveChild, result: WaitResult): string {
 	}
 	if (child.deliveredRunSeq === child.runSeq) {
 		const first = output.split("\n").map((l) => l.trim()).find(Boolean) ?? "(no output)";
-		return `${first}\n(full output for this run was already delivered above — do not re-request it)`;
+		return `${first}\n(full output for this run, ${output.length} chars, was already delivered above — do not re-request it)`;
 	}
 	child.deliveredRunSeq = child.runSeq;
 	return output;
@@ -995,12 +995,21 @@ export default function (pi: ExtensionAPI) {
 							content: [{ type: "text", text: `All spawned subagents failed:\n${failures.map((f) => `- ${f.child.entry.name}: ${f.error}`).join("\n")}` }],
 						};
 					}
+					// Fair share of the ~50KB model-visible result budget. A clipped
+					// child stays unmarked so subagent_wait still delivers full text.
+					const perChild = Math.floor(40_000 / Math.max(1, outcomes.length));
 					const summary = outcomes
 						.map(({ child, output, error }) => {
-							const first = (error ?? output ?? "(no output)").split("\n").map((l) => l.trim()).find(Boolean);
-							return `- ${child.entry.name}: ${first}`;
+							if (error) return `## ${child.entry.name}\n${error}`;
+							const text = (output ?? "").trim() || "(no output)";
+							const over = text.length - perChild;
+							if (over <= 0) {
+								child.deliveredRunSeq = child.runSeq;
+								return `## ${child.entry.name}\n${text}`;
+							}
+							return `## ${child.entry.name}\n${text.slice(0, perChild)}\n\n[truncated ${over} chars — subagent_wait returns the full output]`;
 						})
-						.join("\n");
+						.join("\n\n");
 					const waitedLabel = outcomes.length === spawned.length ? `all ${outcomes.length}` : `${outcomes.length}/${spawned.length} waited`;
 					return {
 						details: {
@@ -1010,7 +1019,7 @@ export default function (pi: ExtensionAPI) {
 							results: spawned.map((s) => s.child.view),
 							totalDurationMs: Math.max(0, Date.now() - Math.min(...spawned.map((s) => s.child.view.startMs))),
 						},
-						content: [{ type: "text", text: `${waitedLabel} persistent subagent(s) finished:\n${summary}\nHandles remain resumable: steer with subagent_send, follow up later.` }],
+						content: [{ type: "text", text: `${waitedLabel} persistent subagent(s) finished (full output inline):\n${summary}\nHandles remain resumable: steer with subagent_send, follow up later.` }],
 					};
 				} finally {
 					for (const { child } of waiting) child.onUpdate = undefined;
@@ -1033,7 +1042,7 @@ export default function (pi: ExtensionAPI) {
 				.join("\n");
 			return {
 				details: receipt,
-				content: [{ type: "text", text: `Spawned ${spawned.length} persistent subagent(s); tasks admitted and running.\n${summary}\nCollect with subagent_wait / steer with subagent_send.` }],
+				content: [{ type: "text", text: `Spawned ${spawned.length} persistent subagent(s); tasks admitted and running.\n${summary}\nCollect results with subagent_wait (free read of settled output). subagent_send starts a new agent turn — use it for steering, not retrieval.` }],
 			};
 		},
 	});
@@ -1048,7 +1057,8 @@ export default function (pi: ExtensionAPI) {
 			"Set wait=true to block until the child settles and get its final output (e.g. a verifier telling a warm writer " +
 			"'fix findings #2 and #5' and getting the diff back). " +
 			"If the user wants an interrupted/aborted child to finish its work (\"continue\", \"resume\", \"carry on\"), use " +
-			"subagent_wait instead — it auto-resumes aborted children. Not this tool.",
+			"subagent_wait instead — it auto-resumes aborted children. Not this tool. " +
+			"Never use this merely to retrieve a finished child's output — subagent_wait reads the already-settled result for free, while this tool costs a new agent turn.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Handle name of the subagent (from subagent_spawn)" }),
 			message: Type.String({ description: "Message / follow-up instruction for the child" }),
