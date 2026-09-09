@@ -107,9 +107,14 @@ pi --use-theme low-lumen
 | **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
+| **repo-agents-guard.ts** | Blocks agent tool calls targeting a repository until its nearest `AGENTS.md` is successfully read with `read`; covers path tools, shell working directories/paths, and subagent launch paths. |
 | **plugins.ts** | `/plugins` — browse & install skills from Claude Code plugin marketplaces (local `.claude-plugin/marketplace.json` catalogs). Interactive searchable picker + detail views, or CLI: `/plugins install\|uninstall\|enable\|disable\|list <name>`, `/plugins marketplace add <path>`. Installed plugins load in place via `resources_discover` — `git pull` of the marketplace updates skills. State: `~/.pi/agent/plugins.json` (local, not synced); seed marketplaces there or via `PI_PLUGIN_MARKETPLACE`. |
 | **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. Skip it if you don't use cmux. |
 | **stats.ts** | `/stats [port]` — opens a browser-based usage dashboard for pi session cost, token, and cache statistics. |
+
+### Repository instruction guard
+
+`repo-agents-guard.ts` finds the nearest `AGENTS.md` for each agent tool target. It treats `AGENTS.md` files already preloaded by Pi into the current system context as satisfied, so a sibling repository can reuse an already-loaded parent file; a closer `AGENTS.md` still requires its own read. Otherwise, it allows the `read` call for the applicable file, then records the repository as cleared only after the read succeeds. Other path tools, shell calls, and subagent launches are blocked until then. Shell detection covers the current working directory, absolute and `~` paths, `cd`, and `git -C`/work-tree arguments. It does not intercept user `!`/`!!` shell commands or paths hidden inside shell variables.
 
 ### Usage statistics
 
