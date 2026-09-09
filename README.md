@@ -46,7 +46,7 @@ configures Git's global `core.sshCommand` and `gpg.program` settings:
 - GPG signing operations alert when Git actually invokes GPG. Verification
   operations remain silent.
 
-The default sound is `~/.pi/agent/sounds/yubikey-alert-1-ascending.wav`. Set
+The default sound is `~/.pi/agent/sounds/yubikey-alert-2-beep.wav`. Set
 `PI_YUBIKEY_NOTIFICATION_SOUND` before launching Git or pi to use another
 `.wav`/`.aiff` file. The installer preserves an existing custom Git setting
 instead of overwriting it.
