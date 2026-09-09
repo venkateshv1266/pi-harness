@@ -185,7 +185,7 @@ The installer adds this block to `~/.pi/agent/settings.json` without overwriting
 ```json
 "openrouterGuardrails": {
   "monthlyLimit": 500,
-  "dailyLimit": 50
+  "dailyLimit": 75
 }
 ```
 

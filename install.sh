@@ -58,7 +58,7 @@ const defaults = {
   slowModel: "openrouter/z-ai/glm-5.3",
   planModel: "openrouter/openai/gpt-5.6-terra",
   taskModel: "openrouter/z-ai/glm-5.3-flash",
-  openrouterGuardrails: { monthlyLimit: 500, dailyLimit: 50 },
+  openrouterGuardrails: { monthlyLimit: 500, dailyLimit: 75 },
 };
 const added = Object.keys(defaults).filter((k) => !s[k]);
 for (const k of added) s[k] = defaults[k];
