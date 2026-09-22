@@ -64,6 +64,7 @@ const defaults = {
     threshold: 0.75,
     timeoutMs: 1500,
     fast: "openrouter/z-ai/glm-5.3-flash",
+    mid: "openrouter/z-ai/glm-5.3:high",
     deep: "openrouter/z-ai/glm-5.3:xhigh",
   },
 };

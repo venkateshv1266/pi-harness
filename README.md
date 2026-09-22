@@ -246,7 +246,7 @@ prompt that starts a new task, it sends the prompt (plus the last few user
 prompts as continuity evidence) to Jev — TypeSafe's System One decision model,
 served via OpenRouter at ~100–600 ms and ~$0.00003/call — with two calibrated
 questions: is this a new task, and which compute tier fits (keep / fast /
-deep)? It switches the model only when both answers clear the confidence
+mid / deep)? It switches the model only when both answers clear the confidence
 threshold.
 
 Design properties:
@@ -273,9 +273,17 @@ Design properties:
   "threshold": 0.75,
   "timeoutMs": 1500,
   "fast": "openrouter/z-ai/glm-5.3-flash",
+  "mid": "openrouter/z-ai/glm-5.3:high",
   "deep": "openrouter/z-ai/glm-5.3:xhigh"
 }
 ```
+
+Tiers map to work shapes: `fast` — mechanical edits and lookups; `mid` —
+careful judgment (review triage, research synthesis); `deep` — hard reasoning
+(incident triage, architecture, concurrency). mid/deep sharing a base model
+makes the mid↔deep boundary a thinking-level change, which does not invalidate
+the prompt cache; the extension detects same-model routes and only adjusts
+thinking.
 
 Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
 `OPENROUTER_API_KEY`). Endpoint/model are overridable via `JEV_BASE_URL` and
@@ -290,8 +298,8 @@ Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
 | `/route` | Status: config, pin state, circuit breaker, last 8 decisions |
 | `/route on` / `/route off` | Toggle routing in settings.json (applies immediately, no reload) |
 | `/route tier` | Interactive (same searchable picker TUI as `/roles`): pick tier → model → thinking level, saved to settings.json |
-| `/route tier <fast\|deep> [model:thinking]` | One-liner, e.g. `/route tier deep openrouter/openai/gpt-5.6-luna:xhigh` |
-| `/route clear [fast\|deep]` | Unset a tier (router stops acting on it) |
+| `/route tier <fast\|mid\|deep> [model:thinking]` | One-liner, e.g. `/route tier deep openrouter/openai/gpt-5.6-luna:xhigh` |
+| `/route clear [fast\|mid\|deep]` | Unset a tier (router stops acting on it) |
 | `/route threshold [0.6\|0.7\|0.75\|0.8\|0.9]` | Minimum calibrated p for both questions before the router acts (default 0.75) |
 
 ### Model roles

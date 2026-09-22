@@ -22,6 +22,7 @@ interface RouterSettings {
 	threshold?: number;
 	timeoutMs?: number;
 	fast?: string;
+	mid?: string;
 	deep?: string;
 }
 
@@ -131,11 +132,12 @@ const QUESTIONS = {
 	},
 	tier: {
 		type: "choice",
-		instructions: "Which compute tier fits this task? When uncertain prefer keep; err toward deep over fast — under-routing loses quality, over-routing only costs money.",
+		instructions: "Which compute tier fits this task? When uncertain prefer keep; when torn between adjacent tiers, err toward the deeper one — under-routing loses quality, over-routing only costs money.",
 		criteria: {
-			keep: "Ordinary coding, exploration, or Q&A; the current model is appropriate",
+			keep: "Ordinary interactive coding, exploration, or orchestration; the current model is appropriate",
 			fast: "Trivial mechanical work — tiny edit, rename, formatting, quick lookup; a small fast model suffices",
-			deep: "Hard reasoning — root-cause analysis, architecture, production incident triage, subtle multi-file or concurrency work; needs the strongest model",
+			mid: "Careful judgment on existing material — reviewing a diff or findings for validity, synthesizing research, planning a multi-step refactor; needs more care than trivial work but not maximum reasoning",
+			deep: "Hard reasoning — root-cause analysis, architecture, production incident triage, subtle concurrency or multi-system interactions; needs the strongest model",
 		},
 	},
 } as const;
@@ -278,11 +280,11 @@ export default function (pi: ExtensionAPI) {
 		const choice = tier?.choice ?? "keep";
 		const p = tier?.probabilities?.[choice] ?? 0;
 		const confidence = tier?.confidence ?? null;
-		if ((choice !== "fast" && choice !== "deep") || p < threshold) {
+		if (!TIERS.includes(choice as (typeof TIERS)[number]) || p < threshold) {
 			record({ ...base, to: from, tier: choice, p, confidence, newTaskP, acted: false, reason: choice === "keep" ? "keep" : "below-threshold" });
 			return;
 		}
-		const ref = choice === "fast" ? cfg.fast : cfg.deep;
+		const ref = cfg[choice as (typeof TIERS)[number]];
 		if (!ref) {
 			record({ ...base, to: from, tier: choice, p, confidence, newTaskP, acted: false, reason: "tier-unconfigured" });
 			return;
@@ -299,6 +301,13 @@ export default function (pi: ExtensionAPI) {
 		}
 		const to = keyOf(target);
 		if (to === from) {
+			// Same base model: mid/deep differ only in thinking — a cache-safe switch.
+			if (parsed.thinking && parsed.thinking !== ctx.thinkingLevel) {
+				pi.setThinkingLevel(parsed.thinking);
+				notify(ctx, `${from} thinking → ${parsed.thinking} (tier=${choice} p=${p.toFixed(2)}, ${latencyMs}ms)`);
+				record({ ...base, to, tier: choice, p, confidence, newTaskP, acted: true, reason: "thinking-routed" });
+				return;
+			}
 			record({ ...base, to, tier: choice, p, confidence, newTaskP, acted: false, reason: "already-on-tier" });
 			return;
 		}
@@ -320,10 +329,11 @@ export default function (pi: ExtensionAPI) {
 		record({ ...base, to, tier: choice, p, confidence, newTaskP, acted: true, reason: "routed" });
 	});
 
-	const TIERS = ["fast", "deep"] as const;
+	const TIERS = ["fast", "mid", "deep"] as const;
 
 	const TIER_DESCRIPTIONS: Record<(typeof TIERS)[number], string> = {
 		fast: "trivial mechanical work — tiny edits, renames, quick lookups",
+		mid: "careful judgment — review triage, research synthesis, refactor planning",
 		deep: "hard reasoning — root-cause, architecture, incident triage",
 	};
 
@@ -451,6 +461,7 @@ export default function (pi: ExtensionAPI) {
 					`enabled: ${cfg.enabled !== false}`,
 					`threshold: ${cfg.threshold ?? DEFAULT_THRESHOLD} · timeout: ${cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
 					`fast: ${cfg.fast ?? "(unset)"}`,
+					`mid: ${cfg.mid ?? "(unset)"}`,
 					`deep: ${cfg.deep ?? "(unset)"}`,
 					`pin: ${pinned ? "active — manual choice honored for current task" : "none"}`,
 					`breaker: ${cooldownUntil > Date.now() ? `paused until ${new Date(cooldownUntil).toLocaleTimeString()}` : "clear"}`,
