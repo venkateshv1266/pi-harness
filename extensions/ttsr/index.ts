@@ -76,6 +76,7 @@ interface Rule {
 	interrupt: boolean;
 	repeat: "once" | { afterGap: number };
 	description: string | null;
+	verify: VerifySpec | null;
 	body: string;
 	file: string;
 	flags: string;
@@ -83,6 +84,29 @@ interface Rule {
 
 interface PersistedInjection {
 	rules: string[];
+}
+
+interface VerifySpec {
+	type: "noul" | "choice" | "score";
+	instructions: string;
+	criteria?: unknown;
+	threshold: number;
+	minConfidence: number;
+	onFail: "fire" | "degrade" | "suppress";
+}
+
+interface Verdict {
+	confirmed: boolean;
+	degraded: boolean;
+}
+
+interface JevAnswer {
+	type?: string;
+	noul?: number;
+	choice?: string;
+	score?: number;
+	confidence?: number;
+	probabilities?: Record<string, number>;
 }
 
 const INJECTION_TYPE = "ttsr-injection";
@@ -118,6 +142,8 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	let abortArmed = false;
 	let pendingToolReminders = new Map<string, string>();
+	let pendingVerify = new Set<string>();
+	let suppressCache = new Map<string, { turn: number; len: number }>();
 
 	// ─── Discovery ──────────────────────────────────────────────────────
 
@@ -182,6 +208,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		const alwaysApply = Boolean(fm.alwaysApply ?? fm.always_apply);
 		const hasTTSR = conditions.length > 0 || astConditions.length > 0;
 		const description = fm.description != null ? String(fm.description) : null;
+		const verify = fm.verify !== undefined ? parseVerify(fm.verify) : null;
 
 		let bucket: Bucket;
 		if (alwaysApply) bucket = "always";
@@ -196,7 +223,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		const repeat = parseRepeat(fm.repeat);
 		const flags = typeof fm.flags === "string" ? fm.flags : "";
 
-		return { name, bucket, conditions, astConditions, scope, globs, interrupt, repeat, description, body, file, flags };
+		return { name, bucket, conditions, astConditions, scope, globs, interrupt, repeat, description, verify, body, file, flags };
 	}
 
 	// ─── Frontmatter parsing ────────────────────────────────────────────
@@ -216,6 +243,9 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		if (v === "") return "";
 		if (v === "true" || v === "yes") return true;
 		if (v === "false" || v === "no") return false;
+		if (v.startsWith("{") && v.endsWith("}")) {
+			try { return JSON.parse(v) as unknown; } catch { /* fall through to raw string */ }
+		}
 		if (v.startsWith("[") && v.endsWith("]")) {
 			const inner = v.slice(1, -1).trim();
 			if (inner === "") return [];
@@ -304,6 +334,26 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		return "once";
 	}
 
+	function parseVerify(raw: unknown): VerifySpec | null {
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+		const v = raw as Record<string, unknown>;
+		const type = v.type === "choice" || v.type === "score" ? v.type : "noul";
+		const instructions = String(v.instructions ?? "").trim();
+		if (!instructions) return null;
+		const criteria = v.criteria;
+		if (type === "choice" && !(criteria && typeof criteria === "object" && !Array.isArray(criteria))) return null;
+		if (type === "score" && !Array.isArray(criteria)) return null;
+		const onFail = v.onFail === "fire" || v.onFail === "suppress" ? v.onFail : "degrade";
+		return {
+			type,
+			instructions,
+			criteria,
+			threshold: typeof v.threshold === "number" ? v.threshold : 0.8,
+			minConfidence: typeof v.minConfidence === "number" ? v.minConfidence : 0,
+			onFail,
+		};
+	}
+
 	// ─── Repeat / suppression ───────────────────────────────────────────────
 
 	function canFire(rule: Rule): boolean {
@@ -370,6 +420,131 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		return out;
 	}
 
+	// ─── Jev verification (second-stage intent arbiter) ─────────────────
+
+	const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
+	const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
+	const JEV_TIMEOUT_MS = Number(process.env.JEV_TIMEOUT_MS ?? "2000");
+	const JEV_KILL = process.env.TTSR_JEV === "0";
+
+	let jevKeyCache: string | null | undefined;
+
+	function homeDir(): string {
+		return process.env.HOME ?? process.env.USERPROFILE ?? "";
+	}
+
+	function jevKey(): string | null {
+		if (jevKeyCache !== undefined) return jevKeyCache;
+		jevKeyCache = process.env.JEV_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
+		if (!jevKeyCache) {
+			try {
+				const auth = JSON.parse(fs.readFileSync(path.join(homeDir(), ".pi", "agent", "auth.json"), "utf8")) as { openrouter?: { key?: string } };
+				jevKeyCache = typeof auth.openrouter?.key === "string" ? auth.openrouter.key : null;
+			} catch { jevKeyCache = null; }
+		}
+		return jevKeyCache;
+	}
+
+	const SECRET_PATTERNS: RegExp[] = [
+		/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+		/\bsk-[A-Za-z0-9_-]{10,}/g,
+		/\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+		/\bAKIA[0-9A-Z]{16}\b/g,
+		/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+	];
+
+	function scrubSecrets(s: string): string {
+		let out = s;
+		for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
+		return out;
+	}
+
+	async function jevCall(state: string, questions: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+		const key = jevKey();
+		if (!key) return null;
+		let res: { ok: boolean; status?: number; json(): Promise<unknown> };
+		try {
+			res = await fetch(`${JEV_BASE_URL}/v1/systemone`, {
+				method: "POST",
+				headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ model: JEV_MODEL, state, questions }),
+				signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
+			});
+		} catch {
+			return null;
+		}
+		if (!res.ok) return null;
+		try {
+			const j = await res.json() as { answers?: Record<string, unknown> };
+			return j.answers ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	function answerProb(spec: VerifySpec, raw: unknown): { prob: number; confidence: number } | null {
+		const a = raw as JevAnswer | null;
+		if (!a || typeof a !== "object") return null;
+		if (spec.type === "noul") {
+			if (typeof a.noul !== "number") return null;
+			return { prob: a.noul, confidence: a.confidence ?? 1 };
+		}
+		const probs = a.probabilities ?? {};
+		if (spec.type === "choice") {
+			if (typeof a.choice !== "string") return null;
+			return { prob: probs[a.choice] ?? 0, confidence: a.confidence ?? 1 };
+		}
+		if (typeof a.score !== "number") return null;
+		return { prob: probs[String(a.score)] ?? 0, confidence: a.confidence ?? 1 };
+	}
+
+	function logAdjudication(rule: Rule, scope: Scope, confirmed: boolean, degraded: boolean, prob: number | null, confidence: number | null, latencyMs: number, err: string | null) {
+		try {
+			const dir = path.join(homeDir(), ".pi", "agent", "refine");
+			fs.mkdirSync(dir, { recursive: true });
+			fs.appendFileSync(
+				path.join(dir, "ttsr-jev.jsonl"),
+				JSON.stringify({ ts: new Date().toISOString(), rule: rule.name, scope, decision: confirmed ? "fired" : "suppressed", mode: degraded ? "degraded" : "verified", prob, confidence, latencyMs, err }) + "\n",
+			);
+		} catch { /* logging must never break rule evaluation */ }
+	}
+
+	// Batch-verifies all rules with a verify spec against one shared state; rules
+	// without a spec pass through as confirmed. Unavailable/malformed answers
+	// resolve through the rule's onFail policy.
+	async function runVerify(hits: Rule[], state: string, scope: Scope): Promise<Map<string, Verdict>> {
+		const out = new Map<string, Verdict>();
+		const need = hits.filter((r) => r.verify);
+		for (const r of hits) if (!r.verify) out.set(r.name, { confirmed: true, degraded: false });
+		if (need.length === 0) return out;
+
+		const unavailable = JEV_KILL || !jevKey();
+		const t0 = Date.now();
+		const questions = Object.fromEntries(need.map((r) => {
+			const v = r.verify!;
+			return [r.name, v.type === "noul"
+				? { type: "noul", instructions: v.instructions }
+				: { type: v.type, instructions: v.instructions, criteria: v.criteria }];
+		}));
+		const answers = unavailable ? null : await jevCall(scrubSecrets(state), questions);
+		const latencyMs = Date.now() - t0;
+
+		for (const r of need) {
+			const spec = r.verify!;
+			const parsed = answers && answers[r.name] ? answerProb(spec, answers[r.name]) : null;
+			if (answers && parsed) {
+				const confirmed = parsed.prob >= spec.threshold && parsed.confidence >= spec.minConfidence;
+				out.set(r.name, { confirmed, degraded: false });
+				logAdjudication(r, scope, confirmed, false, parsed.prob, parsed.confidence, latencyMs, null);
+			} else {
+				const fired = spec.onFail === "fire";
+				out.set(r.name, { confirmed: fired, degraded: true });
+				logAdjudication(r, scope, fired, true, null, null, latencyMs, unavailable ? "unavailable" : answers ? "malformed-answer" : "call-failed");
+			}
+		}
+		return out;
+	}
+
 	// ─── System prompt injection (always-apply + rulebook) ──────────────
 
 	pi.on("before_agent_start", async (event) => {
@@ -430,6 +605,9 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			if (astGrep === null && allRules.some((r) => r.astConditions.length)) {
 				ctx.ui.notify("ttsr: @ast-grep/napi not loaded — astCondition rules will be ignored", "warning");
 			}
+			if (ttsrRules.some((r) => r.verify) && (JEV_KILL || !jevKey())) {
+				ctx.ui.notify("ttsr: verify rule(s) present but Jev unavailable — onFail policy applies", "warning");
+			}
 		}
 	});
 
@@ -438,6 +616,8 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	pi.on("turn_start", () => {
 		abortArmed = false;
 		pendingToolReminders = new Map();
+		pendingVerify = new Set();
+		suppressCache = new Map();
 		textBuf = "";
 		thinkingBuf = "";
 		toolBufs = new Map();
@@ -452,16 +632,83 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		if (e.type === "text_delta") {
 			textBuf += e.delta;
 			const hits = matchRegex(textBuf, "text");
-			if (hits.length) handleTextOrThinking(hits, ctx);
+			if (hits.length) handleStreamHits(hits, textBuf, "text", ctx);
 		} else if (e.type === "thinking_delta") {
 			thinkingBuf += e.delta;
 			const hits = matchRegex(thinkingBuf, "thinking");
-			if (hits.length) handleTextOrThinking(hits, ctx);
+			if (hits.length) handleStreamHits(hits, thinkingBuf, "thinking", ctx);
 		} else if (e.type === "toolcall_delta") {
 			const prev = toolBufs.get(e.contentIndex) ?? "";
 			toolBufs.set(e.contentIndex, prev + e.delta);
 		}
 	});
+
+	function handleStreamHits(hits: Rule[], buffer: string, scope: Scope, ctx: ExtensionContextLike) {
+		const immediate = hits.filter((r) => !r.verify);
+		if (immediate.length) handleTextOrThinking(immediate, ctx);
+
+		const batch = hits.filter((r) => {
+			if (!r.verify || pendingVerify.has(r.name)) return false;
+			const c = suppressCache.get(r.name);
+			if (c && c.turn === turnCount && buffer.length - c.len < 2000) return false;
+			return true;
+		});
+		if (!batch.length) return;
+		for (const r of batch) pendingVerify.add(r.name);
+
+		let minIdx = buffer.length;
+		for (const r of batch) {
+			for (const re of r.conditions) {
+				const m = re.exec(buffer);
+				if (m && m.index < minIdx) minIdx = m.index;
+			}
+		}
+		const state = buffer.slice(Math.max(0, minIdx - 400), minIdx + 2400);
+
+		// Fire-and-forget: the stream keeps flowing while Jev adjudicates; the
+		// abort fires on resolution if the turn is still live.
+		void (async () => {
+			const verdicts = await runVerify(batch, state, scope);
+			for (const r of batch) pendingVerify.delete(r.name);
+
+			const verdict = (r: Rule) => verdicts.get(r.name);
+			const abortSet = batch.filter((r) => {
+				if (!r.interrupt) return false;
+				const v = verdict(r);
+				return v?.confirmed || (v?.degraded && r.verify?.onFail === "fire");
+			});
+			const remindSet = batch.filter((r) => {
+				if (!r.interrupt) return false;
+				const v = verdict(r);
+				return v?.degraded && r.verify?.onFail === "degrade";
+			});
+			// Soft-scope confirmed rules disarm silently (unchanged engine semantics).
+			const softSet = batch.filter((r) => {
+				if (r.interrupt) return false;
+				const v = verdict(r);
+				return v?.confirmed || v?.degraded;
+			});
+			const suppressed = batch.filter((r) => {
+				const v = verdict(r);
+				if (!v || v.confirmed) return false;
+				return v.degraded ? r.verify?.onFail === "suppress" : true;
+			});
+
+			if (abortSet.length && !abortArmed) {
+				abortArmed = true;
+				if (ctx.hasUI) ctx.ui.notify(`ttsr: ${abortSet.map((r) => r.name).join(", ")} — aborting (verified)`, "warning");
+				try { ctx.abort(); } catch { /* noop */ }
+				pi.sendUserMessage(abortSet.map((r) => renderReminder(r)).join("\n\n"), { deliverAs: "followUp" });
+				markInjected(abortSet.map((r) => r.name));
+			}
+			if (remindSet.length) {
+				pi.sendUserMessage(remindSet.map((r) => renderReminder(r)).join("\n\n"), { deliverAs: "followUp" });
+				markInjected(remindSet.map((r) => r.name));
+			}
+			if (softSet.length) markInjected(softSet.map((r) => r.name));
+			for (const r of suppressed) suppressCache.set(r.name, { turn: turnCount, len: buffer.length });
+		})();
+	}
 
 	function handleTextOrThinking(hits: Rule[], ctx: ExtensionContextLike) {
 		const armed = hits.filter((r) => r.interrupt);
@@ -503,12 +750,22 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		const hits = dedupRules([...regexHits, ...astHits]);
 		if (hits.length === 0) return;
 
-		markInjected(hits.map((r) => r.name));
-		const reminder = hits.map((r) => renderReminder(r, toolPath || undefined)).join("\n\n");
+		const verdicts = hits.some((r) => r.verify)
+			? await runVerify(hits, event.toolName + "\n" + scrubSecrets(serializeToolInput(event.toolName, input)).slice(0, 24000), "tool")
+			: null;
+		const fired = hits.filter((r) => {
+			const v = verdicts?.get(r.name);
+			return !v || v.confirmed || (v.degraded && r.verify?.onFail !== "suppress");
+		});
+		if (fired.length === 0) return undefined;
+		const noBlock = new Set(fired.filter((r) => verdicts?.get(r.name)?.degraded && r.verify?.onFail === "degrade").map((r) => r.name));
 
-		if (hits.some((r) => r.interrupt)) {
+		markInjected(fired.map((r) => r.name));
+		const reminder = fired.map((r) => renderReminder(r, toolPath || undefined)).join("\n\n");
+
+		if (fired.some((r) => r.interrupt && !noBlock.has(r.name))) {
 			if (ctx.hasUI) {
-				const tag = hits.map((r) => r.name).join(",");
+				const tag = fired.map((r) => r.name).join(",");
 				ctx.ui.notify(`ttsr: blocked ${event.toolName} (${tag})`, "warning");
 			}
 			return { block: true, reason: reminder };
@@ -541,7 +798,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			for (const r of ttsrRules) {
 				const fired = injectedNames.has(r.name) ? "fired" : "armed";
 				const sc = r.scope.join(",");
-				const kinds = [r.conditions.length ? "re" : null, r.astConditions.length ? "ast" : null].filter(Boolean).join("+") || "re";
+				const kinds = [r.conditions.length ? "re" : null, r.astConditions.length ? "ast" : null, r.verify ? "jev" : null].filter(Boolean).join("+") || "re";
 				lines.push(`  [ttsr]   ${fired.padEnd(5)} ${r.name.padEnd(26)} ${kinds.padEnd(6)} scope=${sc}`);
 			}
 			for (const r of rulebookRules) lines.push(`  [book]   loaded ${r.name.padEnd(26)} ${r.description ?? ""}`);

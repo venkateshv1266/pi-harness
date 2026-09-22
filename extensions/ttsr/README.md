@@ -52,11 +52,49 @@ globs: ["src/**/*.ts"]                     # optional path gate (tool scope only
 interrupt: true                            # default: true for text/thinking, false for tool
 repeat: once                               # "once" | "after-gap:3"
 flags: i                                   # optional regex flags (e.g. i for case-insensitive)
+verify: {"type":"noul","instructions":"...","threshold":0.8}  # optional Jev intent gate
 ---
 Rule body — the reminder injected on match.
 ```
 
 Legacy aliases: `ttsrTrigger`/`ttsr_trigger` → `condition`; `ast_condition` → `astCondition`.
+
+## Jev verification (second-stage arbiter)
+
+Regex/AST matching stays the free pre-filter; a rule can additionally declare a
+`verify:` question so that a match only acts once a fast structured-decision
+model (TypeSafe Jev) confirms the *intent* behind the match. The call happens
+only after the pre-filter fires, so the zero-cost-until-match property holds.
+
+```yaml
+verify: {"type":"noul","instructions":"Is this actually X?","threshold":0.8,"onFail":"degrade"}
+```
+
+- `type`: `noul` (yes/no 0–1) | `choice` (requires `criteria` object) | `score`
+  (requires `criteria` array). Fires when calibrated probability ≥ `threshold`
+  (default 0.8) and confidence ≥ `minConfidence` (default 0).
+- `onFail` (Jev unreachable / malformed answer): `fire` = status-quo behavior
+  (use for fail-closed gates), `degrade` (default) = interrupt rules remind
+  without aborting and tool blocks become prepends, `suppress` = stay armed
+  silently.
+- A suppressed match does **not** consume the `repeat: once` budget — the rule
+  stays armed. All adjudications are appended to
+  `~/.pi/agent/refine/ttsr-jev.jsonl` for threshold tuning.
+- Simultaneously-matched rules are batched into one call. Stream-scope matches
+  verify asynchronously (the stream keeps flowing; abort fires on confirmation)
+  and are re-checked if the buffer grows ≥2000 chars since the last check.
+- Matched text is sent as a bounded window around the first match (tool inputs
+  capped at 24k chars) after scrubbing obvious secret shapes.
+
+### Config (env)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `JEV_API_KEY` / `OPENROUTER_API_KEY` | key from `~/.pi/agent/auth.json` | System One API key |
+| `JEV_BASE_URL` | `https://openrouter.ai/api` | base URL, `/v1/systemone` is appended |
+| `JEV_MODEL` | `jev-latest` | System One model ID |
+| `JEV_TIMEOUT_MS` | `2000` | on timeout the `onFail` policy applies |
+| `TTSR_JEV` | unset | set `0` to disable verification globally |
 
 ## TTSR trigger patterns
 
