@@ -77,5 +77,10 @@ console.log(added.length
 '
 
 echo
+# 7. jev-memory coexistence: a leftover npm:pi-hermes-memory package entry would win
+#    the memory_* tool names (packages load before extensions) and shadow jev-memory.
+node "$REPO_DIR/scripts/migrate-jev-memory-settings.mjs"
+
+echo
 echo "Done. Restart pi (or /reload + /ttsr-reload in an open session) to arm everything."
 echo "See rules/ in this repo — remove any you don't want before installing."
