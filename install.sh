@@ -46,8 +46,8 @@ echo ">> installed $(ls "$REPO_DIR/agents"/*.md | grep -v README | wc -l | tr -d
 mkdir -p "$AGENT/skills"
 rsync -a --exclude='node_modules' "$REPO_DIR/skills/" "$AGENT/skills/"
 
-# 6. Model-role defaults for the shipped agents (@smol/@slow/@plan/@task).
-#    Adds missing keys only — never overwrites your own choices.
+# 6. Model defaults: role aliases for the shipped agents (@smol/@slow/@plan/@task)
+#    and the model-router tiers. Adds missing keys only — never overwrites your own.
 node -e '
 const fs = require("fs");
 const p = process.env.HOME + "/.pi/agent/settings.json";
@@ -59,13 +59,20 @@ const defaults = {
   planModel: "openrouter/openai/gpt-5.6-terra",
   taskModel: "openrouter/z-ai/glm-5.3-flash",
   openrouterGuardrails: { monthlyLimit: 500, dailyLimit: 75 },
+  modelRouter: {
+    enabled: true,
+    threshold: 0.75,
+    timeoutMs: 1500,
+    fast: "openrouter/z-ai/glm-5.3-flash",
+    deep: "openrouter/z-ai/glm-5.3:xhigh",
+  },
 };
 const added = Object.keys(defaults).filter((k) => !s[k]);
 for (const k of added) s[k] = defaults[k];
 fs.writeFileSync(p, JSON.stringify(s, null, 2) + "\n");
 console.log(added.length
-  ? ">> set model roles: " + added.join(", ") + " (add-only; existing keys untouched)"
-  : ">> model roles already configured — left untouched");
+  ? ">> set model defaults: " + added.join(", ") + " (add-only; existing keys untouched)"
+  : ">> model defaults already configured — left untouched");
 '
 
 echo

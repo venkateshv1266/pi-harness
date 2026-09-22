@@ -105,6 +105,7 @@ pi --use-theme low-lumen
 | **openrouter-guardrail-header.ts** | Sticky top header showing daily/monthly OpenRouter usage and configured caps. Reads the current session key via `GET /api/v1/key`; no MCP or Management API key is required. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
+| **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? compute tier (keep/fast/deep)? — and switches models *before* the first token is spent. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
 | **repo-agents-guard.ts** | Blocks agent tool calls targeting a repository until its nearest `AGENTS.md` is successfully read with `read`; covers path tools, shell working directories/paths, and subagent launch paths. |
@@ -170,7 +171,10 @@ Six agents, used with the `subagent` tool above. Full file-format docs in
 `install.sh` auto-configures the role aliases (add-only — it never
 overwrites keys you've already set): `@smol` → OpenAI GPT-5.6 Luna,
 `@slow` → GLM-5.3, `@plan` → GPT-5.6 Terra, `@task` → GLM-5.3 Flash, all
-routed via OpenRouter (needs an OpenRouter key configured in pi). Thinking
+routed via OpenRouter (needs an OpenRouter key configured in pi). It also
+seeds the [model-router](#model-routing-route-ahead) `modelRouter` block
+(fast/deep tiers + threshold) the same add-only way, so route-ahead works
+out of the box on a fresh install. Thinking
 levels are pinned per-agent in the frontmatter (e.g. verifier runs `xhigh`).
 Override anytime via `smolModel` / `slowModel` / `planModel` / `taskModel` in
 `~/.pi/agent/settings.json` or `PI_SMOL_MODEL` / `PI_SLOW_MODEL` env vars;
@@ -233,6 +237,62 @@ switching (default `1` = switch on first failure)
 Config is re-read on every failure, so edits apply immediately — no reload
 needed. When a run dies after retries are exhausted, the failed prompt is
 automatically re-sent on the fallback so the turn resumes where it left off.
+
+### Model routing (route-ahead)
+
+**model-router.ts** complements model-fallback: instead of reacting to
+failures, it picks the right starting model *before* the task begins. On every
+prompt that starts a new task, it sends the prompt (plus the last few user
+prompts as continuity evidence) to Jev — TypeSafe's System One decision model,
+served via OpenRouter at ~100–600 ms and ~$0.00003/call — with two calibrated
+questions: is this a new task, and which compute tier fits (keep / fast /
+deep)? It switches the model only when both answers clear the confidence
+threshold.
+
+Design properties:
+
+- **Task-boundary routing only.** Follow-up prompts never re-route, so the
+  prompt cache stays warm within a task (switching models mid-task would
+  invalidate it). The first prompt of a session is structurally a new task.
+- **Calibrated gate.** Both questions must clear `threshold` (default 0.75);
+  anything less is a silent no-op. Criteria are asymmetric: when in doubt,
+  deep over fast.
+- **Manual choice wins.** A model picked via `/model` or Ctrl+P is honored for
+  the current task; auto-routing resumes at the next task boundary.
+- **Fails open.** Jev unreachable → no-op, with a circuit breaker that pauses
+  routing for 10 minutes after 3 consecutive failures.
+- **Layers with model-fallback:** the router picks the starting model; the
+  fallback repairs failures. Neither depends on the other.
+
+**Setup** — tiers live in `~/.pi/agent/settings.json` using the same
+`provider/model:thinking` syntax as fallback pairs:
+
+```jsonc
+"modelRouter": {
+  "enabled": true,
+  "threshold": 0.75,
+  "timeoutMs": 1500,
+  "fast": "openrouter/z-ai/glm-5.3-flash",
+  "deep": "openrouter/z-ai/glm-5.3:xhigh"
+}
+```
+
+Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
+`OPENROUTER_API_KEY`). Endpoint/model are overridable via `JEV_BASE_URL` and
+`JEV_MODEL`; `MODEL_ROUTER=0` disables the Jev call entirely. Every decision
+—including no-ops, with reasons and probabilities—is appended to
+`~/.pi/agent/refine/model-router.jsonl` for auditing hit rate and calibration.
+
+**Manage with `/route`:**
+
+| Command | What it does |
+|---|---|
+| `/route` | Status: config, pin state, circuit breaker, last 8 decisions |
+| `/route on` / `/route off` | Toggle routing in settings.json (applies immediately, no reload) |
+| `/route tier` | Interactive (same searchable picker TUI as `/roles`): pick tier → model → thinking level, saved to settings.json |
+| `/route tier <fast\|deep> [model:thinking]` | One-liner, e.g. `/route tier deep openrouter/openai/gpt-5.6-luna:xhigh` |
+| `/route clear [fast\|deep]` | Unset a tier (router stops acting on it) |
+| `/route threshold [0.6\|0.7\|0.75\|0.8\|0.9]` | Minimum calibrated p for both questions before the router acts (default 0.75) |
 
 ### Model roles
 
