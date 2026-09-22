@@ -59,6 +59,6 @@ mkdir -p "$REPO_DIR/skills/add-rule" "$REPO_DIR/skills/add-agent"
 cp "$AGENT/skills/add-rule/SKILL.md" "$REPO_DIR/skills/add-rule/SKILL.md"
 cp "$AGENT/skills/add-rule/scripts/validate-rule.js" "$REPO_DIR/skills/add-rule/scripts/validate-rule.js"
 cp "$AGENT/skills/add-agent/SKILL.md" "$REPO_DIR/skills/add-agent/SKILL.md"
-cp "${HOME}/.agents/skills/add-mcp-server/SKILL.md" "$REPO_DIR/skills/add-mcp-server/SKILL.md"
+cp "${HOME}/.pi/agent/skills/add-mcp-server/SKILL.md" "$REPO_DIR/skills/add-mcp-server/SKILL.md"
 
 echo "Synced. Review with 'git diff', then commit and push."
