@@ -150,6 +150,7 @@ the dashboard in the system browser and writes startup errors to
 | **persistent-subagent/** | Named, steering-able, resumable subagents. `subagent_spawn` (single or `tasks` batch) runs children as long-lived `pi --mode rpc` processes with per-child persistent sessions and **blocks until they settle, returning results in the same call** (`wait: false` returns handles for mid-flight steering). `subagent_send` steers a running child or starts a follow-up turn; `subagent_wait` collects results — waiting on an aborted child auto-resumes it; `subagent_list` shows the roster. Children are scoped to the root session (no cross-session leakage), survive restarts via on-disk session files, idle-unload after 30 min and transparently resume. Same agent definitions as `subagent` (from `agents/`). |
 | **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). See `extensions/ttsr/README.md`. |
 | **refine/** | Evidence-gated self-refinement — `/refine` reviews a session trajectory and promotes recurring lessons into TTSR rules or notes; `refine_propose` lets the agent submit a draft mid-session, with approval and rollback history. |
+| **setup/** | `/setup` — full-screen setup window: every setting from pi core and the installed extensions (models, roles, router, fallbacks, guardrails, appearance, core behavior, packages/plugins) plus a cheat sheet of every loaded slash command, TTSR rules, and MCP servers — with a detail pane explaining what each setting does and when changes apply. Extensible: any extension can contribute a section via a `setup.ts` file (see [Setup window](#setup-window) below). |
 
 ## Subagent definitions (`agents/`)
 
@@ -327,6 +328,52 @@ as fallback pairs:
 `PI_SMOL_MODEL` / `PI_SLOW_MODEL` / etc. env vars take precedence over these
 settings, and an unset role falls back through its chain to `defaultModel`
 (see the subagent section above). Restart pi or `/reload` after changing.
+
+`PI_SMOL_MODEL` / `PI_SLOW_MODEL` / etc. env vars take precedence over these
+settings, and an unset role falls back through its chain to `defaultModel`
+(see the subagent section above). Restart pi or `/reload` after changing.
+
+### Setup window
+
+**setup/** provides `/setup [section]` — a full-screen, two-pane window that
+covers every setting in one place so you never have to remember which command
+tweaks what:
+
+```
+╭ pi setup ─ Models ────────────────────────────── ? help · esc close ╕
+│ [Models] · Roles · Router · Fallbacks · Guardrails · … │
+├──────────────────────────────────┬─────────────────────────────────┤
+│ → Default model        glm-5.3-… │ Default model                   │
+│   Default thinking     high     │ current: openrouter/…           │
+│   + Add override                │ Model used when a session …     │
+│                                 │ ● applies: new sessions         │
+╘═╧═══════════════════════════════╧═══════════════════════════════╛
+```
+
+- **Left pane** lists settings for the active section with current values;
+  **right pane** explains the highlighted setting: what it is, when a change
+  takes effect (immediately / next prompt / next start), which extension owns
+  it, and its allowed values.
+- **Editors are inline** — no nested dialogs: `←/→` cycles enums and toggles,
+  `enter` opens a type-to-filter model picker (with a thinking-level suffix
+  step), numbers/text get an inline input, `⌫` removes an entry (fallback
+  pair, thinking override, package), `+ Add …` rows add new ones.
+- **Sections**: Models, Roles, Router, Fallbacks, Guardrails, Appearance,
+  Core, Packages, Commands (every loaded slash command with its description —
+  built via `pi.getCommands()`), Rules (TTSR), MCP. `/setup router` deep-links
+  to a section; `/` filters across all sections; `?` shows key help.
+- Changes are written with the same read-merge-write pattern the individual
+  commands use, so concurrent writers (router, roles, fallback) never clobber
+  each other. Where the API allows, changes also apply to the live session
+  (`pi.setModel`, `pi.setThinkingLevel`).
+
+**Contributing a section:** any extension can plug into the window without
+touching it. Ship `foo.setup.ts` next to `foo.ts` (or `<dir>/setup.ts` for
+directory extensions) exporting a default function that returns a
+`SetupSection` — see `extensions/setup/types.ts` for the small typed surface
+(`SetupItem` kinds: enum, model, model-pair, number, text, toggle, action,
+info). Failed contributors show up as a "Broken" section instead of breaking
+the window.
 
 ## TTSR rules (`rules/`)
 
