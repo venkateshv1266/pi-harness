@@ -244,7 +244,12 @@ export interface TypedConsolidationOutcome {
   removed: number;
   shrinkBytes: number;
   chunks: number;
+  pairsJudged: number;
   reason?: string;
+}
+
+export function shouldAttemptFreestyleFallback(length: number, config: JevConfig): boolean {
+  return length <= config.consolidation.freestyleFallbackMaxChars;
 }
 
 /** One typed consolidation run for a single target: chunk the raw entries,
@@ -265,7 +270,7 @@ export async function runTypedConsolidation(
 
   const rawEntries = store.getRawEntriesForSync(target);
   if (rawEntries.length < 2) {
-    return { status: "empty", removed: 0, shrinkBytes: 0, chunks: 0 };
+    return { status: "empty", removed: 0, shrinkBytes: 0, chunks: 0, pairsJudged: 0 };
   }
   const entries: ConsolidatorEntry[] = rawEntries.map((raw, index) => {
     const meta = parseMetadataComment(raw);
@@ -278,6 +283,7 @@ export async function runTypedConsolidation(
   );
 
   let processedChunks = 0;
+  let pairsJudged = 0;
   let stoppedReason: string | undefined;
   const gathered: ExecutorRetire[] = [];
   let plannedShrinkBytes = 0;
@@ -321,6 +327,7 @@ export async function runTypedConsolidation(
       stoppedReason = "jev unavailable";
       break;
     }
+    pairsJudged += pairs.length;
     const plan = buildExecutorPlan(chunk, pairs, answers, { now: now() });
     const shrinkBytes = plan.retires.reduce((sum, retire) => sum + retire.oldText.length + ENTRY_DELIMITER.length, 0);
     plannedShrinkBytes += shrinkBytes;
@@ -345,12 +352,12 @@ export async function runTypedConsolidation(
   }
 
   if (stoppedReason === "signal aborted") {
-    return { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, reason: stoppedReason };
+    return { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, reason: stoppedReason };
   }
   if (gathered.length === 0) {
     return stoppedReason
-      ? { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, reason: stoppedReason }
-      : { status: "empty", removed: 0, shrinkBytes: 0, chunks: processedChunks };
+      ? { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, reason: stoppedReason }
+      : { status: "empty", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged };
   }
 
   // applyMutationPlan publishes through saveToDisk's displaced-file recovery
@@ -380,10 +387,10 @@ export async function runTypedConsolidation(
         error: reason,
       });
     }
-    return { status: "aborted", removed: 0, shrinkBytes: 0, chunks: processedChunks, reason };
+    return { status: "aborted", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, reason };
   }
   const shrinkBytes = Math.max(0, beforeBytes - store.getRawEntriesForSync(target).join(ENTRY_DELIMITER).length);
-  return { status: "applied", removed: plan.length, shrinkBytes, chunks: processedChunks };
+  return { status: "applied", removed: plan.length, shrinkBytes, chunks: processedChunks, pairsJudged };
 }
 
 export async function triggerConsolidation(
@@ -402,14 +409,15 @@ export async function triggerConsolidation(
 ): Promise<ConsolidationResult> {
   const runDirect = deps.runDirectMemoryCompletion ?? runDirectMemoryCompletion;
   const runTyped = deps.runTypedConsolidation ?? runTypedConsolidation;
+  let typedOutcome: TypedConsolidationOutcome | null = null;
 
   // JEVCONSOLIDATE — the typed retire-only engine runs ahead of both LLM
   // transports. Only a genuinely applied plan short-circuits; every other
   // outcome falls through to the status-quo freestyle paths below.
   if (jevConfig.enabled && jevConfig.consolidation.enabled) {
     try {
-      const typed = await runTyped(store, target, toolTarget, jevConfig, { signal, timeoutMs });
-      if (typed.status === "applied") return { consolidated: true };
+      typedOutcome = await runTyped(store, target, toolTarget, jevConfig, { signal, timeoutMs });
+      if (typedOutcome.status === "applied") return { consolidated: true };
     } catch {
       // A typed-engine crash is not a consolidation failure — fall through.
     }
@@ -418,6 +426,14 @@ export async function triggerConsolidation(
   // Read fresh (post-typed) entries for the LLM prompts.
   const entries = entriesForTarget(store, target);
   const currentContent = entries.join(ENTRY_DELIMITER);
+
+  if (typedOutcome && !shouldAttemptFreestyleFallback(currentContent.length, jevConfig)) {
+    const sizeKb = Math.ceil(currentContent.length / 1000);
+    return {
+      consolidated: false,
+      error: `typed consolidation found nothing to retire (${typedOutcome.pairsJudged} pairs judged); whole-file LLM fallback skipped — target is ${sizeKb}KB (limit ${Math.floor(jevConfig.consolidation.freestyleFallbackMaxChars / 1000)}KB). Raise jev.consolidation thresholds only if you have real duplicates; bulk cleanup needs a retention pass.`,
+    };
+  }
 
   if (directCtx && usesDirectTransport(llmConfig)) {
     try {

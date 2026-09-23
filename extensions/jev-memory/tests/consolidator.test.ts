@@ -14,13 +14,61 @@ import {
 	type ConsolidatorEntry,
 	type ConsolidatorPair,
 } from "../src/jev/consolidator.js";
-import { runTypedConsolidation } from "../src/handlers/auto-consolidate.js";
+import { runTypedConsolidation, shouldAttemptFreestyleFallback, triggerConsolidation } from "../src/handlers/auto-consolidate.js";
 import { loadConfig } from "../src/config.js";
 import { ENTRY_DELIMITER } from "../src/constants.js";
 import { MemoryStore } from "../src/store/memory-store.js";
 import { rerankBlendOrder } from "../src/tools/memory-search-tool.js";
 
 const NOW = new Date("2026-03-01T00:00:00.000Z");
+
+test("shouldAttemptFreestyleFallback skips oversized targets", () => {
+	assert.equal(shouldAttemptFreestyleFallback(50_001, DEFAULT_JEV_CONFIG), false);
+});
+
+test("shouldAttemptFreestyleFallback allows small targets", () => {
+	assert.equal(shouldAttemptFreestyleFallback(50_000, DEFAULT_JEV_CONFIG), true);
+});
+
+test("triggerConsolidation skips all LLM fallbacks for oversized empty typed plans", async () => {
+	let directCalls = 0;
+	const store = {
+		getMemoryEntries: () => ["x".repeat(50_001)],
+	} as unknown as MemoryStore;
+	const result = await triggerConsolidation(
+		{} as never,
+		store,
+		"memory",
+		undefined,
+		undefined,
+		undefined,
+		{ reviewTransport: "direct" },
+		{} as never,
+		undefined,
+		undefined,
+		DEFAULT_JEV_CONFIG,
+		{
+			runTypedConsolidation: async () => ({
+				status: "empty",
+				removed: 0,
+				shrinkBytes: 0,
+				chunks: 1,
+				pairsJudged: 7,
+			}),
+			runDirectMemoryCompletion: (async () => {
+				directCalls++;
+				return { ok: true, appliedCount: 1 };
+			}) as never,
+		},
+	);
+
+	assert.equal(result.consolidated, false);
+	assert.equal(directCalls, 0);
+	assert.match(result.error ?? "", /7 pairs judged/);
+	assert.match(result.error ?? "", /whole-file LLM fallback skipped/);
+	assert.match(result.error ?? "", /retention pass/);
+});
+
 const noul = (noul: number) => ({ type: "noul" as const, noul });
 const choice = (choice: string, confidence: number) => ({ type: "choice" as const, choice, confidence, probabilities: {} });
 

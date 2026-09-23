@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import { DEFAULT_CONFIG_PATH } from "../config.js";
 
+export const FREESTYLE_FALLBACK_MAX_CHARS = 50_000;
+
 export interface JevConfig {
 	enabled: boolean;
 	admission: { enabled: boolean; threshold: number };
@@ -8,7 +10,7 @@ export interface JevConfig {
 	pregate: { enabled: boolean; threshold: number };
 	correction: { enabled: boolean };
 	rerank: { enabled: boolean; topK: number; floor: number };
-	consolidation: { enabled: boolean; intervalWrites: number };
+	consolidation: { enabled: boolean; intervalWrites: number; freestyleFallbackMaxChars: number };
 	audit: { enabled: boolean };
 }
 
@@ -19,7 +21,7 @@ export const DEFAULT_JEV_CONFIG: JevConfig = {
 	pregate: { enabled: true, threshold: 0.55 },
 	correction: { enabled: true },
 	rerank: { enabled: true, topK: 30, floor: 0.35 },
-	consolidation: { enabled: true, intervalWrites: 20 },
+	consolidation: { enabled: true, intervalWrites: 20, freestyleFallbackMaxChars: FREESTYLE_FALLBACK_MAX_CHARS },
 	audit: { enabled: true },
 };
 
@@ -93,6 +95,9 @@ export function resolveJevConfig(configPath = DEFAULT_CONFIG_PATH): JevConfig {
 			if (isBoolean(consolidation.enabled)) config.consolidation.enabled = consolidation.enabled;
 			if (isFiniteNumber(consolidation.intervalWrites) && consolidation.intervalWrites >= 1) {
 				config.consolidation.intervalWrites = Math.floor(consolidation.intervalWrites);
+			}
+			if (isFiniteNumber(consolidation.freestyleFallbackMaxChars) && consolidation.freestyleFallbackMaxChars >= 0) {
+				config.consolidation.freestyleFallbackMaxChars = Math.floor(consolidation.freestyleFallbackMaxChars);
 			}
 		}
 

@@ -74,7 +74,7 @@ Config (`~/.pi/agent/jev-memory-config.json`, `jev` section, all optional with t
 | `pregate: {enabled, threshold}` | `true`, `0.55` |
 | `correction: {enabled}` | `true` |
 | `rerank: {enabled, topK, floor}` | `true`, `30`, `0.35` |
-| `consolidation: {enabled, intervalWrites}` | `true`, `20` |
+| `consolidation: {enabled, intervalWrites, freestyleFallbackMaxChars}` | `true`, `20`, `50000` |
 | `audit: {enabled}` | `true` — decisions append to `~/.pi/agent/refine/jev-memory.jsonl` |
 
 Env vars: `JEVM_JEV=0` kill switch (all decisions → status quo), `JEVM_MOCK=1` deterministic
