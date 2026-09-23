@@ -274,18 +274,20 @@ Design properties:
   "enabled": true,
   "threshold": 0.75,
   "timeoutMs": 1500,
-  "fast": "openrouter/z-ai/glm-5.3-flash",
-  "mid": "openrouter/z-ai/glm-5.3:high",
-  "deep": "openrouter/z-ai/glm-5.3:xhigh"
+  "fast": "openrouter/z-ai/glm-5.3-flash:medium",
+  "mid": "openrouter/z-ai/glm-5.3-flash:high",
+  "deep": "openrouter/z-ai/glm-5.3-flash:max"
 }
 ```
 
 Tiers map to work shapes: `fast` — mechanical edits and lookups; `mid` —
-careful judgment (review triage, research synthesis); `deep` — hard reasoning
-(incident triage, architecture, concurrency). mid/deep sharing a base model
-makes the mid↔deep boundary a thinking-level change, which does not invalidate
-the prompt cache; the extension detects same-model routes and only adjusts
-thinking.
+bounded judgment (review triage, research synthesis, local debugging); `deep` —
+hard reasoning (incident triage, architecture, concurrency/retry contracts,
+long-horizon implementations with multiple failure paths). All three tiers
+share one base model, so every route is a thinking-level change: it never
+switches to a more expensive model (a measured 2.3× billing premium with no
+pass-rate gain) and never invalidates the prompt cache — the extension detects
+same-model routes and only adjusts thinking.
 
 Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
 `OPENROUTER_API_KEY`). Endpoint/model are overridable via `JEV_BASE_URL` and

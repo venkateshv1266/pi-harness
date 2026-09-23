@@ -137,7 +137,7 @@ const QUESTIONS = {
 			keep: "Ordinary interactive coding, exploration, or orchestration; the current model is appropriate",
 			fast: "Trivial mechanical work — tiny edit, rename, formatting, quick lookup; a small fast model suffices",
 			mid: "Careful judgment on existing material — reviewing a diff or findings for validity, synthesizing research, planning a multi-step refactor; needs more care than trivial work but not maximum reasoning",
-			deep: "Hard reasoning — root-cause analysis, architecture, production incident triage, subtle concurrency or multi-system interactions; needs the strongest model",
+			deep: "Hard reasoning — root-cause analysis, architecture, production incident triage, subtle concurrency or multi-system interactions, and long-horizon implementations with multiple failure paths (retries, idempotency, crash recovery, outbox/dead-letter contracts); needs the strongest configured reasoning tier",
 		},
 	},
 } as const;
@@ -332,9 +332,9 @@ export default function (pi: ExtensionAPI) {
 	const TIERS = ["fast", "mid", "deep"] as const;
 
 	const TIER_DESCRIPTIONS: Record<(typeof TIERS)[number], string> = {
-		fast: "trivial mechanical work — tiny edits, renames, quick lookups",
-		mid: "careful judgment — review triage, research synthesis, refactor planning",
-		deep: "hard reasoning — root-cause, architecture, incident triage",
+		fast: "trivial mechanical work — tiny edits, renames, quick lookups with few edge cases",
+		mid: "bounded judgment — review triage, research synthesis, refactors, and local debugging",
+		deep: "hard reasoning — root-cause, architecture, incident triage, concurrency/retry contracts, or long-horizon implementations with multiple failure paths",
 	};
 
 	function validateTier(ctx: ExtensionContext, name: string): (typeof TIERS)[number] | undefined {
