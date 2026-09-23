@@ -34,3 +34,7 @@ export const CONSOLIDATION_QUESTIONS: JevQuestions = {
 	"pair_{i}_obsolete": noul("Does one entry explicitly replace the other's previously valid fact with an updated fact?", "An explicit update supersedes the earlier fact for current-state questions.", "No explicit replacement; mere recency or a separate event is insufficient."),
 	"pair_{i}_representation": choice("Which representation best fits these two entries? Judge from the supplied entries; do not assume answers to other questions.", { keep_separate: "Contradictory accounts, unique details a combined version would lose, or distinct facts.", merge: "Compatible accounts of the same fact combinable without losing unique details.", retire: "One entry is a strict duplicate or explicit supersession of the other.", uncertain: "Insufficient evidence to choose." }),
 };
+
+export const STALE_QUESTIONS: JevQuestions = {
+	"entry_{i}_stale": noul("Has the information in `entries[{i}]` aged past usefulness — superseded, time-bound and expired, or no longer applicable?", "Clearly time-bound, expired, or superseded; keeping it would mislead more than help (state fields include `age_days` and `days_since_referenced`).", "An evergreen fact, preference, correction, convention, or lesson that remains applicable regardless of age."),
+};

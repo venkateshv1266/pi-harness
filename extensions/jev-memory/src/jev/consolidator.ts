@@ -1,6 +1,6 @@
 /** JEVCONSOLIDATE — deterministic typed consolidation planning over Jev pair
- * verdicts. Everything here is pure (dates are injected); the impure runner
- * that calls Jev, audits, and applies the plan lives in
+ * and stale verdicts. Everything here is pure (dates are injected); the
+ * impure runner that calls Jev, audits, and applies the plan lives in
  * handlers/auto-consolidate.ts. */
 
 import { ENTRY_DELIMITER } from "../constants.js";
@@ -14,8 +14,10 @@ export const CONSOLIDATOR_NEIGHBOR_LIMIT = 10;
 export const CONSOLIDATOR_RECENCY_WINDOW_DAYS = 45;
 export const CONSOLIDATOR_STICKY_REFERENCE_DAYS = 7;
 export const CONSOLIDATOR_STICKY_REDUNDANCY = 0.9;
+export const CONSOLIDATOR_STALE_MAX_ENTRIES_PER_CHUNK = 60;
+export const CONSOLIDATOR_STALE_THRESHOLD = 0.85;
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 
 export interface ConsolidatorEntry {
 	id: string;
@@ -84,6 +86,13 @@ function withinDays(dateText: string, now: Date, ms: number): boolean {
 	return now.getTime() - parsed <= ms;
 }
 
+/** Unparseable dates fail closed here, unlike withinDays' fail-open: a data
+ * glitch must never feed an entry to the retire stage. */
+function atLeastDaysOld(dateText: string, now: Date, ms: number): boolean {
+	const parsed = Date.parse(dateText);
+	return Number.isFinite(parsed) && now.getTime() - parsed >= ms;
+}
+
 function jaccard(a: Set<string>, b: Set<string>): number {
 	let shared = 0;
 	for (const token of a) if (b.has(token)) shared++;
@@ -125,6 +134,45 @@ export function selectPairs(chunk: ConsolidatorEntry[], options: SelectPairsOpti
 		}
 	}
 	return pairs;
+}
+
+export interface StaleSelectionConfig {
+	ageDays: number;
+	referencedDays: number;
+	stickyDays?: number;
+}
+
+/** Deterministic stale candidates: created at least ageDays ago, unreferenced
+ * for at least referencedDays, and outside the 7-day sticky window. Ineligible
+ * entries never reach Jev. */
+export function selectStaleCandidates(
+	entries: ConsolidatorEntry[],
+	config: StaleSelectionConfig,
+	now: Date = new Date(),
+): ConsolidatorEntry[] {
+	const ageMs = config.ageDays * DAY_MS;
+	const referencedMs = config.referencedDays * DAY_MS;
+	const stickyMs = (config.stickyDays ?? CONSOLIDATOR_STICKY_REFERENCE_DAYS) * DAY_MS;
+	return entries.filter((entry) =>
+		atLeastDaysOld(entry.created, now, ageMs)
+		&& atLeastDaysOld(entry.lastReferenced, now, referencedMs)
+		&& !withinDays(entry.lastReferenced, now, stickyMs),
+	);
+}
+
+/** Stale-stage chunking: the same ≤40k-char boundaries as the pair stage,
+ * additionally capped at maxEntries per chunk. */
+export function chunkStaleCandidates(
+	entries: ConsolidatorEntry[],
+	maxEntries: number = CONSOLIDATOR_STALE_MAX_ENTRIES_PER_CHUNK,
+): ConsolidatorEntry[][] {
+	const chunks: ConsolidatorEntry[][] = [];
+	for (const charChunk of chunkEntries(entries)) {
+		for (let start = 0; start < charChunk.length; start += maxEntries) {
+			chunks.push(charChunk.slice(start, start + maxEntries));
+		}
+	}
+	return chunks;
 }
 
 export interface ExecutorRetire {
@@ -230,6 +278,34 @@ export function buildExecutorPlan(
 			&& decide.contradictionRisk < contradictionThreshold
 		) {
 			plan.mergeDeferred.push(pair);
+		}
+	}
+	return plan;
+}
+
+export interface StalePlan {
+	retires: ExecutorRetire[];
+	degraded: boolean;
+}
+
+/** Stale-stage executor: retire entries whose stale noul clears the threshold
+ * (0.85 by default — the same bar as representation-retire). Missing or
+ * malformed answers on a non-null response skip that entry, degraded. */
+export function buildStalePlan(
+	chunk: ConsolidatorEntry[],
+	answers: JevAnswers,
+	options: { threshold?: number } = {},
+): StalePlan {
+	const threshold = options.threshold ?? CONSOLIDATOR_STALE_THRESHOLD;
+	const plan: StalePlan = { retires: [], degraded: false };
+	for (let i = 0; i < chunk.length; i++) {
+		const stale = noulValue(answers[`entry_${i}_stale`]);
+		if (stale === undefined) {
+			plan.degraded = true;
+			continue;
+		}
+		if (stale >= threshold) {
+			plan.retires.push({ entryId: chunk[i].id, oldText: chunk[i].content });
 		}
 	}
 	return plan;

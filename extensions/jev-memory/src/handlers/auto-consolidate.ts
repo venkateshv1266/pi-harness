@@ -37,13 +37,17 @@ import { CallBudget, jevCall, type JevState, type JevQuestions } from "../jev/cl
 import { DEFAULT_JEV_CONFIG, type JevConfig } from "../jev/config.js";
 import {
   buildExecutorPlan,
+  buildStalePlan,
   chunkEntries,
+  chunkStaleCandidates,
+  DAY_MS,
   selectPairs,
+  selectStaleCandidates,
   type ConsolidatorEntry,
   type ConsolidatorPair,
   type ExecutorRetire,
 } from "../jev/consolidator.js";
-import { CONSOLIDATION_QUESTIONS } from "../jev/questions.js";
+import { CONSOLIDATION_QUESTIONS, STALE_QUESTIONS } from "../jev/questions.js";
 import { parseMetadataComment } from "../store/sqlite-memory-store.js";
 
 type MemoryTarget = "memory" | "user" | "failure";
@@ -231,6 +235,33 @@ function buildConsolidationState(chunk: ConsolidatorEntry[], pairs: Consolidator
   };
 }
 
+function expandStaleQuestions(chunk: ConsolidatorEntry[]): JevQuestions {
+  const questions: JevQuestions = {};
+  for (let i = 0; i < chunk.length; i++) {
+    for (const [key, question] of Object.entries(STALE_QUESTIONS)) {
+      questions[key.replaceAll("{i}", String(i))] = {
+        ...question,
+        instructions: question.instructions.replaceAll("{i}", String(i)),
+      };
+    }
+  }
+  return questions;
+}
+
+function buildStaleState(chunk: ConsolidatorEntry[], now: Date): JevState {
+  const ageDays = (date: string) => Math.floor((now.getTime() - Date.parse(date)) / DAY_MS);
+  return {
+    entries: chunk.map((entry) => ({
+      id: entry.id,
+      content: entry.content,
+      created: entry.created,
+      last_referenced: entry.lastReferenced,
+      age_days: ageDays(entry.created),
+      days_since_referenced: ageDays(entry.lastReferenced),
+    })),
+  };
+}
+
 export interface TypedConsolidationOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -245,6 +276,7 @@ export interface TypedConsolidationOutcome {
   shrinkBytes: number;
   chunks: number;
   pairsJudged: number;
+  staleJudged: number;
   reason?: string;
 }
 
@@ -254,9 +286,11 @@ export function shouldAttemptFreestyleFallback(length: number, config: JevConfig
 
 /** One typed consolidation run for a single target: chunk the raw entries,
  * deterministically select duplicate-ish pairs per chunk, ask Jev about them
- * in batched calls under one budget, then apply all retire decisions as ONE
- * atomic requireShrink mutation plan. Merge verdicts are deferred to audit
- * only in v1 — no free-text rewriting. */
+ * in batched calls under one budget, then pre-filter stale candidates and
+ * judge them in a second batched stage under the same budget. All retire
+ * decisions from both stages apply as ONE atomic requireShrink mutation
+ * plan. Merge verdicts are deferred to audit only in v1 — no free-text
+ * rewriting. */
 export async function runTypedConsolidation(
   store: MemoryStore,
   target: MemoryTarget,
@@ -270,7 +304,7 @@ export async function runTypedConsolidation(
 
   const rawEntries = store.getRawEntriesForSync(target);
   if (rawEntries.length < 2) {
-    return { status: "empty", removed: 0, shrinkBytes: 0, chunks: 0, pairsJudged: 0 };
+    return { status: "empty", removed: 0, shrinkBytes: 0, chunks: 0, pairsJudged: 0, staleJudged: 0 };
   }
   const entries: ConsolidatorEntry[] = rawEntries.map((raw, index) => {
     const meta = parseMetadataComment(raw);
@@ -284,6 +318,7 @@ export async function runTypedConsolidation(
 
   let processedChunks = 0;
   let pairsJudged = 0;
+  let staleJudged = 0;
   let stoppedReason: string | undefined;
   const gathered: ExecutorRetire[] = [];
   let plannedShrinkBytes = 0;
@@ -351,21 +386,73 @@ export async function runTypedConsolidation(
     gathered.push(...plan.retires);
   }
 
+  // Stale stage: deterministic pre-filter, then one batched Jev call per
+  // candidate chunk under the shared budget. The first null chunk stops the
+  // stage — already-gathered retires still apply below.
+  if (jevConfig.consolidation.stale.enabled) {
+    const staleConfig = jevConfig.consolidation.stale;
+    const candidates = selectStaleCandidates(entries, staleConfig, now());
+    for (const staleChunk of chunkStaleCandidates(candidates)) {
+      if (options.signal?.aborted) {
+        stoppedReason = "signal aborted";
+        break;
+      }
+      const startedAt = Date.now();
+      const answers = await callJev(buildStaleState(staleChunk, now()), expandStaleQuestions(staleChunk), { budget });
+      const latencyMs = Date.now() - startedAt;
+      if (!answers) {
+        if (auditEnabled) {
+          appendAudit({
+            ts: new Date().toISOString(),
+            decision: "consolidation",
+            target: toolTarget,
+            outcome: "degraded",
+            degraded: true,
+            scores: { staleCandidates: staleChunk.length },
+            latency_ms: latencyMs,
+          });
+        }
+        stoppedReason = stoppedReason ?? "jev unavailable";
+        break;
+      }
+      staleJudged += staleChunk.length;
+      const stalePlan = buildStalePlan(staleChunk, answers, { threshold: staleConfig.threshold });
+      const staleShrinkBytes = stalePlan.retires.reduce((sum, retire) => sum + retire.oldText.length + ENTRY_DELIMITER.length, 0);
+      plannedShrinkBytes += staleShrinkBytes;
+      if (auditEnabled) {
+        appendAudit({
+          ts: new Date().toISOString(),
+          decision: "consolidation",
+          target: toolTarget,
+          outcome: stalePlan.degraded ? "degraded" : "run",
+          degraded: stalePlan.degraded || undefined,
+          scores: {
+            staleCandidates: staleChunk.length,
+            staleRetires: stalePlan.retires.length,
+            shrink_bytes: staleShrinkBytes,
+          },
+          latency_ms: latencyMs,
+        });
+      }
+      gathered.push(...stalePlan.retires);
+    }
+  }
+
   if (stoppedReason === "signal aborted") {
-    return { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, reason: stoppedReason };
+    return { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, staleJudged, reason: stoppedReason };
   }
   if (gathered.length === 0) {
     return stoppedReason
-      ? { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, reason: stoppedReason }
-      : { status: "empty", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged };
+      ? { status: "unavailable", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, staleJudged, reason: stoppedReason }
+      : { status: "empty", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, staleJudged };
   }
 
   // applyMutationPlan publishes through saveToDisk's displaced-file recovery
   // snapshot (.recovery-*), so the pre-apply snapshot requirement is met by
   // the existing non-destructive mechanism — no new snapshot format.
-  // Overlapping retire pairs (one entry losing to several duplicates in a
-  // cluster) collapse to one remove op — a repeated remove would match
-  // nothing and abort the whole run.
+  // Overlapping retires — one entry losing to several duplicates in a pair
+  // cluster, or to both the pair and stale stages — collapse to one remove
+  // op; a repeated remove would match nothing and abort the whole run.
   const plan = [...new Map(gathered.map((retire) => [retire.entryId, retire])).values()];
   const beforeBytes = store.getRawEntriesForSync(target).join(ENTRY_DELIMITER).length;
   const applyStartedAt = Date.now();
@@ -387,10 +474,10 @@ export async function runTypedConsolidation(
         error: reason,
       });
     }
-    return { status: "aborted", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, reason };
+    return { status: "aborted", removed: 0, shrinkBytes: 0, chunks: processedChunks, pairsJudged, staleJudged, reason };
   }
   const shrinkBytes = Math.max(0, beforeBytes - store.getRawEntriesForSync(target).join(ENTRY_DELIMITER).length);
-  return { status: "applied", removed: plan.length, shrinkBytes, chunks: processedChunks, pairsJudged };
+  return { status: "applied", removed: plan.length, shrinkBytes, chunks: processedChunks, pairsJudged, staleJudged };
 }
 
 export async function triggerConsolidation(
@@ -429,6 +516,13 @@ export async function triggerConsolidation(
 
   if (typedOutcome && !shouldAttemptFreestyleFallback(currentContent.length, jevConfig)) {
     const sizeKb = Math.ceil(currentContent.length / 1000);
+    if (jevConfig.consolidation.stale.enabled) {
+      const staleDays = jevConfig.consolidation.stale.ageDays;
+      return {
+        consolidated: false,
+        error: `typed consolidation found nothing to retire (${typedOutcome.pairsJudged} pairs judged, ${typedOutcome.staleJudged} stale candidates judged); whole-file LLM fallback skipped — target is ${sizeKb}KB (limit ${Math.floor(jevConfig.consolidation.freestyleFallbackMaxChars / 1000)}KB). Entries younger than the stale age window (${staleDays}d) are never pruned; lower jev.consolidation.stale.ageDays via config for an aggressive pass.`,
+      };
+    }
     return {
       consolidated: false,
       error: `typed consolidation found nothing to retire (${typedOutcome.pairsJudged} pairs judged); whole-file LLM fallback skipped — target is ${sizeKb}KB (limit ${Math.floor(jevConfig.consolidation.freestyleFallbackMaxChars / 1000)}KB). Raise jev.consolidation thresholds only if you have real duplicates; bulk cleanup needs a retention pass.`,
