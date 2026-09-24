@@ -92,6 +92,8 @@ interface JevResponse {
 }
 
 let goal: string | null = null;
+// set by the pin_goal tool, flushed to a session entry at the next turn_end
+let pendingGoal: string | null = null;
 const pending = new Map<string, { toolName: string; turn: number; text: string }>();
 const judged = new Set<string>();
 const stubs: StubRecord[] = [];
@@ -226,11 +228,16 @@ function ensureGoal(ctx: ExtensionContext) {
 		// unreadable session keeps the goal unpinned; the curator stays inert
 		return;
 	}
+	let latestGoal: string | null = null;
 	for (const e of entries) {
 		if (e.type === "custom" && e.customType === GOAL_TYPE && e.data && typeof (e.data as { goal?: unknown }).goal === "string") {
-			goal = (e.data as { goal: string }).goal;
-			return;
+			// multiple writers over a session (pin_goal, /goal): latest pin wins
+			latestGoal = (e.data as { goal: string }).goal;
 		}
+	}
+	if (latestGoal !== null) {
+		goal = latestGoal;
+		return;
 	}
 	for (const e of entries) {
 		if (messageEntry(e) && isRoleMessage(e.message) && e.message.role === "user") {
@@ -246,7 +253,8 @@ function stubText(toolName: string, entryId: string, chars: number, prob: number
 	return (
 		`[curated by jev] ${toolName} output (${chars} chars) was judged not needed for the session goal ` +
 		`(p=${prob.toFixed(2)}). The raw content is intact in session history — call jev_recall with ` +
-		`entry_id "${entryId}" to restore it verbatim.`
+		`entry_id "${entryId}" to restore it verbatim. If this judgment looks wrong because the pinned goal ` +
+		`is stale, refine it with pin_goal.`
 	);
 }
 
@@ -265,8 +273,36 @@ export default function (pi: ExtensionAPI) {
 		ensureGoal(ctx);
 	});
 
+	pi.registerTool(
+		defineTool({
+			name: "pin_goal",
+			label: "Pin session goal",
+			description:
+				"Update the pinned session goal used by the context curator. Call when your understanding of the session's goal materially improves — right after reading a linked ticket or issue, when the user adds or changes direction, or once the real success criterion is clear. One or two sentences, self-contained (no pronouns), specific: the derived intent (e.g. the ticket's actual defect and fix criterion), not a link. The current pin is visible via /goal.",
+			parameters: Type.Object({
+				goal: Type.String({ description: "The refined session goal, one or two sentences, no pronouns, ≤400 chars" }),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+				const text = params.goal.trim().slice(0, 400);
+				if (!text) throw new Error("goal must be non-empty");
+				// flushed to a GOAL_TYPE custom entry at the turn boundary —
+				// appendEntry is command-only, so the tool defers persistence
+				pendingGoal = text;
+				return { content: [{ type: "text", text: `Session goal pinned: ${text}` }], details: undefined };
+			},
+		}),
+	);
+
 	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: (ContextEditEntryDraft | CustomEntryDraft)[] } | void> => {
-		if (!CFG.on) return;
+		const drafts: (ContextEditEntryDraft | CustomEntryDraft)[] = [];
+		if (pendingGoal !== null) {
+			goal = pendingGoal;
+			drafts.push({ type: "custom", customType: GOAL_TYPE, data: { goal: pendingGoal } });
+			pendingGoal = null;
+		}
+		if (!CFG.on) {
+			return drafts.length > 0 ? { entries: drafts } : undefined;
+		}
 		ensureGoal(ctx);
 		if (!goal) return;
 
@@ -293,13 +329,14 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const due = [...pending.entries()].filter(([, c]) => event.turnIndex - c.turn >= CFG.recencyTurns);
-		if (due.length === 0) return;
+		if (due.length === 0) {
+			return drafts.length > 0 ? { entries: drafts } : undefined;
+		}
 
 		const verdicts = await Promise.all(
 			due.map(([entryId, c]) => judge(c.toolName, c.text).then((v) => [entryId, c, v] as const)),
 		);
 
-		const drafts: (ContextEditEntryDraft | CustomEntryDraft)[] = [];
 		const stubbed: StubRecord[] = [];
 		for (const [entryId, c, v] of verdicts) {
 			judged.add(entryId);
