@@ -430,6 +430,7 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: "Error: empty query." }],
           isError: true,
+          details: { query: params.query },
         };
       }
       try {
@@ -443,6 +444,7 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: `Web search failed: ${msg}` }],
           isError: true,
+          details: { query },
         };
       }
     },
@@ -493,6 +495,7 @@ export default function (pi: ExtensionAPI) {
             { type: "text", text: "Error: provide an absolute http(s) URL." },
           ],
           isError: true,
+          details: { url: params.url },
         };
       }
       try {
@@ -511,6 +514,7 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: `Web fetch failed: ${msg}` }],
           isError: true,
+          details: { url },
         };
       }
     },

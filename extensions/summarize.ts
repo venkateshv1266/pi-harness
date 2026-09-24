@@ -201,9 +201,9 @@ const showSummaryUi = async (summary: string, ctx: ExtensionCommandContext) => {
 						scroll(-1);
 					} else if (matchesKey(data, "down")) {
 						scroll(1);
-					} else if (matchesKey(data, "pageup")) {
+					} else if (matchesKey(data, "pageUp")) {
 						scroll(-pageLines);
-					} else if (matchesKey(data, "pagedown")) {
+					} else if (matchesKey(data, "pageDown")) {
 						scroll(pageLines);
 					} else if (matchesKey(data, "home")) {
 						scrollTop = 0;
