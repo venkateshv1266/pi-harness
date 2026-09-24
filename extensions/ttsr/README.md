@@ -79,7 +79,7 @@ verify: {"type":"noul","instructions":"Is this actually X?","threshold":0.8,"onF
   silently.
 - A suppressed match does **not** consume the `repeat: once` budget — the rule
   stays armed. All adjudications are appended to
-  `~/.pi/agent/refine/ttsr-jev.jsonl` for threshold tuning.
+  `~/.pi/agent/jev-decisions/ttsr-jev.jsonl` for threshold tuning.
 - Simultaneously-matched rules are batched into one call. Stream-scope matches
   verify asynchronously (the stream keeps flowing; abort fires on confirmation)
   and are re-checked if the buffer grows ≥2000 chars since the last check.

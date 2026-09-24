@@ -76,7 +76,7 @@ Config (`~/.pi/agent/jev-memory-config.json`, `jev` section, all optional with t
 | `rerank: {enabled, topK, floor}` | `true`, `30`, `0.35` |
 | `consolidation: {enabled, intervalWrites, freestyleFallbackMaxChars}` | `true`, `20`, `50000` |
 | `consolidation.stale: {enabled, ageDays, referencedDays, threshold}` | `true`, `30`, `30`, `0.85` — per-entry stale-retirement: entries older than `ageDays` AND not referenced within `referencedDays` are Jev-judged (batched Noul) and retired at ≥ threshold; 7-day recency stickiness always applies |
-| `audit: {enabled}` | `true` — decisions append to `~/.pi/agent/refine/jev-memory.jsonl` |
+| `audit: {enabled}` | `true` — decisions append to `~/.pi/agent/jev-decisions/jev-memory.jsonl` |
 
 Env vars: `JEVM_JEV=0` kill switch (all decisions → status quo), `JEVM_MOCK=1` deterministic
 mock (no network, for tests), `JEVM_TIMEOUT_MS` (3000), `JEVM_MAX_RETRIES` (2),

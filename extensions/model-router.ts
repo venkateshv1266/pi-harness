@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
 const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
-const LOG_DIR = join(homedir(), ".pi", "agent", "refine");
+const LOG_DIR = join(homedir(), ".pi", "agent", "jev-decisions");
 
 const DEFAULT_THRESHOLD = 0.75;
 const DEFAULT_TIMEOUT_MS = 1500;

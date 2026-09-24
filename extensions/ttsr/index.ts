@@ -500,7 +500,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	function logAdjudication(rule: Rule, scope: Scope, confirmed: boolean, degraded: boolean, prob: number | null, confidence: number | null, latencyMs: number, err: string | null) {
 		try {
-			const dir = path.join(homeDir(), ".pi", "agent", "refine");
+			const dir = path.join(homeDir(), ".pi", "agent", "jev-decisions");
 			fs.mkdirSync(dir, { recursive: true });
 			fs.appendFileSync(
 				path.join(dir, "ttsr-jev.jsonl"),

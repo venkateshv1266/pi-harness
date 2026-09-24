@@ -15,7 +15,7 @@ export type JevAuditRecord = {
 };
 
 function auditPath(): string {
-	return process.env.JEVM_AUDIT_PATH ?? join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".pi", "agent", "refine", "jev-memory.jsonl");
+	return process.env.JEVM_AUDIT_PATH ?? join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".pi", "agent", "jev-decisions", "jev-memory.jsonl");
 }
 export function appendAudit(record: JevAuditRecord): void {
 	try {
