@@ -104,7 +104,7 @@ pi --use-theme low-lumen
 | **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
 | **openrouter-guardrail-header.ts** | Sticky top header showing daily/monthly OpenRouter usage and configured caps. Reads the current session key via `GET /api/v1/key`; no MCP or Management API key is required. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
-| **model-fallback.ts** | Auto-failover when a model is rate-limited (429) or errors out — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
+| **model-fallback.ts** | Auto-failover on provider-attributable failures (rate limits, provider 5xx, stream errors) — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Transport-level errors (dead network) never switch; fallback ping-pong is blocked by sticky cycle detection + a 60s cross-model backstop, and post-run auto-resume is capped at 2 short markers instead of re-sending the prompt. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? compute tier (keep/fast/deep)? — and switches models *before* the first token is spent. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
 | **jev-context-curator.ts** | System One attention routing with three mechanisms: outputs >25k chars are capped to a head/tail excerpt before first model exposure (never billed in full); middle-band Jev verdicts become head/tail excerpts (truncate); clear junk becomes one-line stubs. Verdicts are median-of-3 parallel Jev samples judged against goal + tool input + recent activity, and they batch until combined saved mass clears 3k chars (a `context_edit` resets the provider prefix cache, so small edits are held), context usage ≥70%, or 10 turns of age; at ≥85% usage gates escalate because selective truncation beats lossy compaction. `jev_recall` (offset/limit paging) restores anything verbatim; the goal is seeded from the first user prompt and re-pinnable by the model (`pin_goal`) or manually (`/goal`); `/curator` shows stats. Fail-open on Jev errors; `JEVCURATOR=0` kill switch; decisions + batch-hold/emit/cost events audit to `~/.pi/agent/jev-decisions/jev-curator.jsonl`. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
@@ -205,10 +205,27 @@ change, then run `/reload`.
 
 **model-fallback.ts** watches every provider response and switches to a fallback
 model when the current one fails for real — HTTP 429 (rate limit), 5xx, or
-stream-level errors (timeouts, mid-body disconnects). User aborts (Esc) never
-trigger a switch, and each failure is attributed to the model that produced it.
-It covers the main session and subagents (subagents are spawned `pi` processes
-that load global extensions).
+provider-attributable stream errors. User aborts (Esc) never trigger a switch,
+and each failure is attributed to the model that produced it. It covers the main
+session and subagents (subagents are spawned `pi` processes that load global
+extensions).
+
+Switching is guarded so an outage can't turn into a loop:
+
+- **Transport errors never switch.** `fetch failed`, DNS failures,
+  `ECONNREFUSED`, `socket hang up`, premature stream ends, and friends mean the
+  connection itself is dead — every model behind it fails identically, so the
+  run just ends with a notice instead of thrashing models.
+- **Cross-model backstop.** When two *different* models fail within 60s, the
+  fault is shared infrastructure (local network or the router), not either
+  model — further switches are refused.
+- **Sticky cycle detection.** The visited-model set survives auto-resume runs
+  and only resets on an outside-initiated run, so bidirectional pairs can't
+  ping-pong.
+- **Bounded auto-resume.** When a run dies after a mid-run switch, the turn is
+  resumed with a short `[model-fallback] …` marker (the original prompt is
+  already in the branch) — never a full prompt copy — and at most 2 markers are
+  sent per logical prompt before the extension gives up.
 
 **Setup** — pairs live in `~/.pi/agent/settings.json` under a `modelFallback`
 map, using the same `provider/model:thinking` syntax as the model roles:
@@ -232,14 +249,15 @@ switching (default `1` = switch on first failure)
 
 | Command | What it does |
 |---|---|
-| `/fallback` | Show configured pairs, threshold, and live failure counters |
+| `/fallback` | Show configured pairs, threshold, caps, and live failure counters |
 | `/fallback add` | Interactive: searchable picker for primary → fallback → thinking level, saved to settings.json |
 | `/fallback add <primary> <fallback> [thinking]` | One-liner, e.g. `/fallback add glm-5.3 openrouter/openai/gpt-5.6-terra high` |
 | `/fallback remove [primary]` | Drop a pair (picker if no arg) |
 
 Config is re-read on every failure, so edits apply immediately — no reload
-needed. When a run dies after retries are exhausted, the failed prompt is
-automatically re-sent on the fallback so the turn resumes where it left off.
+needed. When a run dies after retries are exhausted and the last switch left it
+on a different model, the turn is resumed with a short marker (auto-resume,
+capped at 2 per prompt) so the work continues on the fallback.
 
 ### Model routing (route-ahead)
 

@@ -223,14 +223,51 @@ function notify(ctx: ExtensionContext, text: string, level: "info" | "warning" |
 	}
 }
 
+const SHARED_INFRA_WINDOW_MS = 60_000;
+const MAX_AUTO_RESUMES = 2;
+const RESUME_MARKER =
+	"[model-fallback] The previous attempt died mid-run on a transient provider error. Please redo or continue the last user request above.";
+
+// Transport-level failures kill every model behind the connection equally — switching
+// cannot help, and auto-resuming would just ping-pong between fallback pairs.
+const TRANSPORT_ERROR_PATTERN = new RegExp(
+	[
+		"fetch failed",
+		"getaddrinfo",
+		"ENOTFOUND",
+		"EAI_AGAIN",
+		"ECONNREFUSED",
+		"ECONNRESET",
+		"connection (?:error|refused|reset|lost)",
+		"other side closed",
+		"socket hang up",
+		"socket connection was closed",
+		"upstream connect",
+		"reset before headers",
+		"terminated",
+		"ended without",
+		"stream ended before",
+		"websocket (?:closed|error)",
+		"network error",
+	].join("|"),
+	"i",
+);
+
 export default function (pi: ExtensionAPI) {
 	const failCounts = new Map<string, number>();
+	const lastFailedAt = new Map<string, number>();
 	let switching = false;
 	let switchedDuringRun = false;
+	let resumePending = false;
+	let autoResumes = 0;
 	const visitedModels = new Set<string>();
 
 	function isAbortish(errorMessage: string | undefined): boolean {
 		return !!errorMessage && /abort|cancel/i.test(errorMessage);
+	}
+
+	function isTransportError(errorMessage: string | undefined): boolean {
+		return !!errorMessage && TRANSPORT_ERROR_PATTERN.test(errorMessage);
 	}
 
 	function recordFailure(ctx: ExtensionContext, statusDesc: string): boolean {
@@ -241,8 +278,21 @@ export default function (pi: ExtensionAPI) {
 		const { threshold, pairs } = loadFallbackSettings();
 		const count = (failCounts.get(key) ?? 0) + 1;
 		failCounts.set(key, count);
+		lastFailedAt.set(key, Date.now());
 
 		if (switching || count < threshold) return false;
+		const now = Date.now();
+		const sibling = [...lastFailedAt.entries()].find(
+			([k, t]) => k !== key && now - t < SHARED_INFRA_WINDOW_MS,
+		);
+		if (sibling) {
+			notify(
+				ctx,
+				`${key} failed ${count}x (${statusDesc}) and ${sibling[0]} failed ${Math.round((now - sibling[1]) / 1000)}s ago — shared network/infra issue, not switching`,
+				"error",
+			);
+			return false;
+		}
 		const fallbackSpec = findFallbackRef(pairs, model);
 		if (!fallbackSpec) return false;
 
@@ -279,48 +329,26 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
-	function lastUserText(ctx: ExtensionContext): string | undefined {
-		const branch = ctx.sessionManager.getBranch();
-		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i] as { type?: string; message?: { role?: string; content?: unknown } };
-			const msg = entry.message;
-			if (entry.type === "message" && msg?.role === "user") {
-				const content = msg.content;
-				if (typeof content === "string") return content;
-				if (Array.isArray(content)) {
-					const text = content
-						.filter((b) => (b as { type?: string }).type === "text")
-						.map((b) => (b as { text?: string }).text ?? "")
-						.join("\n")
-						.trim();
-					if (text) return text;
-				}
-				return undefined;
-			}
-		}
-		return undefined;
-	}
-
-	pi.on("after_provider_response", (event, ctx) => {
-		if (event.status === 429 || event.status >= 500) {
-			recordFailure(ctx, `HTTP ${event.status}`);
-		} else if (event.status < 400 && ctx.model) {
-			failCounts.set(keyOf(ctx.model), 0);
-		}
-	});
-
-	pi.on("agent_start", () => {
-		switchedDuringRun = false;
-		visitedModels.clear();
-	});
-
 	pi.on("after_provider_response", (event, ctx) => {
 		if (ctx.signal?.aborted) return;
 		if (event.status === 429 || event.status >= 500) {
 			recordFailure(ctx, `HTTP ${event.status}`);
 		} else if (event.status < 400 && ctx.model) {
 			failCounts.set(keyOf(ctx.model), 0);
+			lastFailedAt.delete(keyOf(ctx.model));
 		}
+	});
+
+	// Auto-resume runs continue the same logical prompt as the run that died; only an
+	// outside-initiated run (new prompt, /retry, queued steer) may reset the fallback
+	// epoch — otherwise the guards below are cleared by the very loop they guard.
+	pi.on("agent_start", () => {
+		switchedDuringRun = false;
+		if (!resumePending) {
+			visitedModels.clear();
+			autoResumes = 0;
+		}
+		resumePending = false;
 	});
 
 	// Catches stream-level errors (timeouts, mid-body disconnects) that never produce an HTTP status.
@@ -330,11 +358,20 @@ export default function (pi: ExtensionAPI) {
 		// Attribute the failure to the model that produced it, not whichever model is current now
 		// (a mid-run switch may already have happened for this same failed attempt).
 		if (ctx.model && msg.provider && msg.model !== ctx.model.id) return;
+		if (isTransportError(msg.errorMessage)) {
+			notify(
+				ctx,
+				`Network error (${msg.errorMessage?.slice(0, 80) ?? "stream error"}) — not switching models; re-send your prompt once connectivity is back`,
+				"error",
+			);
+			return;
+		}
 		recordFailure(ctx, msg.errorMessage?.slice(0, 120) ?? "stream error");
 	});
 
-	// Retries exhausted and the run died on a real model error after we switched models:
-	// resume by re-sending the failed prompt so it continues on the fallback model.
+	// Retries exhausted and the run died on a real model error after a mid-run switch:
+	// resume on the fallback model with a short marker — the original prompt is already
+	// in the branch, so re-sending its full text would only balloon the context.
 	pi.on("agent_settled", (_event, ctx) => {
 		if (!switchedDuringRun || ctx.signal?.aborted) return;
 		const branch = ctx.sessionManager.getBranch();
@@ -343,11 +380,19 @@ export default function (pi: ExtensionAPI) {
 			const msg = entry.message;
 			if (entry.type === "message" && msg?.role === "assistant") {
 				if (msg.stopReason === "error" && !isAbortish(msg.errorMessage)) {
-					const prompt = lastUserText(ctx);
-					if (prompt) {
+					if (autoResumes >= MAX_AUTO_RESUMES) {
 						switchedDuringRun = false;
-						notify(ctx, `Resuming on ${keyOf(ctx.model!)}`);
-						void pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+						notify(
+							ctx,
+							`Auto-resume limit (${MAX_AUTO_RESUMES}) reached — staying on ${keyOf(ctx.model!)}; fix the underlying issue and re-send your prompt`,
+							"warning",
+						);
+					} else {
+						switchedDuringRun = false;
+						autoResumes++;
+						resumePending = true;
+						notify(ctx, `Resuming on ${keyOf(ctx.model!)} (auto-resume ${autoResumes}/${MAX_AUTO_RESUMES})`);
+						void pi.sendUserMessage(RESUME_MARKER, { deliverAs: "followUp" });
 					}
 				}
 				break;
@@ -378,7 +423,7 @@ export default function (pi: ExtensionAPI) {
 			const counts = [...failCounts.entries()].filter(([, c]) => c > 0).map(([k, c]) => `${k}: ${c}`).join(", ");
 			notify(
 				ctx,
-				`pairs:\n${pairLines || "  (none configured)"}\nthreshold: ${threshold}\nfailures: ${counts || "none"}\nconfig: ${SETTINGS_PATH} → "modelFallback"\n\n/fallback add [primary fallback [thinking]] · /fallback remove [primary]`,
+				`pairs:\n${pairLines || "  (none configured)"}\nthreshold: ${threshold} · auto-resume cap: ${MAX_AUTO_RESUMES} · shared-infra window: ${SHARED_INFRA_WINDOW_MS / 1000}s\nfailures: ${counts || "none"}\nconfig: ${SETTINGS_PATH} → "modelFallback"\n\n/fallback add [primary fallback [thinking]] · /fallback remove [primary]`,
 				"info",
 			);
 		},
