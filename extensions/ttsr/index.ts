@@ -698,7 +698,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 				abortArmed = true;
 				if (ctx.hasUI) ctx.ui.notify(`ttsr: ${abortSet.map((r) => r.name).join(", ")} — aborting (verified)`, "warning");
 				try { ctx.abort(); } catch { /* noop */ }
-				pi.sendUserMessage(abortSet.map((r) => renderReminder(r)).join("\n\n"), { deliverAs: "followUp" });
+				void deliverAfterAbort(abortSet.map((r) => renderReminder(r)).join("\n\n"), ctx);
 				markInjected(abortSet.map((r) => r.name));
 			}
 			if (remindSet.length) {
@@ -710,6 +710,22 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		})();
 	}
 
+	// A follow-up queued while the aborted run is still settling is stranded: the
+	// loop exits early on stopReason "aborted" without draining the queue, and the
+	// session skips continuation because it recorded the abort. Wait for settle,
+	// then re-prompt — an idle prompt starts the fresh turn (or defers cleanly if
+	// agent_settled is still emitting).
+	async function deliverAfterAbort(reminder: string, ctx: ExtensionContextLike) {
+		try {
+			const deadline = Date.now() + 15000;
+			while (!ctx.isIdle() && Date.now() < deadline) {
+				await new Promise((r) => setTimeout(r, 25));
+			}
+			if (ctx.isIdle()) pi.sendUserMessage(reminder);
+			else pi.sendUserMessage(reminder, { deliverAs: "followUp" });
+		} catch { /* delivery is best-effort; never reject from a detached promise */ }
+	}
+
 	function handleTextOrThinking(hits: Rule[], ctx: ExtensionContextLike) {
 		const armed = hits.filter((r) => r.interrupt);
 		const soft = hits.filter((r) => !r.interrupt);
@@ -718,7 +734,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			if (ctx.hasUI) ctx.ui.notify(`ttsr: ${armed.map((r) => r.name).join(", ")} — aborting`, "warning");
 			try { ctx.abort(); } catch { /* noop */ }
 			const reminder = armed.map((r) => renderReminder(r)).join("\n\n");
-			pi.sendUserMessage(reminder, { deliverAs: "followUp" });
+			void deliverAfterAbort(reminder, ctx);
 			markInjected(armed.map((r) => r.name));
 		}
 		if (soft.length) markInjected(soft.map((r) => r.name));
@@ -853,5 +869,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		hasUI: boolean;
 		ui: { notify(msg: string, level: "info" | "warning" | "error"): void };
 		abort(): void;
+		isIdle(): boolean;
 	};
 }

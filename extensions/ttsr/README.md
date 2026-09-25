@@ -147,9 +147,12 @@ reload.
 
 1. **No mid-stream retry-from-same-point.** pi's public extension API has no
    `agent.continue()` or in-place message slicing. After aborting a text/thinking
-   match, the reminder is queued as a follow-up user message (fresh turn); the
-   aborted partial stays in context (`contextMode: keep` is the only mode).
-   omp can discard the partial and retry mid-stream.
+   match, the extension waits for the aborted run to settle (capped at 15s) and
+   re-prompts with the reminder as a fresh user turn; the aborted partial stays
+   in context (`contextMode: keep` is the only mode). A follow-up queued while
+   the run is still settling would be stranded — pi's loop exits early on
+   `stopReason: "aborted"` without draining the follow-up queue — hence the
+   settle-wait. omp can discard the partial and retry mid-stream.
 2. **AST matching covers introduced text only** (the `newText` of an edit, or the
    full `content` of a write), not the full reconstructed file snapshot omp uses.
 3. **Tool-scope "interrupt" blocks the call** rather than aborting mid-stream;
