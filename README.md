@@ -105,7 +105,7 @@ pi --use-theme low-lumen
 | **openrouter-guardrail-header.ts** | Sticky top header showing daily/monthly OpenRouter usage and configured caps. Reads the current session key via `GET /api/v1/key`; no MCP or Management API key is required. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover on provider-attributable failures (rate limits, provider 5xx, stream errors) — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Transport-level errors (dead network) never switch; fallback ping-pong is blocked by sticky cycle detection + a 60s cross-model backstop, and post-run auto-resume is capped at 2 short markers instead of re-sending the prompt. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
-| **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? compute tier (keep/fast/deep)? — and switches models *before* the first token is spent. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
+| **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? decided execution handoff or open-ended reasoning? compute tier (keep/fast/mid/deep)? — and switches models *before* the first token is spent. The execution shape is logged for audit only. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
 | **jev-context-curator/** | Goal-quality-first context manager (V3; directory extension — `index.ts` + `jev-curator-v3-architecture.md`, an architecture/session-flow overview, inside). **Default mode is `quality`** (the full system): a versioned **GoalSpec** (user objective + criteria/constraints/plan/facts/open questions, immutable objective, `amend_goalspec` tool, displayed by `/goal`); Jev evidence-role classification (active/evidence/background/irrelevant + source type + GoalSpec links) with type-aware extract proposals (log line-scoring with deterministic ERROR/summary retention, code/doc line ranges, listing matches); a batched **frontier verifier** at turn_end over the full raw source — retains full whenever uncertain; verifier-approved extracts emitted for log/listing/code/doc sources into a searchable **evidence ledger** with `curator_find` (Jev rerank vs GoalSpec) + `jev_recall` paged raw recovery as the no-loss contract; compaction carries the complete GoalSpec + ledger (with recall ids) into the frontier-generated summary (default compaction fallback); outputs >25k capped to head/tail before first exposure (never billed in full); the V2 recency stub/truncate judge is retired in this mode — the verifier owns every full→non-full transition. Explicit modes via `JEVCURATOR_MODE`: `v2` (pre-V3 economics layer — benchmark arm), `shadow-quality` (classify/propose/verify, log only), `evidence` (log/listing emission on the V2 floor). Fail-open everywhere; `JEVCURATOR=0` kill switch; audit in `~/.pi/agent/jev-decisions/jev-curator.jsonl` + `jev-curator-v3-shadow.jsonl`; `/curator` shows mode + stats. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
@@ -265,10 +265,11 @@ capped at 2 per prompt) so the work continues on the fallback.
 failures, it picks the right starting model *before* the task begins. On every
 prompt that starts a new task, it sends the prompt (plus the last few user
 prompts as continuity evidence) to Jev — TypeSafe's System One decision model,
-served via OpenRouter at ~100–600 ms and ~$0.00003/call — with two calibrated
-questions: is this a new task, and which compute tier fits (keep / fast /
-mid / deep)? It switches the model only when both answers clear the confidence
-threshold.
+served via OpenRouter at ~100–600 ms and ~$0.00003/call — with three
+questions: is this a new task, which compute tier fits (keep / fast / mid /
+deep), and — logged for audit only — is the prompt a decided execution
+handoff or an open-ended deciding task? It switches the model only when the
+gating answers clear the confidence threshold.
 
 Design properties:
 
@@ -276,8 +277,10 @@ Design properties:
   prompt cache stays warm within a task (switching models mid-task would
   invalidate it). The first prompt of a session is structurally a new task.
 - **Calibrated gate.** Both questions must clear `threshold` (default 0.75);
-  anything less is a silent no-op. Criteria are asymmetric: when in doubt,
-  deep over fast.
+  anything less is a silent no-op. Criteria are asymmetric: when in doubt, err
+  toward the deeper tier — but a decided execution handoff (frozen spec, exact
+  files/contracts) is never upgraded to deep just because the artifact it
+  describes is complex.
 - **Manual choice wins.** A model picked via `/model` or Ctrl+P is honored for
   the current task; auto-routing resumes at the next task boundary.
 - **Fails open.** Jev unreachable → no-op, with a circuit breaker that pauses
@@ -305,9 +308,12 @@ Design properties:
 ```
 
 Tiers map to work shapes: `fast` — mechanical edits and lookups; `mid` —
-bounded judgment (review triage, research synthesis, local debugging); `deep` —
-hard reasoning (incident triage, architecture, concurrency/retry contracts,
-long-horizon implementations with multiple failure paths). All three tiers
+executing a fully-decided handoff (frozen spec: exact files, interfaces,
+contracts) even when the artifact itself is complex, plus bounded judgment
+(review triage, research synthesis, local debugging); `deep` — genuine
+reasoning required now (incident triage, architecture or design decisions,
+designing or diagnosing concurrency/retry contracts, open-ended implementation
+where no decided spec exists). All three tiers
 share one base model, so every route is a thinking-level change: it never
 switches to a more expensive model (a measured 2.3× billing premium with no
 pass-rate gain) and never invalidates the prompt cache — the extension detects
@@ -316,7 +322,8 @@ same-model routes and only adjusts thinking.
 Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
 `OPENROUTER_API_KEY`). Endpoint/model are overridable via `JEV_BASE_URL` and
 `JEV_MODEL`; `MODEL_ROUTER=0` disables the Jev call entirely. Every decision
-—including no-ops, with reasons and probabilities—is appended to
+—including no-ops, with reasons, probabilities, and the execution-shape signal
+(executing/deciding)—is appended to
 `~/.pi/agent/jev-decisions/model-router.jsonl` for auditing hit rate and calibration.
 
 **Manage with `/route`:**

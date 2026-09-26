@@ -38,6 +38,8 @@ interface RouteRecord {
 	from: string;
 	to: string;
 	tier: string;
+	exec: string | null;
+	execP: number | null;
 	p: number | null;
 	confidence: number | null;
 	newTaskP: number | null;
@@ -130,14 +132,23 @@ const QUESTIONS = {
 			no: "A follow-up, correction, or continuation of the current task",
 		},
 	},
+	execution: {
+		type: "choice",
+		instructions: "Is this prompt a decided execution handoff (a complete, frozen plan/spec to implement mechanically, with no design decisions left to the model), or must the model make design or diagnostic decisions itself?",
+		criteria: {
+			executing: "Fully decided handoff — exact files, interfaces, contracts, or step-by-step instructions provided; the model applies them rather than deciding",
+			deciding: "The model must decide how to do the work — design, diagnose a failure, choose between alternatives, or discover unknowns",
+			mixed: "The bulk is execution but some decisions remain",
+		},
+	},
 	tier: {
 		type: "choice",
-		instructions: "Which compute tier fits this task? When uncertain prefer keep; when torn between adjacent tiers, err toward the deeper one — under-routing loses quality, over-routing only costs money.",
+		instructions: "Which compute tier fits the reasoning this model must do on this prompt? Classify the work required now, not the complexity of the artifact being produced. When uncertain prefer keep; when torn between adjacent tiers, err toward the deeper one — but never upgrade a decided execution handoff to deep just because the artifact it describes is complex.",
 		criteria: {
 			keep: "Ordinary interactive coding, exploration, or orchestration; the current model is appropriate",
 			fast: "Trivial mechanical work — tiny edit, rename, formatting, quick lookup; a small fast model suffices",
-			mid: "Careful judgment on existing material — reviewing a diff or findings for validity, synthesizing research, planning a multi-step refactor; needs more care than trivial work but not maximum reasoning",
-			deep: "Hard reasoning — root-cause analysis, architecture, production incident triage, subtle concurrency or multi-system interactions, and long-horizon implementations with multiple failure paths (retries, idempotency, crash recovery, outbox/dead-letter contracts); needs the strongest configured reasoning tier",
+			mid: "Implementing a fully-decided handoff — the prompt carries the frozen spec (exact files, interfaces, contracts, explicit steps) and the model executes it mechanically, even when the artifact involves retries, concurrency, or multiple failure paths; also careful judgment on existing material — reviewing a diff or findings, synthesizing research, planning a multi-step refactor",
+			deep: "Genuine reasoning is required now — root-cause analysis, architecture or design decisions, production incident triage, designing or diagnosing subtle concurrency and failure-path contracts (retries, idempotency, crash recovery, outbox/dead-letter semantics), or open-ended implementation where no decided spec exists; needs the strongest configured reasoning tier",
 		},
 	},
 } as const;
@@ -260,7 +271,10 @@ export default function (pi: ExtensionAPI) {
 		}
 		consecutiveFails = 0;
 
-		const base = { ts: new Date().toISOString(), prompt: prompt.slice(0, 60), from, latencyMs };
+		const exec = answers.execution;
+		const execChoice = exec?.choice ?? null;
+		const execP = execChoice ? (exec?.probabilities?.[execChoice] ?? null) : null;
+		const base = { ts: new Date().toISOString(), prompt: prompt.slice(0, 60), from, latencyMs, exec: execChoice, execP };
 		// With no session history the question is structurally decided — don't let
 		// Jev's guess (unanchored without prior turns) suppress the first routing.
 		const nt = answers.new_task;
@@ -424,7 +438,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const fmt = (r: RouteRecord) =>
-		`  ${r.ts.slice(11, 19)} ${r.acted ? `${r.from} → ${r.to}` : `kept ${r.from}`} tier=${r.tier} p=${r.p?.toFixed(2) ?? "-"} task=${r.newTaskP?.toFixed(2) ?? "-"} ${r.reason}`;
+		`  ${r.ts.slice(11, 19)} ${r.acted ? `${r.from} → ${r.to}` : `kept ${r.from}`} tier=${r.tier} p=${r.p?.toFixed(2) ?? "-"} task=${r.newTaskP?.toFixed(2) ?? "-"} exec=${r.exec ?? "-"}${r.execP !== null ? `@${r.execP.toFixed(2)}` : ""} ${r.reason}`;
 
 	pi.registerCommand("route", {
 		description: "Jev-scored per-task model routing (/route status, /route tier, /route on|off)",
