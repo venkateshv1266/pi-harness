@@ -70,7 +70,8 @@ test("triggerConsolidation skips all LLM fallbacks for oversized empty typed pla
 	assert.equal(directCalls, 0);
 	assert.match(result.error ?? "", /7 pairs judged, 0 stale candidates judged/);
 	assert.match(result.error ?? "", /whole-file LLM fallback skipped/);
-	assert.match(result.error ?? "", /stale age window \(30d\)/);
+	assert.match(result.error ?? "", /only pruned after 30d of age and 30d without a reference/);
+	assert.match(result.error ?? "", /stale\.ageDays and jev\.consolidation\.stale\.referencedDays/);
 	assert.match(result.error ?? "", /aggressive pass/);
 });
 

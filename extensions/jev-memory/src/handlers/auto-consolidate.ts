@@ -195,8 +195,8 @@ function buildConsolidationPrompt(
 
 // ── JEVCONSOLIDATE: typed retire-only engine ──
 
-const CONSOLIDATOR_MAX_CALLS = 16;
-const CONSOLIDATOR_DEADLINE_MS = 60_000;
+const CONSOLIDATOR_MAX_CALLS = 64;
+const CONSOLIDATOR_DEADLINE_MS = 300_000;
 
 type JevCallFn = typeof jevCall;
 
@@ -518,9 +518,10 @@ export async function triggerConsolidation(
     const sizeKb = Math.ceil(currentContent.length / 1000);
     if (jevConfig.consolidation.stale.enabled) {
       const staleDays = jevConfig.consolidation.stale.ageDays;
+      const referencedDays = jevConfig.consolidation.stale.referencedDays;
       return {
         consolidated: false,
-        error: `typed consolidation found nothing to retire (${typedOutcome.pairsJudged} pairs judged, ${typedOutcome.staleJudged} stale candidates judged); whole-file LLM fallback skipped — target is ${sizeKb}KB (limit ${Math.floor(jevConfig.consolidation.freestyleFallbackMaxChars / 1000)}KB). Entries younger than the stale age window (${staleDays}d) are never pruned; lower jev.consolidation.stale.ageDays via config for an aggressive pass.`,
+        error: `typed consolidation found nothing to retire (${typedOutcome.pairsJudged} pairs judged, ${typedOutcome.staleJudged} stale candidates judged); whole-file LLM fallback skipped — target is ${sizeKb}KB (limit ${Math.floor(jevConfig.consolidation.freestyleFallbackMaxChars / 1000)}KB). Entries are only pruned after ${staleDays}d of age and ${referencedDays}d without a reference; lower jev.consolidation.stale.ageDays and jev.consolidation.stale.referencedDays via config for an aggressive pass.`,
       };
     }
     return {

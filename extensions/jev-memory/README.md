@@ -63,7 +63,8 @@ Jev failure.
 - **Typed consolidation** — scheduled every `jev.consolidation.intervalWrites` successful
   adds (default 20) or via `/memory-consolidate`: batched
   `redundant`/`contradiction`/`obsolete` + `representation` per candidate pair, retire-only
-  executor (no free-text rewriting), atomic-shrink checked, non-destructive snapshots.
+  executor (no free-text rewriting), atomic-shrink checked, non-destructive snapshots. Each
+  run is capped at 64 batched Jev calls within 5 minutes per target; partial progress is applied.
 
 Config (`~/.pi/agent/jev-memory-config.json`, `jev` section, all optional with these defaults):
 
@@ -79,7 +80,7 @@ Config (`~/.pi/agent/jev-memory-config.json`, `jev` section, all optional with t
 | `audit: {enabled}` | `true` — decisions append to `~/.pi/agent/jev-decisions/jev-memory.jsonl` |
 
 Env vars: `JEVM_JEV=0` kill switch (all decisions → status quo), `JEVM_MOCK=1` deterministic
-mock (no network, for tests), `JEVM_TIMEOUT_MS` (3000), `JEVM_MAX_RETRIES` (2),
+mock (no network, for tests), `JEVM_TIMEOUT_MS` (10000), `JEVM_MAX_RETRIES` (2),
 `JEVM_CACHE_SIZE` (1024), `JEVM_AUDIT_PATH`, plus the shared client vars `JEV_BASE_URL`,
 `JEV_MODEL` (`jev-latest`), and the key chain `JEVM_API_KEY` → `JEV_API_KEY` →
 `OPENROUTER_API_KEY` → `auth.json`.

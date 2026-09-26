@@ -81,7 +81,7 @@ export async function jevCall(state: JevState, questions: JevQuestions, opts?: C
 		const token = key();
 		if (!token) return null;
 		const retries = Math.max(0, Number(process.env.JEVM_MAX_RETRIES ?? "2"));
-		const timeout = Math.max(1, Number(process.env.JEVM_TIMEOUT_MS ?? "3000"));
+		const timeout = Math.max(1, Number(process.env.JEVM_TIMEOUT_MS ?? "10000"));
 		let response: Response | null = null;
 		for (let attempt = 0; attempt <= retries; attempt++) {
 			try {
