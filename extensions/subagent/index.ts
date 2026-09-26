@@ -338,7 +338,8 @@ async function runSingleAgent(
 							currentResult.usage.cost += usage.cost?.total || 0;
 							currentResult.usage.contextTokens = usage.totalTokens || 0;
 						}
-						if (!currentResult.model && (msg as any).model) currentResult.model = (msg as any).model;
+						// Child-reported model wins: the router may reroute after spawn.
+						if ((msg as any).model) currentResult.model = (msg as any).model;
 						if ((msg as any).stopReason) currentResult.stopReason = (msg as any).stopReason;
 						if ((msg as any).errorMessage) currentResult.errorMessage = (msg as any).errorMessage;
 					}

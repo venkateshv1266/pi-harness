@@ -284,6 +284,11 @@ Design properties:
   routing for 10 minutes after 3 consecutive failures.
 - **Layers with model-fallback:** the router picks the starting model; the
   fallback repairs failures. Neither depends on the other.
+- **Subagents route too — and their badges follow.** Children are spawned
+  `pi` processes that load global extensions, so a spawn-time `model`
+  override can be rerouted. Status rows, the persistent roster, and resumed
+  children reflect the model actually in use (resume re-pins to the last
+  model a child really ran on), not the stale spawn-time request.
 
 **Setup** — tiers live in `~/.pi/agent/settings.json` using the same
 `provider/model:thinking` syntax as fallback pairs:

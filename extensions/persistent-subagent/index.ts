@@ -91,6 +91,7 @@ interface RpcMessage {
 	content?: Array<{ type?: string; text?: string }>;
 	usage?: RpcUsage;
 	stopReason?: string;
+	model?: string;
 }
 
 interface RegistryEntry {
@@ -382,6 +383,11 @@ function handleChildLine(child: LiveChild, line: string): void {
 		const msg = rec.message;
 		child.view.messages.push(msg as unknown as Message);
 		if (msg.role === "assistant") {
+			// Child-reported model wins: the router may reroute after spawn.
+			if (msg.model) {
+				child.view.model = msg.model;
+				child.entry.model = msg.model;
+			}
 			const run = child.currentRun;
 			if (run) {
 				run.usage.turns++;
