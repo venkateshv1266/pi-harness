@@ -337,3 +337,40 @@ held-out task before broad activation.
 Keep the current curator as a tested cap/recall foundation. Do not keep tuning
 it as a micro-dollar optimizer. Build V3 as the quality-first system above, in
 shadow mode first.
+
+---
+
+# Implementation status (2026-09-26)
+
+Shipped as the directory extension `extensions/jev-context-curator/` — this
+design doc travels with the code. All three delivery phases above were built,
+verified live, and reviewed; `mode: quality` is now the **default**.
+
+- **Mode selection:** `JEVCURATOR_MODE` unset → quality. `v2`, `shadow-quality`,
+  and `evidence` remain explicit comparison arms; `JEVCURATOR=0` is the kill
+  switch for any mode.
+- **V2's recency-based stub/truncate judge is retired in quality mode.** Its
+  ungated generic head/tail edits would bypass the frontier verifier,
+  violating this doc's core contract. Cap-at-rest and `jev_recall` remain
+  the V2 foundation underneath.
+- **Verifier completeness:** the frontier verifier sees the complete raw
+  source (up to 60k chars) so it can confirm losslessness instead of
+  guessing from an excerpt; any verifier failure retains full.
+- **Extract mechanics:** scored lines keep ±1 neighbors; ERROR-level and
+  summary/count lines survive deterministically (level-token matched, not
+  any mention of "error"); the char budget is 30% of the source (2.5k–12k),
+  dropping lowest-scored lines first. A replacement that is not meaningfully
+  smaller than the source is never emitted.
+- **No-loss contract:** every condensed source lands in a persisted evidence
+  ledger searchable via `curator_find` (Jev rerank against the GoalSpec);
+  `jev_recall` remains the exact paged raw-recovery path; compaction
+  (quality mode) carries the complete GoalSpec and evidence ledger into the
+  frontier-generated summary, falling back to default compaction on any
+  failure.
+- **Verification record:** 39 shadow decisions reviewed across realistic
+  sources (logs, code, docs, listings, a 40k cap case) with zero
+  unacceptable would-removes; evidence-recall benchmark 6/6 on both quality
+  arms, matching the uncurated arm; manual compaction verified carrying
+  GoalSpec + ledger end-to-end. Audit streams:
+  `~/.pi/agent/jev-decisions/jev-curator.jsonl` and
+  `jev-curator-v3-shadow.jsonl`.
