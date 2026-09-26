@@ -46,14 +46,21 @@
  * `curator_find` tool, which Jev-reranks ledger sources against the GoalSpec;
  * `jev_recall` remains the exact paged raw-recovery path.
  *
- * V3 quality mode (`JEVCURATOR_MODE=quality`) is the full Phase 3 state:
- * extraction additionally covers code and doc sources, and pi compaction
- * is replaced by a frontier-generated summary that MUST carry the complete
- * GoalSpec and the evidence ledger verbatim, so goal state and condensed-
- * source ids survive every compaction. On any failure the default
- * compaction runs unchanged.
+ * V3 quality mode (`JEVCURATOR_MODE=quality`) is the DEFAULT and full Phase 3
+ * state: extraction covers code and doc sources as well as logs/listings, pi
+ * compaction is replaced by a frontier-generated summary that MUST carry the
+ * complete GoalSpec and the evidence ledger verbatim (so goal state and
+ * condensed-source ids survive every compaction; default compaction is the
+ * fallback), and V2's recency-based stub/truncate judge is RETIRED — the
+ * frontier verifier owns every full→non-full transition. Cap-at-rest and
+ * `jev_recall` remain the proven V2 foundation underneath.
  *
- * Kill switch: JEVCURATOR=0. Tunables: JEVCURATOR_MIN_CHARS (1500),
+ * Explicit modes: `JEVCURATOR_MODE=v2` restores the pre-V3 micro-optimizer
+ * (benchmark comparison arm), `shadow-quality` adds V3 without edits,
+ * `evidence` activates log/listing emission on top of the V2 floor. Kill
+ * switch: JEVCURATOR=0.
+ *
+ * Tunables: JEVCURATOR_MIN_CHARS (1500),
  * JEVCURATOR_RECENCY_TURNS (3), JEVCURATOR_STUB_PROB (0.85),
  * JEVCURATOR_TRUNC_PROB (0.60), JEVCURATOR_MIN_CONF (0.65),
  * JEVCURATOR_MAX_STUBS (150), JEVCURATOR_MIN_BATCH_SAVED (3000),
@@ -86,16 +93,16 @@ const GOALSPEC_TYPE = "jev-curator-goalspec";
 const LEDGER_TYPE = "jev-curator-ledger";
 const AUDIT_TYPE = "jev-curator-stubs";
 
-// v3 pipeline activation. "v2" keeps the file's pre-V3 behavior exactly;
-// "shadow-quality" runs V2 unmodified plus the no-edit V3 shadow pipeline;
-// "evidence" additionally activates verifier-approved edits for log/listing
+// v3 pipeline modes. quality is the default end state; the others are
+// explicit opt-outs (v2 = pre-V3 benchmark arm; shadow-quality = review
+// logging without edits; evidence = phase-2 emission on the V2 floor)
 type CuratorMode = "v2" | "shadow-quality" | "evidence" | "quality";
 const MODE: CuratorMode =
+	process.env.JEVCURATOR_MODE === "v2" ||
 	process.env.JEVCURATOR_MODE === "shadow-quality" ||
-	process.env.JEVCURATOR_MODE === "evidence" ||
-	process.env.JEVCURATOR_MODE === "quality"
+	process.env.JEVCURATOR_MODE === "evidence"
 		? (process.env.JEVCURATOR_MODE as CuratorMode)
-		: "v2";
+		: "quality";
 const V3 = MODE !== "v2";
 const SHADOW_LOG_FILE = "jev-curator-v3-shadow.jsonl";
 // evidence mode: sources whose replacement is active (Phase 2 scope);
@@ -1620,7 +1627,12 @@ ${goalspecSummary()}` }],
 				continue;
 			}
 			if (text.length < CFG.minChars) continue;
-			pending.set(entryId, { toolName: msg.toolName, turn: event.turnIndex, text, toolCallId: msg.toolCallId });
+			// quality mode retires the V2 recency judge: the frontier verifier
+			// owns every full→non-full transition, so candidates are never queued
+			// for the ungated generic stub/truncate path
+			if (MODE !== "quality") {
+				pending.set(entryId, { toolName: msg.toolName, turn: event.turnIndex, text, toolCallId: msg.toolCallId });
+			}
 			rawStore.set(entryId, text);
 			if (rawStore.size > RAW_STORE_CAP) {
 				const oldest = rawStore.keys().next().value;
@@ -1901,7 +1913,7 @@ ${goalspecSummary()}` }],
 					}`
 				: "";
 			ctx.ui.notify(
-				`curator: ${CFG.on ? "on" : "off"} · caps=${byKind.cap} truncs=${byKind.truncate} stubs=${byKind.stub} · ` +
+				`curator: ${CFG.on ? "on" : "off"} · mode=${MODE} · caps=${byKind.cap} truncs=${byKind.truncate} stubs=${byKind.stub} · ` +
 					`~${Math.round(savedChars / 1000)}k chars saved · pending=${pending.size} held=${ready.size} · ` +
 					`goal=${goal ? "pinned" : "none"}${shadow}`,
 				"info",
