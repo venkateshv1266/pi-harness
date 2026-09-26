@@ -815,16 +815,21 @@ function parseVerifierJson(text: string): VerifierDecision[] | null {
 	return out.length > 0 ? out : null;
 }
 
-function verifierModelRef(): { provider: string; modelId: string } | null {
+function verifierModelRef(ctx: ExtensionContext): NonNullable<ExtensionContext["model"]> | undefined {
 	const explicit = process.env.JEVCURATOR_VERIFIER_MODEL;
 	if (explicit && explicit.includes("/")) {
 		const i = explicit.indexOf("/");
-		return { provider: explicit.slice(0, i), modelId: explicit.slice(i + 1) };
+		const m = ctx.modelRegistry.find(explicit.slice(0, i), explicit.slice(i + 1));
+		if (m) return m;
 	}
+	// the session's CURRENT model is the design intent (same quality tier as
+	// the main task model); CLI --provider/--model launches and settings
+	// defaults do NOT export PI_MODEL into the process env
+	if (ctx.model) return ctx.model;
 	const provider = process.env.PI_PROVIDER ?? "openrouter";
 	const modelId = process.env.PI_MODEL;
-	if (!modelId) return null;
-	return { provider, modelId };
+	if (modelId) return ctx.modelRegistry.find(provider, modelId);
+	return undefined;
 }
 
 function verifierPrompt(batch: VerifyItem[]): string {
@@ -866,11 +871,10 @@ interface VerifyResult {
 }
 
 async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promise<VerifyResult> {
-	const ref = verifierModelRef();
-	const fail = (error: string): VerifyResult => ({ verdicts: new Map(), model: ref ? `${ref.provider}/${ref.modelId}` : "(unset)", ok: false, error });
-	if (!ref) return fail("no verifier model configured");
-	const model = ctx.modelRegistry.find(ref.provider, ref.modelId);
-	if (!model) return fail(`model ${ref.provider}/${ref.modelId} not found in registry`);
+	const model = verifierModelRef(ctx);
+	const modelLabel = model ? `${model.provider}/${model.id}` : "(unset)";
+	const fail = (error: string): VerifyResult => ({ verdicts: new Map(), model: modelLabel, ok: false, error });
+	if (!model) return fail("no verifier model resolved");
 	// parse a decision list out of a response body (or null if unusable)
 	const responseText = (r: { content: { type: string; text?: string }[] }): string =>
 		r.content
@@ -906,7 +910,7 @@ async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promi
 		if (!decisions) return fail("no verifier response");
 		const verdicts = new Map<string, VerifierDecision>();
 		for (const d of decisions) verdicts.set(d.id, d);
-		return { verdicts, model: `${ref.provider}/${ref.modelId}`, ok: true, error: "", usage };
+		return { verdicts, model: modelLabel, ok: true, error: "", usage };
 	} catch (e) {
 		return fail(`verifier call failed: ${e instanceof Error ? e.message : String(e)}`);
 	}
@@ -1660,10 +1664,9 @@ ${goalspecSummary()}` }],
 			ensureGoalSpec(ctx);
 			hydrateLedger(ctx);
 			const { preparation, signal } = event;
-			const ref = verifierModelRef();
-			if (!ref) return;
-			const model = ctx.modelRegistry.find(ref.provider, ref.modelId);
+			const model = verifierModelRef(ctx);
 			if (!model) return;
+			const modelLabel = `${model.provider}/${model.id}`;
 			const allMessages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
 			if (allMessages.length === 0) return;
 			const ledgerIndex =
@@ -1709,7 +1712,7 @@ ${goalspecSummary()}` }],
 					summaryLen: summary.length,
 					goalspecVersion: spec?.version ?? 0,
 					ledgerSources: ledger.size,
-					model: `${ref.provider}/${ref.modelId}`,
+					model: modelLabel,
 					usage: { input: response.usage?.input, output: response.usage?.output, cacheRead: response.usage?.cacheRead },
 				});
 				return {
