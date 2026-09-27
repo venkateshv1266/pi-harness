@@ -368,10 +368,13 @@ by `record:"fire"` / `record:"outcome"` / `decision:"recall"`):
 `/decisions-report [days]` (default 7) joins the four logs and flags prune
 candidates (many evaluations, no delivered fire), rules whose delivered
 interventions are mostly adverse, acted routes followed by failing tests, and
-emitted extracts never recalled. The full markdown report is written to
-`~/.pi/agent/jev-decisions/reports/decisions-<date>.md`; the command notifies a
-compact summary. The shared JSONL/correction helpers live in
-`utils/jev-outcomes.ts` (mirrored with the other extensions).
+emitted extracts never recalled. Outcome records only exist for decisions made
+after the telemetry rollout, so the report separates telemetry-era counts
+(routes carrying `routeId`, logged fires, logged recalls) from legacy records —
+early outcome rates are not diluted by decisions that predate capture. The full
+markdown report is written to `~/.pi/agent/jev-decisions/reports/decisions-<date>.md`;
+the command notifies a compact summary. The shared JSONL/correction helpers live
+in `utils/jev-outcomes.ts` (mirrored with the other extensions).
 
 ### Model roles
 

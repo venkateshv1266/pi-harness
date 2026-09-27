@@ -45,6 +45,7 @@ export interface TtsrAnalysis {
 	gateFired: number;
 	fires: number;
 	delivered: number;
+	telemetrySince: string | null;
 	rules: TtsrRuleStat[];
 	prune: TtsrRuleStat[];
 	adverse: TtsrRuleStat[];
@@ -56,6 +57,10 @@ export interface RouterAnalysis {
 	actedTiers: Record<string, number>;
 	outcomes: Record<string, number>;
 	actedTestFailures: number;
+	telemetryRoutes: number;
+	telemetryActed: number;
+	telemetryActedTiers: Record<string, number>;
+	telemetrySince: string | null;
 }
 
 export interface CuratorAnalysis {
@@ -65,6 +70,7 @@ export interface CuratorAnalysis {
 	useExtractWithoutEmit: number;
 	recalls: number;
 	recallsBySource: Record<string, number>;
+	recallSince: string | null;
 	emittedRecalled: number;
 	emittedTotal: number;
 	emittedStaleUnused: number;
@@ -104,6 +110,7 @@ export function analyzeTtsr(records: Record<string, unknown>[], sinceMs: number)
 	let gateFired = 0;
 	let fires = 0;
 	let delivered = 0;
+	let telemetrySince: string | null = null;
 	for (const r of records) {
 		if (parseTs(r.ts) < sinceMs) continue;
 		if (typeof r.rule !== "string") continue;
@@ -111,6 +118,7 @@ export function analyzeTtsr(records: Record<string, unknown>[], sinceMs: number)
 		if (r.record === "fire") {
 			s.fires++;
 			fires++;
+			if (!telemetrySince && typeof r.ts === "string") telemetrySince = r.ts;
 			if (r.delivered !== false) {
 				s.delivered++;
 				delivered++;
@@ -140,14 +148,18 @@ export function analyzeTtsr(records: Record<string, unknown>[], sinceMs: number)
 	// keep those out of the prune set rather than mislabel a rule that did fire
 	const prune = rules.filter((r) => r.evals >= ZERO_FIRE_MIN_EVALS && r.delivered === 0 && r.gateFired === 0);
 	const adverse = rules.filter((r) => r.resolved >= ADVERSE_MIN_RESOLVED && (r.adverseRate ?? 0) >= ADVERSE_RATE_FLAG);
-	return { evals, suppressed, gateFired, fires, delivered, rules, prune, adverse };
+	return { evals, suppressed, gateFired, fires, delivered, telemetrySince, rules, prune, adverse };
 }
 
 export function analyzeRouter(records: Record<string, unknown>[], sinceMs: number): RouterAnalysis {
 	let routes = 0;
 	let acted = 0;
 	let actedTestFailures = 0;
+	let telemetryRoutes = 0;
+	let telemetryActed = 0;
+	let telemetrySince: string | null = null;
 	const actedTiers: Record<string, number> = {};
+	const telemetryActedTiers: Record<string, number> = {};
 	const outcomes: Record<string, number> = {};
 	for (const r of records) {
 		if (parseTs(r.ts) < sinceMs) continue;
@@ -158,13 +170,22 @@ export function analyzeRouter(records: Record<string, unknown>[], sinceMs: numbe
 			continue;
 		}
 		routes++;
+		const telemetry = typeof r.routeId === "string";
+		if (telemetry) {
+			telemetryRoutes++;
+			if (!telemetrySince && typeof r.ts === "string") telemetrySince = r.ts;
+		}
 		if (r.acted === true) {
 			acted++;
 			const tier = String(r.tier ?? "unknown");
 			actedTiers[tier] = (actedTiers[tier] ?? 0) + 1;
+			if (telemetry) {
+				telemetryActed++;
+				telemetryActedTiers[tier] = (telemetryActedTiers[tier] ?? 0) + 1;
+			}
 		}
 	}
-	return { routes, acted, actedTiers, outcomes, actedTestFailures };
+	return { routes, acted, actedTiers, outcomes, actedTestFailures, telemetryRoutes, telemetryActed, telemetryActedTiers, telemetrySince };
 }
 
 export function analyzeCurator(records: Record<string, unknown>[], sinceMs: number, nowMs = Date.now()): CuratorAnalysis {
@@ -176,6 +197,7 @@ export function analyzeCurator(records: Record<string, unknown>[], sinceMs: numb
 	const recalled = new Map<string, number>();
 	let skips = 0;
 	let recalls = 0;
+	let recallSince: string | null = null;
 	for (const r of records) {
 		const ts = parseTs(r.ts);
 		if (ts < sinceMs) continue;
@@ -193,6 +215,7 @@ export function analyzeCurator(records: Record<string, unknown>[], sinceMs: numb
 			const source = String(r.source ?? "unknown");
 			recallsBySource[source] = (recallsBySource[source] ?? 0) + 1;
 			recalls++;
+			if (!recallSince && typeof r.ts === "string") recallSince = r.ts;
 			if (source === "jev_recall" && typeof r.entryId === "string") {
 				recalled.set(r.entryId, (recalled.get(r.entryId) ?? 0) + 1);
 			}
@@ -208,7 +231,7 @@ export function analyzeCurator(records: Record<string, unknown>[], sinceMs: numb
 		.map(([entryId, count]) => ({ entryId, count }))
 		.sort((a, b) => b.count - a.count)
 		.slice(0, 5);
-	return { verdicts, emits, skips, useExtractWithoutEmit, recalls, recallsBySource, emittedRecalled, emittedTotal: emittedIds.length, emittedStaleUnused, topRecalled };
+	return { verdicts, emits, skips, useExtractWithoutEmit, recalls, recallsBySource, recallSince, emittedRecalled, emittedTotal: emittedIds.length, emittedStaleUnused, topRecalled };
 }
 
 export function analyzeMemory(records: Record<string, unknown>[], sinceMs: number): MemoryAnalysis {
@@ -241,6 +264,10 @@ function pct(n: number, d: number): string {
 	return d > 0 ? `${Math.round((100 * n) / d)}%` : "—";
 }
 
+function fmtTs(ts: string | null): string {
+	return ts ? ts.slice(0, 16).replace("T", " ") : "—";
+}
+
 export function renderMarkdown(report: Report): string {
 	const { ttsr, router, curator, memory } = report;
 	const lines: string[] = [];
@@ -248,6 +275,9 @@ export function renderMarkdown(report: Report): string {
 	lines.push("");
 	lines.push(`Generated ${report.generatedAt} · window start ${report.since}`);
 	lines.push(`Sources: ${TTSR_FILE} · ${ROUTER_FILE} · ${CURATOR_FILE} · ${MEMORY_FILE}`);
+	lines.push(
+		`Telemetry coverage: ttsr fires since ${fmtTs(ttsr.telemetrySince)} · router routes since ${fmtTs(router.telemetrySince)} · curator recalls since ${fmtTs(curator.recallSince)}`,
+	);
 	lines.push("");
 
 	lines.push("## TTSR");
@@ -280,8 +310,11 @@ export function renderMarkdown(report: Report): string {
 
 	lines.push("## Router");
 	lines.push("");
-	lines.push(`- Routes: ${router.routes} (${router.acted} acted) · acted tiers: ${countLine(router.actedTiers)}`);
-	lines.push(`- Outcome events: ${countLine(router.outcomes)}`);
+	lines.push(`- Routes: ${router.routes} (${router.acted} acted) · telemetry-era: ${router.telemetryRoutes} (${router.telemetryActed} acted) · acted tiers: ${countLine(router.telemetryActedTiers)}`);
+	const legacyRoutes = router.routes - router.telemetryRoutes;
+	lines.push(
+		`- Outcome events: ${countLine(router.outcomes)}${legacyRoutes > 0 ? ` · ${legacyRoutes} legacy route(s) predate telemetry and cannot be joined` : ""}`,
+	);
 	if (router.actedTestFailures) lines.push(`- Flag: ${router.actedTestFailures} acted route(s) followed by failing tests`);
 	lines.push("");
 
@@ -290,7 +323,7 @@ export function renderMarkdown(report: Report): string {
 	lines.push(`- Shadow verdicts: ${countLine(curator.verdicts)}`);
 	lines.push(`- Emits: ${countLine(curator.emits)} · evidence-skips: ${curator.skips}`);
 	lines.push(`- useExtract verdicts without an emission: ${curator.useExtractWithoutEmit}`);
-	lines.push(`- Recalls: ${curator.recalls} (${countLine(curator.recallsBySource)})`);
+	lines.push(`- Recalls: ${curator.recalls} (${countLine(curator.recallsBySource)})${curator.recalls === 0 ? " — recall logging is new; earlier recalls left no record" : ` · since ${fmtTs(curator.recallSince)}`}`);
 	lines.push(`- Emitted-and-recalled: ${curator.emittedRecalled}/${curator.emittedTotal}`);
 	if (curator.topRecalled.length) lines.push(`- Top recalled: ${curator.topRecalled.map((r) => `${r.entryId} (${r.count})`).join(", ")}`);
 	lines.push(`- Emitted >3d ago, never recalled: ${curator.emittedStaleUnused}`);
@@ -312,7 +345,7 @@ export function renderSummary(report: Report): string {
 	return [
 		`Decisions (last ${report.days}d):`,
 		`  ttsr: ${ttsr.delivered} delivered fires, adverse ${adverse}/${resolved} resolved`,
-		`  router: ${router.acted}/${router.routes} acted, outcomes ${countLine(router.outcomes)}`,
+		`  router: ${router.telemetryActed}/${router.telemetryRoutes} acted since telemetry (${router.acted}/${router.routes} all-time), outcomes ${countLine(router.outcomes)}`,
 		`  curator: ${curator.emittedTotal} emits, ${curator.recalls} recalls, ${curator.emittedStaleUnused} stale-unused`,
 	].join("\n");
 }
