@@ -79,6 +79,7 @@ import {
 	type ExtensionContext,
 	serializeConversation,
 	type SessionBeforeCompactEvent,
+	type SessionBoundaryDraft,
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ToolCallEvent,
@@ -1521,8 +1522,9 @@ ${goalspecSummary()}` }],
 		);
 	}
 
-	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: (ContextEditEntryDraft | CustomEntryDraft)[] } | void> => {
-		const drafts: (ContextEditEntryDraft | CustomEntryDraft)[] = [];
+	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: SessionBoundaryDraft[] } | void> => {
+		// boundary entries compose by replacement: keep drafts from earlier handlers
+		const drafts: SessionBoundaryDraft[] = [...event.entries];
 		if (pendingGoal !== null) {
 			goal = pendingGoal;
 			drafts.push({ type: "custom", customType: GOAL_TYPE, data: { goal: pendingGoal } });
@@ -1542,7 +1544,7 @@ ${goalspecSummary()}` }],
 			return drafts.length > 0 ? { entries: drafts } : undefined;
 		}
 		ensureGoal(ctx);
-		if (!goal) return;
+		if (!goal) return { entries: drafts }; // inert without a goal, but keep composed entries
 
 		// cache-reset cost accounting: the request right after an emit reveals
 		// whether the prefix was re-billed (input spike, cacheRead collapse)
