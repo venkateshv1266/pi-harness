@@ -139,7 +139,31 @@ interface SpawnReceiptDetails {
 	children: Array<{ name: string; agent: string; brief: string; sessionDir: string; pid?: number }>;
 }
 
-const receiptChildren = new WeakMap<SpawnReceiptDetails, LiveChild[]>();
+interface SharedState {
+	live: Map<string, LiveChild>;
+	receiptChildren: WeakMap<SpawnReceiptDetails, LiveChild[]>;
+	scopeHashCache: Map<string, string>;
+	nextCmdId: number;
+	reaperTimer: NodeJS.Timeout | undefined;
+}
+
+// The extension loader evaluates modules with jiti's module cache disabled, so
+// a second import of this module (delegate → here) re-evaluates it with its own
+// module state: children spawned from delegate would land in a map the
+// registered tool handlers never see. Lifecycle state is therefore a
+// process-global singleton.
+const SHARED_STATE_KEY = Symbol.for("pi.persistent-subagent.state");
+const shared: SharedState = ((globalThis as Record<symbol, unknown>)[SHARED_STATE_KEY] ??= {
+	live: new Map<string, LiveChild>(),
+	receiptChildren: new WeakMap<SpawnReceiptDetails, LiveChild[]>(),
+	scopeHashCache: new Map<string, string>(),
+	nextCmdId: 0,
+	reaperTimer: undefined,
+} as SharedState);
+
+const receiptChildren = shared.receiptChildren;
+const live = shared.live;
+const scopeHashCache = shared.scopeHashCache;
 
 /** One-line ack for fire-and-forget sends. */
 interface SendAckDetails {
@@ -182,6 +206,7 @@ interface LiveChild {
 	stderrTail: string;
 	acks: Map<string, Ack>;
 	exited: boolean;
+	killTimer?: NodeJS.Timeout;
 	/** Increments per run; used to deliver full output only once per run. */
 	runSeq: number;
 	deliveredRunSeq: number;
@@ -204,10 +229,6 @@ interface SpawnOptions {
 	resume: boolean;
 }
 
-const live = new Map<string, LiveChild>();
-const scopeHashCache = new Map<string, string>();
-let nextCmdId = 0;
-let reaperTimer: NodeJS.Timeout | undefined;
 
 /** Whether a live in-process child currently holds `name` for this scope. */
 export function isNameLive(scopeKey: string, name: string): boolean {
@@ -372,9 +393,17 @@ function killChild(child: LiveChild, graceful: boolean): void {
 	if (child.exited) return;
 	child.proc.kill("SIGTERM");
 	if (!graceful) return;
-	setTimeout(() => {
+	if (child.killTimer) clearTimeout(child.killTimer);
+	child.killTimer = setTimeout(() => {
 		if (!child.exited) child.proc.kill("SIGKILL");
 	}, 3000);
+}
+
+function clearKillTimer(child: LiveChild): void {
+	if (child.killTimer) {
+		clearTimeout(child.killTimer);
+		child.killTimer = undefined;
+	}
 }
 
 function handleChildLine(child: LiveChild, line: string): void {
@@ -457,12 +486,14 @@ function wireChild(child: LiveChild): void {
 	});
 	child.proc.on("error", (err) => {
 		child.exited = true;
+		clearKillTimer(child);
 		live.delete(childKey(child.scopeKey, child.entry.name));
 		failAcks(child, `process error: ${err.message}`);
 		failRun(child, `process error: ${err.message}`);
 	});
 	child.proc.on("close", (code) => {
 		child.exited = true;
+		clearKillTimer(child);
 		live.delete(childKey(child.scopeKey, child.entry.name));
 		if (child.stdoutBuf.trim()) handleChildLine(child, child.stdoutBuf);
 		child.stdoutBuf = "";
@@ -557,7 +588,7 @@ function startChild(opts: SpawnOptions): LiveChild {
 }
 
 function sendCommandAwaitAck(child: LiveChild, cmd: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
-	const id = `cmd-${nextCmdId++}`;
+	const id = `cmd-${shared.nextCmdId++}`;
 	return new Promise<unknown>((resolve, reject) => {
 		const ack: Ack = {
 			ok: (data) => {
@@ -654,8 +685,8 @@ function readLastAssistantOutput(sessionDir: string): string | undefined {
 }
 
 function ensureReaper(): void {
-	if (reaperTimer) return;
-	reaperTimer = setInterval(() => {
+	if (shared.reaperTimer) return;
+	shared.reaperTimer = setInterval(() => {
 		const now = Date.now();
 		for (const child of live.values()) {
 			if (!child.streaming && now - child.entry.lastActiveAt > IDLE_UNLOAD_MS) {
@@ -663,7 +694,7 @@ function ensureReaper(): void {
 			}
 		}
 	}, REAP_INTERVAL_MS);
-	reaperTimer.unref();
+	shared.reaperTimer.unref();
 }
 
 function fmtAge(ms: number): string {
@@ -1024,8 +1055,36 @@ export const resolveScopeKey = (ctx: { sessionManager: { getSessionFile(): strin
 const findAgent = (ctx: { cwd: string }, agentName: string, agentScope: AgentScope): AgentConfig | undefined =>
 	discoverAgents(ctx.cwd, agentScope).agents.find((a) => a.name === agentName);
 
+/**
+ * Print/one-shot processes (`-p`, `--print`) run once and exit.
+ * Interactive sessions and `--mode rpc` children must keep their children.
+ */
+function isPrintLikeProcess(): boolean {
+	const args = process.argv.slice(2);
+	return args.includes("-p") || args.includes("--print");
+}
+
+function killScopeChildren(ctx: { sessionManager: { getSessionFile(): string | undefined; getSessionId(): string } }): void {
+	const scopeKey = resolveScopeKey(ctx);
+	for (const child of [...live.values()]) {
+		if (child.scopeKey === scopeKey) killChild(child, true);
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	ensureReaper();
+
+	// A print/one-shot process exits after one run, and live children would hold
+	// the event loop open forever (their stdio handles stay referenced), hanging
+	// the process. Reap them at settle; the on-disk session remains resumable.
+	if (isPrintLikeProcess()) {
+		pi.on("agent_settled", (_event, ctx) => killScopeChildren(ctx));
+	}
+
+	// Backstop for graceful exit paths; SIGTERM on an exited child is a no-op.
+	process.on("exit", () => {
+		for (const child of [...live.values()]) child.proc.kill("SIGTERM");
+	});
 
 	pi.registerTool({
 		name: "subagent_spawn",
@@ -1332,10 +1391,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		const scopeKey = resolveScopeKey(ctx);
-		for (const child of [...live.values()]) {
-			if (child.scopeKey === scopeKey) killChild(child, true);
-		}
+		killScopeChildren(ctx);
 	});
 
 
