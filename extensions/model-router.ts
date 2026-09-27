@@ -35,6 +35,7 @@ interface RouterSettings {
 	enabled?: boolean;
 	threshold?: number;
 	timeoutMs?: number;
+	preferRoles?: boolean;
 	fast?: string | null;
 	mid?: string | null;
 	deep?: string | null;
@@ -116,9 +117,9 @@ type TierResolution =
 	| { status: "disabled" }
 	| { status: "unconfigured" }
 	| { status: "unresolved"; raw: string }
-	| { status: "ok"; model: Model<Api>; thinking?: ThinkingLevel; raw: string; via: "explicit" | "default" };
+	| { status: "ok"; model: Model<Api>; thinking?: ThinkingLevel; raw: string; via: "explicit" | "default" | "roles-prefer" };
 
-function resolveTierRef(ctx: ExtensionContext, raw: string, via: "explicit" | "default"): TierResolution {
+function resolveTierRef(ctx: ExtensionContext, raw: string, via: "explicit" | "default" | "roles-prefer"): TierResolution {
 	const { ref, thinking } = parseRef(raw);
 	if (ref.startsWith("@")) {
 		const { resolvedModel } = resolveModelRole(ref);
@@ -137,12 +138,17 @@ function resolveTierRef(ctx: ExtensionContext, raw: string, via: "explicit" | "d
 function resolveTier(ctx: ExtensionContext, cfg: RouterSettings, tier: Tier): TierResolution {
 	const explicit = cfg[tier];
 	if (explicit === null) return { status: "disabled" };
-	if (explicit !== undefined) return resolveTierRef(ctx, explicit, "explicit");
 	const role = TIER_DEFAULT_ROLE[tier];
-	const roleRef = roleSettingRef(role);
-	if (!roleRef) return { status: "unconfigured" };
-	const res = resolveTierRef(ctx, roleRef, "default");
-	return res.status === "ok" && !res.raw.startsWith("@") ? { ...res, raw: `@${role}` } : res;
+	if (cfg.preferRoles === true || explicit === undefined) {
+		const roleRef = roleSettingRef(role);
+		if (roleRef) {
+			const res = resolveTierRef(ctx, roleRef, cfg.preferRoles === true ? "roles-prefer" : "default");
+			return res.status === "ok" && !res.raw.startsWith("@") ? { ...res, raw: `@${role}` } : res;
+		}
+		if (explicit === undefined) return { status: "unconfigured" };
+		// preferRoles with an unconfigured role: fail open to the explicit ref
+	}
+	return resolveTierRef(ctx, explicit, "explicit");
 }
 
 function describeTier(ctx: ExtensionContext, cfg: RouterSettings, tier: Tier): string {
@@ -621,7 +627,7 @@ export default function (pi: ExtensionAPI) {
 		`  ${r.ts.slice(11, 19)} ${r.acted ? `${r.from} → ${r.to}` : `kept ${r.from}`} tier=${r.tier} p=${r.p?.toFixed(2) ?? "-"} task=${r.newTaskP?.toFixed(2) ?? "-"} exec=${r.exec ?? "-"}${r.execP !== null ? `@${r.execP.toFixed(2)}` : ""} ${r.reason}`;
 
 	pi.registerCommand("route", {
-		description: "Jev-scored per-task model routing (/route status, /route tier, /route on|off)",
+		description: "Jev-scored per-task model routing (/route status, /route tier, /route prefer, /route on|off)",
 		handler: async (args, ctx) => {
 			const [sub, tierArg, modelArg] = args.trim().split(/\s+/).filter(Boolean);
 
@@ -630,6 +636,17 @@ export default function (pi: ExtensionAPI) {
 					r.enabled = sub === "on";
 				});
 				notify(ctx, `model-router ${sub === "on" ? "enabled" : "disabled"}`);
+				return;
+			}
+			if (sub === "prefer") {
+				if (tierArg !== "on" && tierArg !== "off") {
+					notify(ctx, "Usage: /route prefer <on|off>", "error");
+					return;
+				}
+				writeRouter((r) => {
+					r.preferRoles = tierArg === "on";
+				});
+				notify(ctx, `prefer roles ${tierArg === "on" ? "on — /roles settings win over explicit tier refs (fast→@smol, mid→@task, deep→@slow)" : "off — explicit tier refs win"}`);
 				return;
 			}
 			if (sub === "threshold") {
@@ -645,7 +662,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (sub && sub !== "status") {
-				notify(ctx, "Usage: /route [on|off|tier|clear|threshold]", "error");
+				notify(ctx, "Usage: /route [on|off|prefer|tier|clear|threshold]", "error");
 				return;
 			}
 			const cfg = loadSettings();
@@ -653,6 +670,7 @@ export default function (pi: ExtensionAPI) {
 				ctx,
 				[
 					`enabled: ${cfg.enabled !== false}`,
+					`prefer roles: ${cfg.preferRoles === true ? "on — /roles settings win over explicit tier refs" : "off"}`,
 					`threshold: ${cfg.threshold ?? DEFAULT_THRESHOLD} · timeout: ${cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
 					...TIERS.map((t) => describeTier(ctx, cfg, t)),
 					`pin: ${pinned ? "active — manual choice honored for current task" : "none"}`,

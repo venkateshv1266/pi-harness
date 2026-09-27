@@ -321,7 +321,14 @@ installs that never configured roles keep the router inert. `/route tier
 <tier> off` disables a tier outright (stored as `null`: no routing, no
 default), while `/route clear <tier>` removes the override and restores the
 role default. `/route status` shows each tier's resolution with provenance
-(explicit / role default / disabled).
+(explicit / role default / roles-prefer / disabled).
+
+`preferRoles` (default off) flips the precedence: when on, tiers resolve
+from the `/roles` settings (fast→@smol, mid→@task, deep→@slow) even when
+explicit tier refs are set — a one-switch way to make `/roles` the single
+source of truth; 'off' tiers stay off, and an unconfigured role falls open
+to the explicit ref. Toggle it in `/setup` (Router section) or with
+`/route prefer on|off`.
 
 Tiers map to work shapes: `fast` — mechanical edits and lookups; `mid` —
 executing a fully-decided handoff (frozen spec: exact files, interfaces,
@@ -350,6 +357,7 @@ and join by route id (`ref`) — see [Decision outcome loop](#decision-outcome-l
 |---|---|
 | `/route` | Status: config, pin state, circuit breaker, last 8 decisions |
 | `/route on` / `/route off` | Toggle routing in settings.json (applies immediately, no reload) |
+| `/route prefer <on\|off>` | When on, tiers follow the `/roles` settings even over explicit refs; 'off' tiers stay off (also a toggle in `/setup` → Router) |
 | `/route tier` | Interactive (same searchable picker TUI as `/roles`): pick tier → role alias, (off), or model → thinking level, saved to settings.json |
 | `/route tier <fast\|mid\|deep> [model:thinking \| @role[:thinking] \| off]` | One-liner, e.g. `/route tier deep @slow` or `/route tier fast openrouter/openai/gpt-5.6-luna:xhigh`; `off` disables the tier (no role default) |
 | `/route clear [fast\|mid\|deep]` | Unset a tier — falls back to the matching role default (fast→@smol, mid→@task, deep→@slow) |

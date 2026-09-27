@@ -14,11 +14,12 @@ function routerCfg(s: Record<string, unknown>): Record<string, unknown> {
 	return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
-function tierDisplay(tier: "fast" | "mid" | "deep", raw: unknown): string {
+function tierDisplay(tier: "fast" | "mid" | "deep", raw: unknown, preferRoles: boolean): string {
 	if (raw === null) return "(off — disabled)";
-	if (typeof raw === "string") return raw;
 	const role = TIER_DEFAULT_ROLE[tier];
 	const ref = roleSettingRef(role);
+	if (preferRoles && ref) return `@${role} → ${ref} (roles-prefer)`;
+	if (typeof raw === "string") return raw;
 	return ref ? `(unset → defaults to @${role} → ${ref})` : `(unset — @${role} not configured via /roles)`;
 }
 
@@ -214,6 +215,21 @@ function routerSection(): SetupSection {
 				},
 			},
 			{
+				id: "router:preferRoles",
+				label: "Prefer roles over explicit tiers",
+				detail: "When on, tier models follow the /roles settings (fast→@smol, mid→@task, deep→@slow) even when explicit tier refs are set; 'off' tiers stay off. When off, explicit tier refs win.",
+				effect: "next prompt",
+				owner: "model-router · /route prefer",
+				kind: "toggle",
+				get: () => (routerCfg(io.settings()).preferRoles === true ? "on" : "off"),
+				apply: async (_c, value) => {
+					io.updateSettings((set) => {
+						set.modelRouter = { ...routerCfg(set), preferRoles: value === "on" };
+					});
+					return `prefer roles ${value === "on" ? "on — /roles win over explicit tier refs" : "off — explicit tier refs win"}`;
+				},
+			},
+			{
 				id: "router:threshold",
 				label: "Complexity threshold",
 				detail: "Minimum calibrated probability that a prompt is complex before paying for the deep tier. Lower → routes to deep more often.",
@@ -260,7 +276,10 @@ function routerSection(): SetupSection {
 				owner: "model-router · /route tier fast",
 				kind: "model",
 				withThinking: true,
-				get: () => tierDisplay("fast", routerCfg(io.settings()).fast),
+				get: () => {
+					const cfg = routerCfg(io.settings());
+					return tierDisplay("fast", cfg.fast, cfg.preferRoles === true);
+				},
 				apply: async (_c, value) => {
 					io.updateSettings((set) => {
 						set.modelRouter = { ...routerCfg(set), fast: value };
@@ -276,7 +295,10 @@ function routerSection(): SetupSection {
 				owner: "model-router · /route tier mid",
 				kind: "model",
 				withThinking: true,
-				get: () => tierDisplay("mid", routerCfg(io.settings()).mid),
+				get: () => {
+					const cfg = routerCfg(io.settings());
+					return tierDisplay("mid", cfg.mid, cfg.preferRoles === true);
+				},
 				apply: async (_c, value) => {
 					io.updateSettings((set) => {
 						set.modelRouter = { ...routerCfg(set), mid: value };
@@ -292,7 +314,10 @@ function routerSection(): SetupSection {
 				owner: "model-router · /route tier deep",
 				kind: "model",
 				withThinking: true,
-				get: () => tierDisplay("deep", routerCfg(io.settings()).deep),
+				get: () => {
+					const cfg = routerCfg(io.settings());
+					return tierDisplay("deep", cfg.deep, cfg.preferRoles === true);
+				},
 				apply: async (_c, value) => {
 					io.updateSettings((set) => {
 						set.modelRouter = { ...routerCfg(set), deep: value };
