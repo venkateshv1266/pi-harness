@@ -105,7 +105,7 @@ pi --use-theme low-lumen
 | **openrouter-guardrail-header.ts** | Sticky top header showing daily/monthly OpenRouter usage and configured caps. Reads the current session key via `GET /api/v1/key`; no MCP or Management API key is required. |
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover on provider-attributable failures (rate limits, provider 5xx, stream errors) — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Transport-level errors (dead network) never switch; fallback ping-pong is blocked by sticky cycle detection + a 60s cross-model backstop, and post-run auto-resume is capped at 2 short markers instead of re-sending the prompt. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
-| **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? decided execution handoff or open-ended reasoning? compute tier (keep/fast/mid/deep)? — and switches models *before* the first token is spent. The execution shape is logged for audit only. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
+| **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? decided execution handoff or open-ended reasoning? compute tier (keep/fast/mid/deep)? — and switches models *before* the first token is spent. The execution shape is logged for audit only. Confidence-gated, honors manual model choices, fails open. Tier refs accept `@role` aliases and default to the matching `/roles` setting when unset. See [Model routing](#model-routing-route-ahead) below. |
 | **decisions-report.ts** | `/decisions-report [days]` — closes the decision loop: auto-discovers every `*.jsonl` decision log under `~/.pi/agent/jev-decisions/`, joins decisions to their outcome records (TTSR fires → survived/retried/repeated/corrected; router routes → overrides/corrections/test results; curator emits → later `jev_recall`; plus any new system using the `utils/jev-outcomes.ts` contract), flags rules to prune or reword and extracts never recalled, and writes a markdown report under `~/.pi/agent/jev-decisions/reports/`. See [Decision outcome loop](#decision-outcome-loop) below. |
 | **decision-tuner/** | Weekly auto-tuning on top of the decision logs: regenerates the report on session start when stale and proposes `prune` actions for rules that never deliver (rules marked `safety: true` exempt; apply renames to `.md.disabled`, reversible) plus advisory reword/router/curator flags with sample gates. `/decision-tuner [status\|run\|list\|apply <id>\|dismiss <id>]`; also contributes the **Decisions** section to `/setup` (run report, see last run, apply/dismiss proposals, with each row reporting its state after the action); `DECISION_TUNER=0` disables, `DECISION_TUNER_DAYS` sets the interval. See [Decision outcome loop](#decision-outcome-loop) below, or `extensions/decision-tuner/README.md` for the full design. |
 | **jev-context-curator/** | Goal-quality-first context manager (V3; directory extension — `index.ts` + `jev-curator-v3-architecture.md`, an architecture/session-flow overview, inside). **Default mode is `quality`** (the full system): a versioned **GoalSpec** (user objective + criteria/constraints/plan/facts/open questions, immutable objective, `amend_goalspec` tool, displayed by `/goal`); Jev evidence-role classification (active/evidence/background/irrelevant + source type + GoalSpec links) with type-aware extract proposals (log line-scoring with deterministic ERROR/summary retention, code/doc line ranges, listing matches); a batched **frontier verifier** at turn_end over the full raw source — retains full whenever uncertain; verifier-approved extracts emitted for log/listing/code/doc sources into a searchable **evidence ledger** with `curator_find` (Jev rerank vs GoalSpec) + `jev_recall` paged raw recovery as the no-loss contract; compaction carries the complete GoalSpec + ledger (with recall ids) into the frontier-generated summary (default compaction fallback); outputs >25k capped to head/tail before first exposure (never billed in full); the V2 recency stub/truncate judge is retired in this mode — the verifier owns every full→non-full transition. Explicit modes via `JEVCURATOR_MODE`: `v2` (pre-V3 economics layer — benchmark arm), `shadow-quality` (classify/propose/verify, log only), `evidence` (log/listing emission on the V2 floor). Fail-open everywhere; `JEVCURATOR=0` kill switch; audit in `~/.pi/agent/jev-decisions/jev-curator.jsonl` (V3) + `jev-curator-v2.jsonl` (V2); `/curator` shows mode + stats. Its `turn_end` drafts compose with other extensions' boundary entries (e.g. `recite/`). |
@@ -311,6 +311,18 @@ Design properties:
 }
 ```
 
+Tier refs accept the same `@role` aliases as subagent model overrides —
+`@smol`, `@task`, `@slow`, `@plan`, `@designer` (plus the `@fast`/`@reasoning`
+synonyms), optionally with a thinking override (`@slow:xhigh`) — resolved
+through the `/roles` settings, so a tier stays in sync with its role. When a
+tier key is absent it defaults to the matching role (`fast`→`@smol`,
+`mid`→`@task`, `deep`→`@slow`); defaults read the `/roles` settings only, so
+installs that never configured roles keep the router inert. `/route tier
+<tier> off` disables a tier outright (stored as `null`: no routing, no
+default), while `/route clear <tier>` removes the override and restores the
+role default. `/route status` shows each tier's resolution with provenance
+(explicit / role default / disabled).
+
 Tiers map to work shapes: `fast` — mechanical edits and lookups; `mid` —
 executing a fully-decided handoff (frozen spec: exact files, interfaces,
 contracts) even when the artifact itself is complex, plus bounded judgment
@@ -338,9 +350,9 @@ and join by route id (`ref`) — see [Decision outcome loop](#decision-outcome-l
 |---|---|
 | `/route` | Status: config, pin state, circuit breaker, last 8 decisions |
 | `/route on` / `/route off` | Toggle routing in settings.json (applies immediately, no reload) |
-| `/route tier` | Interactive (same searchable picker TUI as `/roles`): pick tier → model → thinking level, saved to settings.json |
-| `/route tier <fast\|mid\|deep> [model:thinking]` | One-liner, e.g. `/route tier deep openrouter/openai/gpt-5.6-luna:xhigh` |
-| `/route clear [fast\|mid\|deep]` | Unset a tier (router stops acting on it) |
+| `/route tier` | Interactive (same searchable picker TUI as `/roles`): pick tier → role alias, (off), or model → thinking level, saved to settings.json |
+| `/route tier <fast\|mid\|deep> [model:thinking \| @role[:thinking] \| off]` | One-liner, e.g. `/route tier deep @slow` or `/route tier fast openrouter/openai/gpt-5.6-luna:xhigh`; `off` disables the tier (no role default) |
+| `/route clear [fast\|mid\|deep]` | Unset a tier — falls back to the matching role default (fast→@smol, mid→@task, deep→@slow) |
 | `/route threshold [0.6\|0.7\|0.75\|0.8\|0.9]` | Minimum calibrated p for both questions before the router acts (default 0.75) |
 
 ### Decision outcome loop
@@ -405,9 +417,10 @@ and apply/dismiss open proposals from the window — no command to remember.
 
 ### Model roles
 
-**model-roles.ts** provides `/roles` for assigning the model roles that the
-subagent engine resolves via `@smol` / `@slow` / `@plan` / `@task` /
-`@designer` aliases. Keys live at the top level of
+**model-roles.ts** provides `/roles` for assigning the model roles resolved
+via `@smol` / `@slow` / `@plan` / `@task` / `@designer` aliases — consumed by
+the subagent engine and, as tier refs and tier defaults, by
+[model routing](#model-routing-route-ahead). Keys live at the top level of
 `~/.pi/agent/settings.json` using the same `provider/model:thinking` syntax
 as fallback pairs:
 

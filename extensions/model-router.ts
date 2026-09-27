@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { FilterablePicker, THINKING_LEVELS, type PickerRow } from "./model-fallback.ts";
 import { logDecision, logOutcome, looksLikeUserCorrection, newId, type Verdict } from "../utils/jev-outcomes.ts";
+import { ROLE_NAMES, resolveModelRole, roleSettingRef } from "../utils/model-role.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -28,13 +29,15 @@ const TEST_RUN_RE =
 const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
 const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
 
+type Tier = "fast" | "mid" | "deep";
+
 interface RouterSettings {
 	enabled?: boolean;
 	threshold?: number;
 	timeoutMs?: number;
-	fast?: string;
-	mid?: string;
-	deep?: string;
+	fast?: string | null;
+	mid?: string | null;
+	deep?: string | null;
 }
 
 interface JevAnswer {
@@ -105,6 +108,55 @@ function resolveModel(ctx: ExtensionContext, ref: string): Model<Api> | undefine
 	}
 	const avail = ctx.modelRegistry.getAvailable();
 	return avail.find((m) => m.id === ref) ?? avail.find((m) => m.id.includes(ref));
+}
+
+const TIER_DEFAULT_ROLE: Record<Tier, string> = { fast: "smol", mid: "task", deep: "slow" };
+
+type TierResolution =
+	| { status: "disabled" }
+	| { status: "unconfigured" }
+	| { status: "unresolved"; raw: string }
+	| { status: "ok"; model: Model<Api>; thinking?: ThinkingLevel; raw: string; via: "explicit" | "default" };
+
+function resolveTierRef(ctx: ExtensionContext, raw: string, via: "explicit" | "default"): TierResolution {
+	const { ref, thinking } = parseRef(raw);
+	if (ref.startsWith("@")) {
+		const { resolvedModel } = resolveModelRole(ref);
+		if (!resolvedModel) return { status: "unresolved", raw };
+		const roleParsed = parseRef(resolvedModel);
+		const model = resolveModel(ctx, roleParsed.ref);
+		if (!model) return { status: "unresolved", raw };
+		return { status: "ok", model, thinking: thinking ?? roleParsed.thinking, raw, via };
+	}
+	const model = resolveModel(ctx, ref);
+	if (!model) return { status: "unresolved", raw };
+	return { status: "ok", model, thinking, raw, via };
+}
+
+// Defaults read the /roles settings only — no env/defaultModel chain — so installs that never configured roles stay inert.
+function resolveTier(ctx: ExtensionContext, cfg: RouterSettings, tier: Tier): TierResolution {
+	const explicit = cfg[tier];
+	if (explicit === null) return { status: "disabled" };
+	if (explicit !== undefined) return resolveTierRef(ctx, explicit, "explicit");
+	const role = TIER_DEFAULT_ROLE[tier];
+	const roleRef = roleSettingRef(role);
+	if (!roleRef) return { status: "unconfigured" };
+	const res = resolveTierRef(ctx, roleRef, "default");
+	return res.status === "ok" && !res.raw.startsWith("@") ? { ...res, raw: `@${role}` } : res;
+}
+
+function describeTier(ctx: ExtensionContext, cfg: RouterSettings, tier: Tier): string {
+	const res = resolveTier(ctx, cfg, tier);
+	switch (res.status) {
+		case "disabled":
+			return `${tier}: (disabled — "/route clear ${tier}" restores the role default)`;
+		case "unconfigured":
+			return `${tier}: (unset — default @${TIER_DEFAULT_ROLE[tier]} not configured via /roles)`;
+		case "unresolved":
+			return `${tier}: ${res.raw} → (unresolved: role unset or model not in registry)`;
+		case "ok":
+			return `${tier}: ${res.raw} → ${keyOf(res.model)}${res.thinking ? `:${res.thinking}` : ""} (${res.via})`;
+	}
 }
 
 let jevKeyCache: string | null | undefined;
@@ -310,7 +362,8 @@ export default function (pi: ExtensionAPI) {
 		if (envKill || cooldownUntil > Date.now()) return;
 		const cfg = loadSettings();
 		if (cfg.enabled === false) return;
-		if (!cfg.fast && !cfg.deep) return;
+		const tiers = { fast: resolveTier(ctx, cfg, "fast"), mid: resolveTier(ctx, cfg, "mid"), deep: resolveTier(ctx, cfg, "deep") };
+		if (TIERS.every((t) => tiers[t].status === "unconfigured")) return;
 		const prompt = (event.prompt ?? "").trim();
 		if (prompt.length < MIN_PROMPT_LEN || prompt.startsWith("/")) return;
 		const model = ctx.model;
@@ -384,27 +437,26 @@ export default function (pi: ExtensionAPI) {
 			record({ ...base, to: from, tier: choice, p, confidence, newTaskP, acted: false, reason: choice === "keep" ? "keep" : "below-threshold" });
 			return;
 		}
-		const ref = cfg[choice as (typeof TIERS)[number]];
-		if (!ref) {
-			record({ ...base, to: from, tier: choice, p, confidence, newTaskP, acted: false, reason: "tier-unconfigured" });
+		const res = tiers[choice as (typeof TIERS)[number]];
+		if (res.status === "disabled" || res.status === "unconfigured") {
+			record({ ...base, to: from, tier: choice, p, confidence, newTaskP, acted: false, reason: res.status === "disabled" ? "tier-disabled" : "tier-unconfigured" });
 			return;
 		}
-		const parsed = parseRef(ref);
-		const target = resolveModel(ctx, parsed.ref);
-		if (!target) {
-			if (!warnedRefs.has(ref)) {
-				warnedRefs.add(ref);
-				notify(ctx, `Router tier "${choice}" ref "${ref}" not in model registry`, "warning");
+		if (res.status === "unresolved") {
+			if (!warnedRefs.has(res.raw)) {
+				warnedRefs.add(res.raw);
+				notify(ctx, `Router tier "${choice}" ref "${res.raw}" unresolved (role unset or model not in registry)`, "warning");
 			}
-			record({ ...base, to: ref, tier: choice, p, confidence, newTaskP, acted: false, reason: "unresolved-ref" });
+			record({ ...base, to: res.raw, tier: choice, p, confidence, newTaskP, acted: false, reason: "unresolved-ref" });
 			return;
 		}
+		const target = res.model;
 		const to = keyOf(target);
 		if (to === from) {
 			// Same base model: mid/deep differ only in thinking — a cache-safe switch.
-			if (parsed.thinking && parsed.thinking !== ctx.thinkingLevel) {
-				pi.setThinkingLevel(parsed.thinking);
-				notify(ctx, `${from} thinking → ${parsed.thinking} (tier=${choice} p=${p.toFixed(2)}, ${latencyMs}ms)`);
+			if (res.thinking && res.thinking !== ctx.thinkingLevel) {
+				pi.setThinkingLevel(res.thinking);
+				notify(ctx, `${from} thinking → ${res.thinking} (tier=${choice} p=${p.toFixed(2)}, ${latencyMs}ms)`);
 				record({ ...base, to, tier: choice, p, confidence, newTaskP, acted: true, reason: "thinking-routed" });
 				return;
 			}
@@ -416,7 +468,7 @@ export default function (pi: ExtensionAPI) {
 		let ok = false;
 		try {
 			ok = await pi.setModel(target);
-			if (ok && parsed.thinking) pi.setThinkingLevel(parsed.thinking);
+			if (ok && res.thinking) pi.setThinkingLevel(res.thinking);
 		} finally {
 			selfSwitching = false;
 		}
@@ -425,7 +477,7 @@ export default function (pi: ExtensionAPI) {
 			record({ ...base, to, tier: choice, p, confidence, newTaskP, acted: false, reason: "no-auth" });
 			return;
 		}
-		notify(ctx, `${from} → ${to} (tier=${choice} p=${p.toFixed(2)}${parsed.thinking ? ` @ ${parsed.thinking}` : ""}, ${latencyMs}ms)`);
+		notify(ctx, `${from} → ${to} (tier=${choice} p=${p.toFixed(2)}${res.thinking ? ` @ ${res.thinking}` : ""}${res.raw.startsWith("@") ? ` via ${res.raw}` : ""}, ${latencyMs}ms)`);
 		record({ ...base, to, tier: choice, p, confidence, newTaskP, acted: true, reason: "routed" });
 	});
 
@@ -461,7 +513,33 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function setTierDirect(ctx: ExtensionContext, tier: (typeof TIERS)[number], refArg: string): Promise<void> {
+		if (refArg.toLowerCase() === "off" || refArg.toLowerCase() === "none") {
+			writeRouter((r) => {
+				r[tier] = null;
+			});
+			notify(ctx, `${tier} tier disabled — no routing, no role default. "/route clear ${tier}" restores the default.`, "info");
+			return;
+		}
 		const { ref, thinking } = parseRef(refArg);
+		if (ref.startsWith("@")) {
+			const role = ref.slice(1).toLowerCase();
+			if (!(ROLE_NAMES as readonly string[]).includes(role)) {
+				notify(ctx, `Unknown role "${ref}". Roles: ${ROLE_NAMES.join(", ")}`, "error");
+				return;
+			}
+			const { resolvedModel } = resolveModelRole(ref);
+			const base = resolvedModel ? parseRef(resolvedModel).ref : undefined;
+			if (!resolvedModel || !base || !resolveModel(ctx, base)) {
+				notify(ctx, `Role ${ref} does not resolve to a registry model — configure it with /roles first`, "error");
+				return;
+			}
+			const value = ref + (thinking ? `:${thinking}` : "");
+			writeRouter((r) => {
+				r[tier] = value;
+			});
+			notify(ctx, `Set ${tier} = ${value} (resolves to ${resolvedModel})`, "info");
+			return;
+		}
 		const model = resolveModel(ctx, ref);
 		if (!model) {
 			notify(ctx, `Model "${ref}" not found in registry`, "error");
@@ -485,32 +563,48 @@ export default function (pi: ExtensionAPI) {
 			const cfg = loadSettings();
 			const rows: PickerRow[] = TIERS.map((t) => ({
 				label: t,
-				meta: cfg[t] ?? "(unset)",
+				meta: typeof cfg[t] === "string" ? (cfg[t] as string) : cfg[t] === null ? "(off)" : "(unset)",
 				description: TIER_DESCRIPTIONS[t],
 			}));
 			const picked = await pickRows(ctx, "Pick router tier:", rows);
 			if (!picked) return;
 			tier = picked.label as (typeof TIERS)[number];
 		}
-		const model = await pickAvailableModel(ctx, `Model for ${tier} tier:`);
-		if (!model) return;
-		let suffix = "";
-		if (ctx.mode === "tui") {
-			const levels = ["(none)", ...THINKING_LEVELS];
-			const choice = await ctx.ui.select("Thinking level:", levels);
-			if (!choice) return;
-			suffix = choice !== "(none)" ? `:${choice}` : "";
+		const roleRows: PickerRow[] = (["smol", "task", "slow", "plan", "designer"] as const)
+			.map((role) => ({ label: `@${role}`, meta: roleSettingRef(role) ?? "(unset)", description: "Role alias from /roles — the tier follows the role" }))
+			.filter((row) => row.meta !== "(unset)");
+		const offRow: PickerRow = { label: "(off)", meta: "disable", description: "Never route to this tier; no role default" };
+		const modelRows: PickerRow[] = ctx.modelRegistry.getAvailable().map((m) => ({
+			label: keyOf(m),
+			meta: m.reasoning ? "reasoning" : "",
+			description: `${m.name} · ctx ${Math.round(m.contextWindow / 1000)}k`,
+		}));
+		const picked = await pickRows(ctx, `Model for ${tier} tier (role alias or model):`, [offRow, ...roleRows, ...modelRows]);
+		if (!picked) return;
+		let value: string | null;
+		if (picked.label === "(off)") value = null;
+		else if (picked.label.startsWith("@")) value = picked.label;
+		else {
+			const model = resolveModel(ctx, picked.label);
+			if (!model) return;
+			let suffix = "";
+			if (ctx.mode === "tui") {
+				const levels = ["(none)", ...THINKING_LEVELS];
+				const choice = await ctx.ui.select("Thinking level:", levels);
+				if (!choice) return;
+				suffix = choice !== "(none)" ? `:${choice}` : "";
+			}
+			value = `${keyOf(model)}${suffix}`;
 		}
-		const value = `${keyOf(model)}${suffix}`;
 		writeRouter((r) => {
 			r[tier] = value;
 		});
-		notify(ctx, `Set ${tier} = ${value}\nApplies to the next prompt — no reload needed.`, "info");
+		notify(ctx, `Set ${tier} = ${value ?? "(off)"}\nApplies to the next prompt — no reload needed.`, "info");
 	}
 
 	async function clearTier(ctx: ExtensionContext, tierArg?: string): Promise<void> {
 		const cfg = loadSettings();
-		const configured = TIERS.filter((t) => typeof cfg[t] === "string");
+		const configured = TIERS.filter((t) => cfg[t] !== undefined);
 		if (configured.length === 0) {
 			notify(ctx, "No tiers configured", "info");
 			return;
@@ -520,7 +614,7 @@ export default function (pi: ExtensionAPI) {
 		writeRouter((r) => {
 			delete r[tier];
 		});
-		notify(ctx, `Cleared ${tier}`, "info");
+		notify(ctx, `Cleared ${tier} — falls back to @${TIER_DEFAULT_ROLE[tier]} if that role is configured via /roles`, "info");
 	}
 
 	const fmt = (r: RouteRecord) =>
@@ -560,9 +654,7 @@ export default function (pi: ExtensionAPI) {
 				[
 					`enabled: ${cfg.enabled !== false}`,
 					`threshold: ${cfg.threshold ?? DEFAULT_THRESHOLD} · timeout: ${cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
-					`fast: ${cfg.fast ?? "(unset)"}`,
-					`mid: ${cfg.mid ?? "(unset)"}`,
-					`deep: ${cfg.deep ?? "(unset)"}`,
+					...TIERS.map((t) => describeTier(ctx, cfg, t)),
 					`pin: ${pinned ? "active — manual choice honored for current task" : "none"}`,
 					`breaker: ${cooldownUntil > Date.now() ? `paused until ${new Date(cooldownUntil).toLocaleTimeString()}` : "clear"}`,
 					`recent:\n${recent.length ? recent.map(fmt).join("\n") : "  (none yet)"}`,
@@ -592,14 +684,4 @@ async function pickRows(ctx: ExtensionContext, title: string, rows: PickerRow[])
 	}
 	const label = await ctx.ui.select(title, rows.map((r) => r.label));
 	return rows.find((r) => r.label === label);
-}
-
-async function pickAvailableModel(ctx: ExtensionContext, title: string): Promise<Model<Api> | undefined> {
-	const rows: PickerRow[] = ctx.modelRegistry.getAvailable().map((m) => ({
-		label: keyOf(m),
-		meta: m.reasoning ? "reasoning" : "",
-		description: `${m.name} · ctx ${Math.round(m.contextWindow / 1000)}k`,
-	}));
-	const picked = await pickRows(ctx, title, rows);
-	return picked ? resolveModel(ctx, picked.label) : undefined;
 }

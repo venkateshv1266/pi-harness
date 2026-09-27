@@ -15,6 +15,31 @@ const getSettings = (): Record<string, any> => {
 	return {};
 };
 
+/** Role names resolveModelRole accepts, synonyms included. */
+export const ROLE_NAMES = ["smol", "fast", "slow", "reasoning", "plan", "task", "designer"] as const;
+
+/** Settings-only role resolution — no env, PI_MODEL, or defaultModel fallback. Returns the configured ref or undefined. */
+export function roleSettingRef(roleName: string): string | undefined {
+	const settings = getSettings();
+	const role = roleName.toLowerCase();
+	if (role === "smol" || role === "fast") {
+		return settings.smolModel || settings.fastModel || settings.modelRoles?.smol;
+	}
+	if (role === "slow" || role === "reasoning") {
+		return settings.slowModel || settings.reasoningModel || settings.modelRoles?.slow;
+	}
+	if (role === "plan") {
+		return settings.planModel || settings.slowModel || settings.modelRoles?.plan;
+	}
+	if (role === "task") {
+		return settings.taskModel || settings.modelRoles?.task;
+	}
+	if (role === "designer") {
+		return settings.designerModel || settings.modelRoles?.designer;
+	}
+	return undefined;
+}
+
 export function resolveModelRole(modelSpec?: string): { resolvedModel?: string; role?: string } {
 	if (!modelSpec) return {};
 	const clean = modelSpec.trim();
