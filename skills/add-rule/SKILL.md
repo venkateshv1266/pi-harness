@@ -1,6 +1,6 @@
 ---
 name: add-rule
-description: Evaluates a requested coding rule, decides whether it belongs as a TTSR stream rule (the only bucket that justifies a rule file) or should be skipped/put in CLAUDE.md, crafts a valid trigger, validates it, writes the rule file, and reloads the rules engine. Use when the user says "add a rule for X", "make a rule that the agent shouldn't do Y", "whenever I do Z, remind the agent to W", or similar.
+description: Evaluates a requested coding rule, decides whether it belongs as a TTSR stream rule (the only bucket that justifies a rule file) or should be skipped/put in CLAUDE.md, crafts a valid trigger, decides with Jev whether the rule needs a verify gate (Step 4b), validates it, writes the rule file, and reloads the rules engine. Use when the user says "add a rule for X", "make a rule that the agent shouldn't do Y", "whenever I do Z, remind the agent to W", or similar.
 ---
 
 # add-rule
@@ -131,6 +131,37 @@ Do not lower the bar to justify a marginal rule.
 - `globs`: optional path gate for tool-scope rules, e.g.
   `["**/*.ts", "**/*.js"]`. Use when the pattern is language/file specific.
 
+## Step 4b — Decide the verify gate (call Jev)
+
+`verify:` is **opt-in and has no default**. Without it the rule fires
+deterministically on its trigger; with it every hit pays a Jev call (~0.5s on
+tool scope) and the rule gains an outage failure mode (`onFail`). Decide with
+Jev, not by feel.
+
+1. Write the draft rule (frontmatter + body) to a temp file, e.g.
+   `/tmp/<name>-draft-rule.md`.
+2. Ask (the helper lives at `~/.pi/agent/utils/jev-ask.mjs`):
+
+```bash
+node ~/.pi/agent/utils/jev-ask.mjs --state-file /tmp/<name>-draft-rule.md --threshold 0.5 --noul \
+  "Should this TTSR rule have a Jev verify gate? Answer with a high probability only if at least one holds: (a) the trigger can match innocent text — mentions, paths, grep output, docs — and tightening the trigger cannot separate those cases; (b) firing correctly depends on session state a regex cannot see (what was already read, the current goal); (c) a false positive would block or abort a legitimate action and the trigger is not exact. Answer with a low probability when the match itself is proof of the action or intent: ast-grep structural match, exact command shape at command position, tool-name or file-glob trigger, or a precise phrase. A gate costs a Jev call per hit and adds an outage failure mode, so recommend it only when it changes the outcome."
+```
+
+3. `YES (>= 0.5)` → add `verify` to the rule. `NO` → leave it out and rely on
+   trigger precision. If the probability lands in 0.4–0.6 or the helper exits
+   non-zero (no key / timeout), apply the same criteria yourself and say so —
+   never invent a Jev answer.
+4. When adding a gate, choose the failure policy deliberately:
+   - `onFail: "fire"` — safety / blocking rules; a Jev outage must not weaken
+     enforcement.
+   - `onFail: "suppress"` — noise-control gates; an outage means stay silent.
+   - `onFail: "degrade"` — only when a plain reminder (no abort/block) is
+     acceptable.
+   Start at `threshold: 0.8`; observed bands on the current model are ~0.4 for
+   innocent matches and ~0.8 for real ones. Tune from
+   `~/.pi/agent/jev-decisions/ttsr-jev.jsonl` (`prob` + `digestSource` are
+   logged per adjudication).
+
 ## Step 5 — Write the rule file
 
 ### Placement
@@ -165,6 +196,10 @@ repeat: once
 "best practices", no "note that". Specific enough that a future session can
 follow it without context.>
 ```
+
+If Step 4b recommended a gate, add a one-line `verify:` (inline JSON), e.g.
+`verify: {"type":"noul","instructions":"Is this tool call actually executing X rather than mentioning it?","threshold":0.8,"onFail":"fire"}`.
+Keep `instructions` a single intent question.
 
 ### File template — TTSR (ast-grep)
 
@@ -227,6 +262,11 @@ For an ast-grep rule, the validator checks metavariable sanity and bucket
 policy; also write the bad snippet to a temp file and confirm the pattern
 matches via `node -e "const {parse,Lang}=require('@ast-grep/napi'); const r=parse(Lang.TypeScript, require('fs').readFileSync('<tmp>','utf8')).root(); console.log(r.find('<pattern>')?'MATCH':'no')"` before proceeding.
 
+If the rule carries a `verify:` gate, the validator also checks the spec
+(inline JSON object, non-empty instructions, criteria for `choice`/`score`,
+numeric threshold, valid `onFail`) — a malformed gate is silently dropped at
+runtime otherwise, so treat its errors as blocking.
+
 The validator enforces the bucket policy: it will ERROR on always-apply rules
 and on rulebook entries that name a specific command, and WARN on rulebook
 entries with no trigger (they belong in CLAUDE.md). Do not proceed until the
@@ -278,9 +318,15 @@ confirmation.
   sample is a rule that does nothing.
 - Do not create the rule file in both user and project scope with the same name
   — first-wins discovery will shadow one. Pick a scope.
+- Do not add `verify:` by reflex. No verify = deterministic and outage-proof;
+  gate only when Step 4b says the trigger is ambiguous or needs session state.
+- Do not skip Step 4b. "I'll eyeball it" is how noisy gates — and noisy rules
+  without gates — get in.
 
 ## Reference
 
 - Engine + buckets: `~/.pi/agent/extensions/ttsr/README.md`
 - Existing rules: `~/.pi/agent/rules/` and `<cwd>/.pi/rules/`
 - Validator: `scripts/validate-rule.js` in this skill directory
+- Jev gate decision (Step 4b): `node ~/.pi/agent/utils/jev-ask.mjs`; gate
+  telemetry for tuning: `~/.pi/agent/jev-decisions/ttsr-jev.jsonl`

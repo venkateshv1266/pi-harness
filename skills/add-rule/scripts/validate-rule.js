@@ -51,6 +51,8 @@ function parseFrontmatter(text) {
 		if (v === "false" || v === "no") { fm[k] = false; continue; }
 		if (v.startsWith("[") && v.endsWith("]")) {
 			fm[k] = parseList(v.slice(1, -1));
+		} else if (v.startsWith("{") && v.endsWith("}")) {
+			try { fm[k] = JSON.parse(v); } catch { fm[k] = v; } // parse errors surface in the verify check below
 		} else {
 			fm[k] = stripQuotes(v);
 		}
@@ -135,6 +137,32 @@ function main() {
 	const description = fm.description != null ? String(fm.description) : null;
 	const flags = typeof fm.flags === "string" ? fm.flags : "";
 
+	// verify gate (optional). The engine silently drops a malformed spec (empty
+	// instructions, non-object) — catch that here instead of shipping a dead gate.
+	let verify = null;
+	if (fm.verify !== undefined) {
+		if (fm.verify && typeof fm.verify === "object" && !Array.isArray(fm.verify)) {
+			verify = fm.verify;
+		} else {
+			errors.push('verify: must be inline JSON, e.g. {"type":"noul","instructions":"Is this actually X?","threshold":0.8,"onFail":"fire"} — a non-object spec is silently dropped at runtime.');
+		}
+	}
+	if (verify) {
+		const vtype = verify.type === "choice" || verify.type === "score" ? verify.type : "noul";
+		if (typeof verify.instructions !== "string" || !verify.instructions.trim()) {
+			errors.push("verify.instructions is empty — the engine drops a gate without instructions.");
+		}
+		if (vtype === "choice" && !(verify.criteria && typeof verify.criteria === "object" && !Array.isArray(verify.criteria))) {
+			errors.push("verify.type=choice requires a criteria object.");
+		}
+		if (vtype === "score" && !Array.isArray(verify.criteria)) {
+			errors.push("verify.type=score requires a criteria array.");
+		}
+		if (verify.threshold !== undefined && typeof verify.threshold !== "number") errors.push("verify.threshold must be a number (e.g. 0.8).");
+		if (verify.minConfidence !== undefined && typeof verify.minConfidence !== "number") errors.push("verify.minConfidence must be a number.");
+		if (verify.onFail !== undefined && !["fire", "degrade", "suppress"].includes(verify.onFail)) errors.push("verify.onFail must be fire|degrade|suppress.");
+	}
+
 	let bucket;
 	if (alwaysApply) bucket = "always";
 	else if (conditions.length || astConditions.length) bucket = "ttsr";
@@ -162,6 +190,9 @@ function main() {
 			warnings.push("rulebook is a passive one-line description; the rules system only earns its keep with TTSR. If this has ANY detectable trigger (command, tool name, file path, output signal), make it TTSR instead. If it's genuinely un-triggerable contextual guidance, it belongs in CLAUDE.md's context tree — the rulebook bucket offers no advantage over that tree.");
 		}
 	}
+	if (verify && bucket !== "ttsr") {
+		errors.push("verify: is only evaluated on TTSR rules (condition or astCondition required) — it would be ignored here.");
+	}
 
 	console.log(`File:     ${file}`);
 	console.log(`Name:     ${name ?? "(missing)"}`);
@@ -171,6 +202,7 @@ function main() {
 	console.log(`Repeat:   ${fm.repeat || "once"}`);
 	if (fm.flags) console.log(`Flags:    ${fm.flags}`);
 	console.log(`Interrupt:${fm.interrupt ?? "(default for bucket)"}`);
+	if (verify) console.log(`Verify:   type=${verify.type ?? "noul"} threshold=${verify.threshold ?? 0.8} onFail=${verify.onFail ?? "degrade"}`);
 	console.log("");
 
 	if (conditions.length) {
