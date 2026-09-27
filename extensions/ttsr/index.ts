@@ -36,7 +36,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { appendDecision, looksLikeUserCorrection, newId } from "../../utils/jev-outcomes.ts";
+import { logDecision, logOutcome, looksLikeUserCorrection, type Verdict as OutcomeVerdict } from "../../utils/jev-outcomes.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -385,6 +385,13 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	const OUTCOME_WINDOW_TURNS = 5;
 	const OUTCOME_FILE = "ttsr-jev.jsonl";
+	const OUTCOME_VERDICTS: Record<string, OutcomeVerdict> = {
+		survived: "good",
+		retried: "bad",
+		repeated: "bad",
+		user_corrected: "bad",
+		unresolved: "unknown",
+	};
 
 	interface PendingFire {
 		fireId: string;
@@ -410,16 +417,16 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	function resolveFire(fire: PendingFire, outcome: string, detail: Record<string, unknown> = {}) {
 		pendingFires = pendingFires.filter((p) => p !== fire);
-		appendDecision(OUTCOME_FILE, {
-			record: "outcome",
-			fireId: fire.fireId,
-			rule: fire.rule,
-			scope: fire.scope,
-			session: fire.session,
-			delivered: fire.delivered,
-			outcome,
-			turnsAfter: Math.max(0, turnCount - fire.turn),
-			...detail,
+		logOutcome("ttsr", OUTCOME_FILE, fire.fireId, outcome, {
+			verdict: OUTCOME_VERDICTS[outcome] ?? "unknown",
+			detail: {
+				rule: fire.rule,
+				scope: fire.scope,
+				session: fire.session,
+				delivered: fire.delivered,
+				turnsAfter: Math.max(0, turnCount - fire.turn),
+				...detail,
+			},
 		});
 	}
 
@@ -438,7 +445,16 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			for (const prior of pendingFires.filter((p) => p.rule === r.name && p.session === session && p.turn < turnCount)) {
 				resolveFire(prior, "repeated");
 			}
-			const fireId = newId();
+			const fireId = logDecision("ttsr", OUTCOME_FILE, {
+				rule: r.name,
+				scope,
+				session,
+				turn: turnCount,
+				delivered: opts.delivered,
+				mode: opts.modeOf ? opts.modeOf(r) : "plain",
+				...(opts.tool ? { tool: opts.tool } : {}),
+				...(opts.blocked !== undefined ? { blocked: opts.blocked } : {}),
+			});
 			pendingFires.push({
 				fireId,
 				rule: r.name,
@@ -449,18 +465,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 				blocked: opts.blocked ?? false,
 				haystack: opts.haystack ?? null,
 				userInputSince: false,
-			});
-			appendDecision(OUTCOME_FILE, {
-				record: "fire",
-				fireId,
-				rule: r.name,
-				scope,
-				session,
-				turn: turnCount,
-				delivered: opts.delivered,
-				mode: opts.modeOf ? opts.modeOf(r) : "plain",
-				...(opts.tool ? { tool: opts.tool } : {}),
-				...(opts.blocked !== undefined ? { blocked: opts.blocked } : {}),
 			});
 		}
 	}

@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { FilterablePicker, THINKING_LEVELS, type PickerRow } from "./model-fallback.ts";
-import { appendDecision, looksLikeUserCorrection, newId } from "../utils/jev-outcomes.ts";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { logDecision, logOutcome, looksLikeUserCorrection, newId, type Verdict } from "../utils/jev-outcomes.ts";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -16,6 +16,12 @@ const BREAKER_COOLDOWN_MS = 10 * 60_000;
 const MIN_PROMPT_LEN = 12;
 const ROUTE_OUTCOME_FILE = "model-router.jsonl";
 const ROUTE_OUTCOME_WINDOW_TURNS = 10;
+const ROUTE_OUTCOME_VERDICTS: Record<string, Verdict> = {
+	tests_passed: "good",
+	tests_failed: "bad",
+	model_override: "bad",
+	user_corrected: "bad",
+};
 const TEST_RUN_RE =
 	/\b(pnpm|npm|yarn|bun|npx)\s+(run\s+)?(test|vitest|jest)\b|\b(vitest|jest|pytest|go test|cargo test|make test)\b/;
 
@@ -39,7 +45,7 @@ interface JevAnswer {
 
 interface RouteRecord {
 	ts: string;
-	routeId: string;
+	id: string;
 	session: string;
 	turn: number;
 	prompt: string;
@@ -192,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 	const warnedRefs = new Set<string>();
 
 	interface PendingRoute {
-		routeId: string;
+		id: string;
 		session: string;
 		tier: string;
 		acted: boolean;
@@ -217,15 +223,15 @@ export default function (pi: ExtensionAPI) {
 			pendingRoute = null;
 			return;
 		}
-		appendDecision(ROUTE_OUTCOME_FILE, {
-			record: "outcome",
-			routeId: p.routeId,
-			session: p.session,
-			tier: p.tier,
-			acted: p.acted,
-			outcome,
-			turnsAfter: Math.max(0, routeTurn - p.turn),
-			...detail,
+		logOutcome("router", ROUTE_OUTCOME_FILE, p.id, outcome, {
+			verdict: ROUTE_OUTCOME_VERDICTS[outcome] ?? "unknown",
+			detail: {
+				session: p.session,
+				tier: p.tier,
+				acted: p.acted,
+				turnsAfter: Math.max(0, routeTurn - p.turn),
+				...detail,
+			},
 		});
 	}
 
@@ -258,15 +264,14 @@ export default function (pi: ExtensionAPI) {
 	function record(r: RouteRecord) {
 		recent.push(r);
 		if (recent.length > 8) recent.shift();
-		pendingRoute = { routeId: r.routeId, session: r.session, tier: r.tier, acted: r.acted, turn: r.turn };
+		pendingRoute = { id: r.id, session: r.session, tier: r.tier, acted: r.acted, turn: r.turn };
 		try {
 			pi.appendEntry("model-route", r);
-			mkdirSync(LOG_DIR, { recursive: true });
-			appendFileSync(join(LOG_DIR, "model-router.jsonl"), JSON.stringify(r) + "\n");
 		} catch (err) {
 			// best-effort audit; surface instead of swallowing
 			process.stderr.write(`[model-router] audit write failed: ${err instanceof Error ? err.message : String(err)}\n`);
 		}
+		logDecision("router", ROUTE_OUTCOME_FILE, { ...r });
 	}
 
 	pi.on("model_select", (event) => {
@@ -347,7 +352,7 @@ export default function (pi: ExtensionAPI) {
 		const execP = execChoice ? (exec?.probabilities?.[execChoice] ?? null) : null;
 		const base = {
 			ts: new Date().toISOString(),
-			routeId: newId(),
+			id: newId(),
 			session: sessionIdOf(ctx),
 			turn: routeTurn,
 			prompt: prompt.slice(0, 60),

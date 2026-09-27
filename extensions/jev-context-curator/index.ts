@@ -88,6 +88,7 @@ import {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { logDecision as logTelemetryDecision, logEvent, logOutcome } from "../../utils/jev-outcomes.ts";
 
 const GOAL_TYPE = "jev-curator-goal";
 const GOALSPEC_TYPE = "jev-curator-goalspec";
@@ -1091,8 +1092,9 @@ function emitEvidence(
 		};
 		ledger.set(item.entryId, item);
 		emitted.push(item);
-		logShadowLine({
-			decision: "emit-evidence",
+		logTelemetryDecision("curator", SHADOW_LOG_FILE, {
+			id: r.cand.entryId,
+			action: "emit",
 			entryId: r.cand.entryId,
 			tool: r.cand.toolName,
 			sourceType: r.role.sourceType,
@@ -1788,14 +1790,16 @@ ${goalspecSummary()}` }],
 				if (raw === undefined || raw === "") {
 					throw new Error(`No raw content found for entry ${params.entry_id}`);
 				}
-				logShadowLine({
-					decision: "recall",
-					source: "jev_recall",
-					entryId: params.entry_id,
-					session: ctx.sessionManager.getSessionId(),
-					offset: params.offset ?? 0,
-					limit: params.limit ?? null,
-					chars: raw.length,
+				logOutcome("curator", SHADOW_LOG_FILE, params.entry_id, "recalled", {
+					verdict: "good",
+					detail: {
+						source: "jev_recall",
+						entryId: params.entry_id,
+						session: ctx.sessionManager.getSessionId(),
+						offset: params.offset ?? 0,
+						limit: params.limit ?? null,
+						chars: raw.length,
+					},
 				});
 				let out = raw;
 				if (params.offset !== undefined || params.limit !== undefined) {
@@ -1863,9 +1867,8 @@ ${goalspecSummary()}` }],
 					const head = l.extract.length > 900 ? `${l.extract.slice(0, 900)}\n  [... extract continues — jev_recall "${l.entryId}" for raw ...]` : l.extract;
 					return `#${i + 1} [${l.sourceType} · ${l.role} · turn ${l.turn} · ${l.chars} chars condensed to ${l.extract.length}]\n${head}\nRaw paging: jev_recall entry_id "${l.entryId}" with offset/limit`;
 				});
-				logShadowLine({
-					decision: "recall",
-					source: "curator_find",
+				logEvent("curator", SHADOW_LOG_FILE, {
+					action: "find",
 					query,
 					session: ctx.sessionManager.getSessionId(),
 					returned: ranked.slice(0, limit).map((l) => l.entryId),

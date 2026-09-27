@@ -145,11 +145,12 @@ reload.
 
 ## Outcome telemetry
 
-Each fire appends a `record:"fire"` line to
-`~/.pi/agent/jev-decisions/ttsr-jev.jsonl` — rule, scope, session, turn, whether
-the reminder was delivered to the model, and (for tool-scope fires) the tool and
-whether the call was blocked. The fire then resolves to an outcome record when
-the window closes or a signal arrives:
+Each fire appends a `kind:"decision"` record to
+`~/.pi/agent/jev-decisions/ttsr-jev.jsonl` (the shared telemetry contract in
+`utils/jev-outcomes.ts`) — rule, scope, session, turn, whether the reminder was
+delivered to the model, and (for tool-scope fires) the tool and whether the call
+was blocked. The fire then resolves to a `kind:"outcome"` record referencing it
+via `ref`, when the window closes or a signal arrives:
 
 - `survived` — nothing adverse within 5 turns (the intervention stuck)
 - `retried` — the blocked call was re-issued unchanged with no user input in between

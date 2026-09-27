@@ -1,10 +1,29 @@
 /**
  * Shared primitives for decision-outcome telemetry.
  *
- * The Jev decision layer (ttsr, model-router, jev-context-curator, jev-memory)
- * logs its decisions to ~/.pi/agent/jev-decisions/*.jsonl. These helpers let
- * each layer also log whether a decision helped, into the same per-system
- * files, so /decisions-report can join decisions to outcomes.
+ * Every extension that makes non-trivial decisions (a rule intervened, a model
+ * was routed, context was condensed, a memory write was gated) can log them to
+ * its own file under ~/.pi/agent/jev-decisions/. The reports and the tuner
+ * auto-discover those files, so a new system needs no changes anywhere else.
+ *
+ * Contract — three record kinds, one file per system:
+ *
+ *   logDecision(system, file, payload)              // what was decided
+ *     -> { kind:"decision", system, id, ts, ...payload }
+ *
+ *   logOutcome(system, file, ref, outcome, {verdict, detail})
+ *     -> { kind:"outcome", system, ref, outcome, verdict, ts, ...detail }
+ *
+ *   logEvent(system, file, payload)                 // context, not a decision
+ *     -> { kind:"event", system, ts, ...payload }
+ *
+ * `ref` joins an outcome to the decision `id` it resolves. `verdict` is the
+ * universal "was this decision right" answer — good / bad / mixed / unknown —
+ * while `outcome` stays domain-specific (retried, tests_failed, recalled, …).
+ * A decision with no outcome record is reported as unresolved once it ages.
+ *
+ * Reserved keys (the envelope + generic analysis): kind, system, id, ref,
+ * outcome, verdict, ts. Keep them out of domain payloads.
  *
  * Telemetry is advisory: a failed write is reported on stderr and otherwise
  * ignored, never propagated into the host flow.
@@ -16,6 +35,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const DECISIONS_DIR = join(homedir(), ".pi", "agent", "jev-decisions");
+
+export type Verdict = "good" | "bad" | "mixed" | "unknown";
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
@@ -32,6 +53,29 @@ export function appendDecision(file: string, record: Record<string, unknown>): v
 	} catch (err) {
 		process.stderr.write(`[jev-outcomes] append ${file} failed: ${errorMessage(err)}\n`);
 	}
+}
+
+/** Log a decision; returns its id for later logOutcome refs. */
+export function logDecision(system: string, file: string, payload: Record<string, unknown> = {}): string {
+	const id = typeof payload.id === "string" ? payload.id : newId();
+	appendDecision(file, { kind: "decision", system, ...payload, id });
+	return id;
+}
+
+/** Resolve a decision with how it turned out. */
+export function logOutcome(
+	system: string,
+	file: string,
+	ref: string,
+	outcome: string,
+	opts: { verdict?: Verdict; detail?: Record<string, unknown> } = {},
+): void {
+	appendDecision(file, { kind: "outcome", system, ref, outcome, verdict: opts.verdict ?? "unknown", ...opts.detail });
+}
+
+/** Log context around decisions (inputs, attempts) that is not itself a decision. */
+export function logEvent(system: string, file: string, payload: Record<string, unknown> = {}): void {
+	appendDecision(file, { kind: "event", system, ...payload });
 }
 
 export function readDecisionLines(file: string): Record<string, unknown>[] {
