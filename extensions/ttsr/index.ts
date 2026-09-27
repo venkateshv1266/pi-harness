@@ -36,6 +36,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { appendDecision, looksLikeUserCorrection, newId } from "../../utils/jev-outcomes.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -380,6 +381,96 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		injectedNames = names;
 	}
 
+	// ─── Outcome telemetry ──────────────────────────────────────────────
+
+	const OUTCOME_WINDOW_TURNS = 5;
+	const OUTCOME_FILE = "ttsr-jev.jsonl";
+
+	interface PendingFire {
+		fireId: string;
+		rule: string;
+		scope: Scope;
+		turn: number;
+		session: string;
+		delivered: boolean;
+		blocked: boolean;
+		haystack: string | null;
+		userInputSince: boolean;
+	}
+
+	let pendingFires: PendingFire[] = [];
+
+	function sessionIdOf(ctx: ExtensionContextLike): string {
+		try {
+			return ctx.sessionManager?.getSessionId() ?? "";
+		} catch {
+			return "";
+		}
+	}
+
+	function resolveFire(fire: PendingFire, outcome: string, detail: Record<string, unknown> = {}) {
+		pendingFires = pendingFires.filter((p) => p !== fire);
+		appendDecision(OUTCOME_FILE, {
+			record: "outcome",
+			fireId: fire.fireId,
+			rule: fire.rule,
+			scope: fire.scope,
+			session: fire.session,
+			delivered: fire.delivered,
+			outcome,
+			turnsAfter: Math.max(0, turnCount - fire.turn),
+			...detail,
+		});
+	}
+
+	interface FireOptions {
+		delivered: boolean;
+		modeOf?: (r: Rule) => string;
+		tool?: string;
+		blocked?: boolean;
+		haystack?: string;
+	}
+
+	function recordFires(rules: Rule[], scope: Scope, ctx: ExtensionContextLike, opts: FireOptions) {
+		if (rules.length === 0) return;
+		const session = sessionIdOf(ctx);
+		for (const r of rules) {
+			for (const prior of pendingFires.filter((p) => p.rule === r.name && p.session === session && p.turn < turnCount)) {
+				resolveFire(prior, "repeated");
+			}
+			const fireId = newId();
+			pendingFires.push({
+				fireId,
+				rule: r.name,
+				scope,
+				turn: turnCount,
+				session,
+				delivered: opts.delivered,
+				blocked: opts.blocked ?? false,
+				haystack: opts.haystack ?? null,
+				userInputSince: false,
+			});
+			appendDecision(OUTCOME_FILE, {
+				record: "fire",
+				fireId,
+				rule: r.name,
+				scope,
+				session,
+				turn: turnCount,
+				delivered: opts.delivered,
+				mode: opts.modeOf ? opts.modeOf(r) : "plain",
+				...(opts.tool ? { tool: opts.tool } : {}),
+				...(opts.blocked !== undefined ? { blocked: opts.blocked } : {}),
+			});
+		}
+	}
+
+	function expireFires() {
+		for (const p of pendingFires.filter((f) => turnCount - f.turn >= OUTCOME_WINDOW_TURNS)) {
+			resolveFire(p, "survived");
+		}
+	}
+
 	// ─── Matching ───────────────────────────────────────────────────────
 
 	function matchRegex(buffer: string, scope: Scope, toolPath?: string): Rule[] {
@@ -597,6 +688,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		injectedNames = new Set();
 		gapCounters = new Map();
 		turnCount = 0;
+		pendingFires = [];
 		restoreInjected(ctx.sessionManager.getBranch() as unknown as { type: string; customType?: string; data?: unknown }[]);
 
 		if (ctx.hasUI) {
@@ -623,7 +715,10 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		toolBufs = new Map();
 	});
 
-	pi.on("turn_end", () => { turnCount++; });
+	pi.on("turn_end", () => {
+		turnCount++;
+		expireFires();
+	});
 
 	pi.on("message_update", async (event, ctx) => {
 		if (ttsrRules.length === 0) return;
@@ -645,7 +740,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	function handleStreamHits(hits: Rule[], buffer: string, scope: Scope, ctx: ExtensionContextLike) {
 		const immediate = hits.filter((r) => !r.verify);
-		if (immediate.length) handleTextOrThinking(immediate, ctx);
+		if (immediate.length) handleTextOrThinking(immediate, ctx, scope);
 
 		const batch = hits.filter((r) => {
 			if (!r.verify || pendingVerify.has(r.name)) return false;
@@ -672,6 +767,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			for (const r of batch) pendingVerify.delete(r.name);
 
 			const verdict = (r: Rule) => verdicts.get(r.name);
+			const modeOf = (r: Rule) => (verdict(r)?.degraded ? "degraded" : "verified");
 			const abortSet = batch.filter((r) => {
 				if (!r.interrupt) return false;
 				const v = verdict(r);
@@ -699,13 +795,18 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify(`ttsr: ${abortSet.map((r) => r.name).join(", ")} — aborting (verified)`, "warning");
 				try { ctx.abort(); } catch { /* noop */ }
 				void deliverAfterAbort(abortSet.map((r) => renderReminder(r)).join("\n\n"), ctx);
+				recordFires(abortSet, scope, ctx, { delivered: true, modeOf });
 				markInjected(abortSet.map((r) => r.name));
 			}
 			if (remindSet.length) {
 				pi.sendUserMessage(remindSet.map((r) => renderReminder(r)).join("\n\n"), { deliverAs: "followUp" });
+				recordFires(remindSet, scope, ctx, { delivered: true, modeOf });
 				markInjected(remindSet.map((r) => r.name));
 			}
-			if (softSet.length) markInjected(softSet.map((r) => r.name));
+			if (softSet.length) {
+				recordFires(softSet, scope, ctx, { delivered: false, modeOf });
+				markInjected(softSet.map((r) => r.name));
+			}
 			for (const r of suppressed) suppressCache.set(r.name, { turn: turnCount, len: buffer.length });
 		})();
 	}
@@ -726,7 +827,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		} catch { /* delivery is best-effort; never reject from a detached promise */ }
 	}
 
-	function handleTextOrThinking(hits: Rule[], ctx: ExtensionContextLike) {
+	function handleTextOrThinking(hits: Rule[], ctx: ExtensionContextLike, scope: Scope) {
 		const armed = hits.filter((r) => r.interrupt);
 		const soft = hits.filter((r) => !r.interrupt);
 		if (armed.length && !abortArmed) {
@@ -735,9 +836,13 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			try { ctx.abort(); } catch { /* noop */ }
 			const reminder = armed.map((r) => renderReminder(r)).join("\n\n");
 			void deliverAfterAbort(reminder, ctx);
+			recordFires(armed, scope, ctx, { delivered: true, modeOf: () => "plain" });
 			markInjected(armed.map((r) => r.name));
 		}
-		if (soft.length) markInjected(soft.map((r) => r.name));
+		if (soft.length) {
+			recordFires(soft, scope, ctx, { delivered: false, modeOf: () => "plain" });
+			markInjected(soft.map((r) => r.name));
+		}
 	}
 
 	// ─── Tool-scope rules (regex + AST, reliable block) ─────────────────
@@ -750,6 +855,10 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		// Regex haystack includes the tool name so rules can target MCP tools by name
 		// (e.g. condition: ["postgres"] matches mcp__postgres__query).
 		const regexHay = event.toolName + "\n" + serializeToolInput(event.toolName, input);
+
+		for (const p of pendingFires.filter((f) => f.blocked && f.haystack !== null && !f.userInputSince && f.haystack === regexHay)) {
+			resolveFire(p, "retried", { tool: event.toolName });
+		}
 
 		const regexHits = matchRegex(regexHay, "tool", toolPath);
 
@@ -776,10 +885,18 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		if (fired.length === 0) return undefined;
 		const noBlock = new Set(fired.filter((r) => verdicts?.get(r.name)?.degraded && r.verify?.onFail === "degrade").map((r) => r.name));
 
+		const willBlock = fired.some((r) => r.interrupt && !noBlock.has(r.name));
+		recordFires(fired, "tool", ctx, {
+			delivered: true,
+			modeOf: (r) => (r.verify ? (verdicts?.get(r.name)?.degraded ? "degraded" : "verified") : "plain"),
+			tool: event.toolName,
+			blocked: willBlock,
+			haystack: regexHay,
+		});
 		markInjected(fired.map((r) => r.name));
 		const reminder = fired.map((r) => renderReminder(r, toolPath || undefined)).join("\n\n");
 
-		if (fired.some((r) => r.interrupt && !noBlock.has(r.name))) {
+		if (willBlock) {
 			if (ctx.hasUI) {
 				const tag = fired.map((r) => r.name).join(",");
 				ctx.ui.notify(`ttsr: blocked ${event.toolName} (${tag})`, "warning");
@@ -795,6 +912,19 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		if (!pending) return undefined;
 		pendingToolReminders.delete(event.toolCallId);
 		return { content: [{ type: "text", text: pending }, ...event.content] };
+	});
+
+	pi.on("input", async (event) => {
+		if (event.source !== "interactive" || pendingFires.length === 0) return;
+		if (looksLikeUserCorrection(event.text)) {
+			for (const p of [...pendingFires]) resolveFire(p, "user_corrected");
+			return;
+		}
+		for (const p of pendingFires) p.userInputSince = true;
+	});
+
+	pi.on("session_shutdown", () => {
+		for (const p of [...pendingFires]) resolveFire(p, "unresolved");
 	});
 
 	function serializeToolInput(tool: string, input: { command?: string; path?: string; oldText?: string; newText?: string; content?: string; task?: string; query?: string; prompt?: string }): string {
@@ -870,5 +1000,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		ui: { notify(msg: string, level: "info" | "warning" | "error"): void };
 		abort(): void;
 		isIdle(): boolean;
+		sessionManager?: { getSessionId(): string };
 	};
 }

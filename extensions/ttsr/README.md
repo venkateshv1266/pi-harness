@@ -143,6 +143,24 @@ Fired TTSR rules are recorded as `ttsr-injection` custom entries in the session
 and restored on resume, so `repeat: once` suppression survives compaction and
 reload.
 
+## Outcome telemetry
+
+Each fire appends a `record:"fire"` line to
+`~/.pi/agent/jev-decisions/ttsr-jev.jsonl` — rule, scope, session, turn, whether
+the reminder was delivered to the model, and (for tool-scope fires) the tool and
+whether the call was blocked. The fire then resolves to an outcome record when
+the window closes or a signal arrives:
+
+- `survived` — nothing adverse within 5 turns (the intervention stuck)
+- `retried` — the blocked call was re-issued unchanged with no user input in between
+- `repeated` — the same rule fired again
+- `user_corrected` — the next interactive user message matches the correction heuristic
+- `unresolved` — the session ended before the window closed
+
+Outcomes are advisory heuristics, not ground truth. `/decisions-report` joins
+them per rule and flags rules to prune (evaluated often, never delivered) or to
+reword (mostly adverse outcomes).
+
 ## Honest limitations vs omp's native TTSR
 
 1. **No mid-stream retry-from-same-point.** pi's public extension API has no

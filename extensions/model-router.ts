@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { FilterablePicker, THINKING_LEVELS, type PickerRow } from "./model-fallback.ts";
+import { appendDecision, looksLikeUserCorrection, newId } from "../utils/jev-outcomes.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -13,6 +14,10 @@ const DEFAULT_TIMEOUT_MS = 1500;
 const BREAKER_TRIP_AFTER = 3;
 const BREAKER_COOLDOWN_MS = 10 * 60_000;
 const MIN_PROMPT_LEN = 12;
+const ROUTE_OUTCOME_FILE = "model-router.jsonl";
+const ROUTE_OUTCOME_WINDOW_TURNS = 10;
+const TEST_RUN_RE =
+	/\b(pnpm|npm|yarn|bun|npx)\s+(run\s+)?(test|vitest|jest)\b|\b(vitest|jest|pytest|go test|cargo test|make test)\b/;
 
 const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
 const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
@@ -34,6 +39,9 @@ interface JevAnswer {
 
 interface RouteRecord {
 	ts: string;
+	routeId: string;
+	session: string;
+	turn: number;
 	prompt: string;
 	from: string;
 	to: string;
@@ -183,6 +191,44 @@ export default function (pi: ExtensionAPI) {
 	const recent: RouteRecord[] = [];
 	const warnedRefs = new Set<string>();
 
+	interface PendingRoute {
+		routeId: string;
+		session: string;
+		tier: string;
+		acted: boolean;
+		turn: number;
+	}
+
+	let pendingRoute: PendingRoute | null = null;
+	let routeTurn = 0;
+
+	function sessionIdOf(ctx: ExtensionContext): string {
+		try {
+			return ctx.sessionManager.getSessionId();
+		} catch {
+			return "";
+		}
+	}
+
+	function routeOutcome(outcome: string, detail: Record<string, unknown> = {}) {
+		const p = pendingRoute;
+		if (!p) return;
+		if (routeTurn - p.turn > ROUTE_OUTCOME_WINDOW_TURNS) {
+			pendingRoute = null;
+			return;
+		}
+		appendDecision(ROUTE_OUTCOME_FILE, {
+			record: "outcome",
+			routeId: p.routeId,
+			session: p.session,
+			tier: p.tier,
+			acted: p.acted,
+			outcome,
+			turnsAfter: Math.max(0, routeTurn - p.turn),
+			...detail,
+		});
+	}
+
 	function notify(ctx: ExtensionContext, text: string, level: "info" | "warning" | "error" = "info") {
 		if (ctx.hasUI) ctx.ui.notify(text, level);
 		else process.stderr.write(`[model-router] ${text}\n`);
@@ -212,6 +258,7 @@ export default function (pi: ExtensionAPI) {
 	function record(r: RouteRecord) {
 		recent.push(r);
 		if (recent.length > 8) recent.shift();
+		pendingRoute = { routeId: r.routeId, session: r.session, tier: r.tier, acted: r.acted, turn: r.turn };
 		try {
 			pi.appendEntry("model-route", r);
 			mkdirSync(LOG_DIR, { recursive: true });
@@ -224,7 +271,31 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("model_select", (event) => {
 		if (selfSwitching) return;
-		if (event.source === "set" || event.source === "cycle") pinned = true;
+		if (event.source === "set" || event.source === "cycle") {
+			pinned = true;
+			routeOutcome("model_override", { to: keyOf(event.model) });
+		}
+	});
+
+	pi.on("turn_start", () => {
+		routeTurn++;
+	});
+
+	pi.on("input", async (event) => {
+		if (event.source !== "interactive") return;
+		if (looksLikeUserCorrection(event.text)) routeOutcome("user_corrected");
+	});
+
+	pi.on("session_start", () => {
+		pendingRoute = null;
+		routeTurn = 0;
+	});
+
+	pi.on("tool_result", async (event) => {
+		if (event.toolName !== "bash" || !pendingRoute) return;
+		const command = typeof event.input?.command === "string" ? event.input.command : "";
+		if (!TEST_RUN_RE.test(command)) return;
+		routeOutcome(event.isError ? "tests_failed" : "tests_passed", { command: command.slice(0, 120) });
 	});
 
 	// Routing fires here — after prompt submission but before the first provider
@@ -274,7 +345,17 @@ export default function (pi: ExtensionAPI) {
 		const exec = answers.execution;
 		const execChoice = exec?.choice ?? null;
 		const execP = execChoice ? (exec?.probabilities?.[execChoice] ?? null) : null;
-		const base = { ts: new Date().toISOString(), prompt: prompt.slice(0, 60), from, latencyMs, exec: execChoice, execP };
+		const base = {
+			ts: new Date().toISOString(),
+			routeId: newId(),
+			session: sessionIdOf(ctx),
+			turn: routeTurn,
+			prompt: prompt.slice(0, 60),
+			from,
+			latencyMs,
+			exec: execChoice,
+			execP,
+		};
 		// With no session history the question is structurally decided — don't let
 		// Jev's guess (unanchored without prior turns) suppress the first routing.
 		const nt = answers.new_task;

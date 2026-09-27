@@ -1788,6 +1788,15 @@ ${goalspecSummary()}` }],
 				if (raw === undefined || raw === "") {
 					throw new Error(`No raw content found for entry ${params.entry_id}`);
 				}
+				logShadowLine({
+					decision: "recall",
+					source: "jev_recall",
+					entryId: params.entry_id,
+					session: ctx.sessionManager.getSessionId(),
+					offset: params.offset ?? 0,
+					limit: params.limit ?? null,
+					chars: raw.length,
+				});
 				let out = raw;
 				if (params.offset !== undefined || params.limit !== undefined) {
 					const start = Math.max(0, params.offset ?? 0);
@@ -1853,6 +1862,14 @@ ${goalspecSummary()}` }],
 				const out = ranked.slice(0, limit).map((l, i) => {
 					const head = l.extract.length > 900 ? `${l.extract.slice(0, 900)}\n  [... extract continues — jev_recall "${l.entryId}" for raw ...]` : l.extract;
 					return `#${i + 1} [${l.sourceType} · ${l.role} · turn ${l.turn} · ${l.chars} chars condensed to ${l.extract.length}]\n${head}\nRaw paging: jev_recall entry_id "${l.entryId}" with offset/limit`;
+				});
+				logShadowLine({
+					decision: "recall",
+					source: "curator_find",
+					query,
+					session: ctx.sessionManager.getSessionId(),
+					returned: ranked.slice(0, limit).map((l) => l.entryId),
+					total: ranked.length,
 				});
 				return {
 					content: [

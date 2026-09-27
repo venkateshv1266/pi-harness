@@ -106,6 +106,7 @@ pi --use-theme low-lumen
 | **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
 | **model-fallback.ts** | Auto-failover on provider-attributable failures (rate limits, provider 5xx, stream errors) — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Transport-level errors (dead network) never switch; fallback ping-pong is blocked by sticky cycle detection + a 60s cross-model backstop, and post-run auto-resume is capped at 2 short markers instead of re-sending the prompt. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? decided execution handoff or open-ended reasoning? compute tier (keep/fast/mid/deep)? — and switches models *before* the first token is spent. The execution shape is logged for audit only. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
+| **decisions-report.ts** | `/decisions-report [days]` — closes the decision loop: joins each decision log to its outcome records (TTSR fires → survived/retried/repeated/corrected; router routes → overrides/corrections/test results; curator emits → later `jev_recall`), flags rules to prune or reword and extracts never recalled, and writes a markdown report under `~/.pi/agent/jev-decisions/reports/`. See [Decision outcome loop](#decision-outcome-loop) below. |
 | **jev-context-curator/** | Goal-quality-first context manager (V3; directory extension — `index.ts` + `jev-curator-v3-architecture.md`, an architecture/session-flow overview, inside). **Default mode is `quality`** (the full system): a versioned **GoalSpec** (user objective + criteria/constraints/plan/facts/open questions, immutable objective, `amend_goalspec` tool, displayed by `/goal`); Jev evidence-role classification (active/evidence/background/irrelevant + source type + GoalSpec links) with type-aware extract proposals (log line-scoring with deterministic ERROR/summary retention, code/doc line ranges, listing matches); a batched **frontier verifier** at turn_end over the full raw source — retains full whenever uncertain; verifier-approved extracts emitted for log/listing/code/doc sources into a searchable **evidence ledger** with `curator_find` (Jev rerank vs GoalSpec) + `jev_recall` paged raw recovery as the no-loss contract; compaction carries the complete GoalSpec + ledger (with recall ids) into the frontier-generated summary (default compaction fallback); outputs >25k capped to head/tail before first exposure (never billed in full); the V2 recency stub/truncate judge is retired in this mode — the verifier owns every full→non-full transition. Explicit modes via `JEVCURATOR_MODE`: `v2` (pre-V3 economics layer — benchmark arm), `shadow-quality` (classify/propose/verify, log only), `evidence` (log/listing emission on the V2 floor). Fail-open everywhere; `JEVCURATOR=0` kill switch; audit in `~/.pi/agent/jev-decisions/jev-curator.jsonl` + `jev-curator-v3-shadow.jsonl`; `/curator` shows mode + stats. Its `turn_end` drafts compose with other extensions' boundary entries (e.g. `recite/`). |
 | **recite/** | Tail recitation — after every turn, appends a compact (≤~300-token) state block as a context-only message so the goal sits at the model's most-attended position: GoalSpec objective/goal/plan/open questions/criteria/constraints plus the live todo list, filled in priority order up to a char budget. Exactly one copy is live — the fresh block is appended and the previous one is omitted from model context via a context edit. State is read from session entries (curator GoalSpec + `todo` tool results), so it works standalone: with `JEVCURATOR=0` the objective falls back to the latest user request. `/recite` shows the next block; `RECITE=0` disables, `RECITE_CHARS` sets the budget (default 1200). Unit tests: `node --test extensions/recite/compose.test.ts`. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
@@ -326,7 +327,9 @@ Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
 `JEV_MODEL`; `MODEL_ROUTER=0` disables the Jev call entirely. Every decision
 —including no-ops, with reasons, probabilities, and the execution-shape signal
 (executing/deciding)—is appended to
-`~/.pi/agent/jev-decisions/model-router.jsonl` for auditing hit rate and calibration.
+`~/.pi/agent/jev-decisions/model-router.jsonl` for auditing hit rate and calibration;
+outcome events (manual override, correction, test result) land in the same file
+and join by `routeId` — see [Decision outcome loop](#decision-outcome-loop).
 
 **Manage with `/route`:**
 
@@ -338,6 +341,37 @@ Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
 | `/route tier <fast\|mid\|deep> [model:thinking]` | One-liner, e.g. `/route tier deep openrouter/openai/gpt-5.6-luna:xhigh` |
 | `/route clear [fast\|mid\|deep]` | Unset a tier (router stops acting on it) |
 | `/route threshold [0.6\|0.7\|0.75\|0.8\|0.9]` | Minimum calibrated p for both questions before the router acts (default 0.75) |
+
+### Decision outcome loop
+
+Every decision log already recorded *what* the harness decided
+(`ttsr-jev.jsonl`, `model-router.jsonl`, `jev-curator-v3-shadow.jsonl`,
+`jev-memory.jsonl`). **decisions-report.ts** adds *what happened next* and joins
+the two sides. Outcome records live in the same per-system files (distinguished
+by `record:"fire"` / `record:"outcome"` / `decision:"recall"`):
+
+- **TTSR** — each fire logs rule, scope, session, turn, and whether the reminder
+  was actually delivered to the model. The outcome lands when the window closes
+  or a signal arrives: `survived` (nothing adverse within 5 turns), `retried`
+  (a blocked tool call re-issued unchanged with no user input in between),
+  `repeated` (the same rule fired again), `user_corrected` (the next interactive
+  message matches the correction heuristic), `unresolved` (session ended first).
+- **Router** — each route record carries `routeId` / `session` / `turn`; outcome
+  events reference it: `model_override` (manual model pick), `user_corrected`,
+  and `tests_passed` / `tests_failed` (a test-runner bash result within 10 turns).
+- **Curator** — `jev_recall` and `curator_find` log `decision:"recall"` records,
+  so emitted extracts join against later recall. Emitted-but-never-recalled is
+  the signal that an extraction was unnecessary.
+- **Memory** — the report surfaces the existing audit decisions (admission,
+  corrections, consolidation degradation) as pipeline health, no new events.
+
+`/decisions-report [days]` (default 7) joins the four logs and flags prune
+candidates (many evaluations, no delivered fire), rules whose delivered
+interventions are mostly adverse, acted routes followed by failing tests, and
+emitted extracts never recalled. The full markdown report is written to
+`~/.pi/agent/jev-decisions/reports/decisions-<date>.md`; the command notifies a
+compact summary. The shared JSONL/correction helpers live in
+`utils/jev-outcomes.ts` (mirrored with the other extensions).
 
 ### Model roles
 
