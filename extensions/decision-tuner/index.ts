@@ -19,9 +19,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { collectReport, type Report } from "../utils/decision-analysis.ts";
-import { newId } from "../utils/jev-outcomes.ts";
-import { renderMarkdown, renderSummary, writeReportFile } from "./decisions-report.ts";
+import { collectReport, type Report } from "../../utils/decision-analysis.ts";
+import { newId } from "../../utils/jev-outcomes.ts";
+import { renderMarkdown, renderSummary, writeReportFile } from "../decisions-report.ts";
 
 const TUNER_DIR = join(homedir(), ".pi", "agent", "decision-tuner");
 const STATE_FILE = join(TUNER_DIR, "state.json");
@@ -51,6 +51,7 @@ interface TunerConfig {
 
 interface TunerState {
 	lastRun?: string;
+	lastAction?: { kind: "report" | "tuner"; at: string };
 }
 
 function errorMessage(err: unknown): string {
@@ -69,7 +70,7 @@ function readConfig(): TunerConfig {
 	return readJson<TunerConfig>(CONFIG_FILE) ?? {};
 }
 
-function readState(): TunerState {
+export function readState(): TunerState {
 	return readJson<TunerState>(STATE_FILE) ?? {};
 }
 
@@ -107,6 +108,10 @@ export function readProposals(): Proposal[] {
 function writeProposals(list: Proposal[]) {
 	mkdirSync(TUNER_DIR, { recursive: true });
 	writeFileSync(PROPOSALS_FILE, list.map((p) => JSON.stringify(p)).join("\n") + (list.length ? "\n" : ""));
+}
+
+export function markAction(kind: "report" | "tuner"): void {
+	writeState({ ...readState(), lastAction: { kind, at: new Date().toISOString() } });
 }
 
 // ─── Rule lookup + safety exemption ──────────────────────────────────────
@@ -217,7 +222,7 @@ export function runTuner(cwd: string): TunerRun {
 	const fresh = collectProposals(report, cwd, existing);
 	if (fresh.length) writeProposals([...existing, ...fresh]);
 	const reportPath = writeReportFile(renderMarkdown(report));
-	writeState({ lastRun: new Date().toISOString() });
+	writeState({ ...readState(), lastRun: new Date().toISOString() });
 	appendTunerAudit({ event: "run", days, proposals: fresh.map((p) => `${p.kind}:${p.target}`) });
 	const open = [...existing, ...fresh].filter((p) => p.status === "open").length;
 	const summary = [

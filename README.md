@@ -107,7 +107,7 @@ pi --use-theme low-lumen
 | **model-fallback.ts** | Auto-failover on provider-attributable failures (rate limits, provider 5xx, stream errors) — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Transport-level errors (dead network) never switch; fallback ping-pong is blocked by sticky cycle detection + a 60s cross-model backstop, and post-run auto-resume is capped at 2 short markers instead of re-sending the prompt. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
 | **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? decided execution handoff or open-ended reasoning? compute tier (keep/fast/mid/deep)? — and switches models *before* the first token is spent. The execution shape is logged for audit only. Confidence-gated, honors manual model choices, fails open. See [Model routing](#model-routing-route-ahead) below. |
 | **decisions-report.ts** | `/decisions-report [days]` — closes the decision loop: auto-discovers every `*.jsonl` decision log under `~/.pi/agent/jev-decisions/`, joins decisions to their outcome records (TTSR fires → survived/retried/repeated/corrected; router routes → overrides/corrections/test results; curator emits → later `jev_recall`; plus any new system using the `utils/jev-outcomes.ts` contract), flags rules to prune or reword and extracts never recalled, and writes a markdown report under `~/.pi/agent/jev-decisions/reports/`. See [Decision outcome loop](#decision-outcome-loop) below. |
-| **decision-tuner.ts** | Weekly auto-tuning on top of the decision logs: regenerates the report on session start when stale and proposes `prune` actions for rules that never deliver (rules marked `safety: true` exempt; apply renames to `.md.disabled`, reversible) plus advisory reword/router/curator flags with sample gates. `/decision-tuner [status\|run\|list\|apply <id>\|dismiss <id>]`; `DECISION_TUNER=0` disables, `DECISION_TUNER_DAYS` sets the interval. See [Decision outcome loop](#decision-outcome-loop) below. |
+| **decision-tuner/** | Weekly auto-tuning on top of the decision logs: regenerates the report on session start when stale and proposes `prune` actions for rules that never deliver (rules marked `safety: true` exempt; apply renames to `.md.disabled`, reversible) plus advisory reword/router/curator flags with sample gates. `/decision-tuner [status\|run\|list\|apply <id>\|dismiss <id>]`; also contributes the **Decisions** section to `/setup` (run report, see last run, apply/dismiss proposals, with each row reporting its state after the action); `DECISION_TUNER=0` disables, `DECISION_TUNER_DAYS` sets the interval. See [Decision outcome loop](#decision-outcome-loop) below, or `extensions/decision-tuner/README.md` for the full design. |
 | **jev-context-curator/** | Goal-quality-first context manager (V3; directory extension — `index.ts` + `jev-curator-v3-architecture.md`, an architecture/session-flow overview, inside). **Default mode is `quality`** (the full system): a versioned **GoalSpec** (user objective + criteria/constraints/plan/facts/open questions, immutable objective, `amend_goalspec` tool, displayed by `/goal`); Jev evidence-role classification (active/evidence/background/irrelevant + source type + GoalSpec links) with type-aware extract proposals (log line-scoring with deterministic ERROR/summary retention, code/doc line ranges, listing matches); a batched **frontier verifier** at turn_end over the full raw source — retains full whenever uncertain; verifier-approved extracts emitted for log/listing/code/doc sources into a searchable **evidence ledger** with `curator_find` (Jev rerank vs GoalSpec) + `jev_recall` paged raw recovery as the no-loss contract; compaction carries the complete GoalSpec + ledger (with recall ids) into the frontier-generated summary (default compaction fallback); outputs >25k capped to head/tail before first exposure (never billed in full); the V2 recency stub/truncate judge is retired in this mode — the verifier owns every full→non-full transition. Explicit modes via `JEVCURATOR_MODE`: `v2` (pre-V3 economics layer — benchmark arm), `shadow-quality` (classify/propose/verify, log only), `evidence` (log/listing emission on the V2 floor). Fail-open everywhere; `JEVCURATOR=0` kill switch; audit in `~/.pi/agent/jev-decisions/jev-curator.jsonl` + `jev-curator-v3-shadow.jsonl`; `/curator` shows mode + stats. Its `turn_end` drafts compose with other extensions' boundary entries (e.g. `recite/`). |
 | **recite/** | Tail recitation — after every turn, appends a compact (≤~300-token) state block as a context-only message so the goal sits at the model's most-attended position: GoalSpec objective/goal/plan/open questions/criteria/constraints plus the live todo list, filled in priority order up to a char budget. Exactly one copy is live — the fresh block is appended and the previous one is omitted from model context via a context edit. State is read from session entries (curator GoalSpec + `todo` tool results), so it works standalone: with `JEVCURATOR=0` the objective falls back to the latest user request. `/recite` shows the next block; `RECITE=0` disables, `RECITE_CHARS` sets the budget (default 1200). Unit tests: `node --test extensions/recite/compose.test.ts`. |
 | **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
@@ -386,7 +386,7 @@ decisions made after the telemetry rollout, so the report separates
 telemetry-era counts from legacy rows. The markdown lands in
 `~/.pi/agent/jev-decisions/reports/decisions-<date>.md`.
 
-**decision-tuner.ts** automates the loop: on session start it re-runs the
+**decision-tuner/** automates the loop: on session start it re-runs the
 analysis every `DECISION_TUNER_DAYS` (default 7), regenerates the report, and
 notifies only when there are proposals. With sample gates it proposes
 - `prune` — rules evaluated ≥20 times that never delivered a fire. Rules marked
@@ -400,6 +400,8 @@ notifies only when there are proposals. With sample gates it proposes
 Manage with `/decision-tuner` (`status`, `run`, `list`, `apply <id>`,
 `dismiss <id>`; dismissal cools down 30 days). State, proposals, and the run
 audit live in `~/.pi/agent/decision-tuner/`. `DECISION_TUNER=0` disables it.
+The same state is in `/setup → Decisions`: run the report, check the last run,
+and apply/dismiss open proposals from the window — no command to remember.
 
 ### Model roles
 
@@ -458,8 +460,10 @@ tweaks what:
   pair, thinking override, package), `+ Add …` rows add new ones.
 - **Sections**: Models, Roles, Router, Fallbacks, Guardrails, Appearance,
   Core, Packages, Commands (every loaded slash command with its description —
-  built via `pi.getCommands()`), Rules (TTSR), MCP. `/setup router` deep-links
-  to a section; `/` filters across all sections; `?` shows key help.
+  built via `pi.getCommands()`), Rules (TTSR), MCP, Decisions (`**decision-tuner/**`:
+  run the report, see the tuner's last run, apply/dismiss open proposals).
+  `/setup router` deep-links to a section; `/` filters across all sections; `?`
+  shows key help.
 - Changes are written with the same read-merge-write pattern the individual
   commands use, so concurrent writers (router, roles, fallback) never clobber
   each other. Where the API allows, changes also apply to the live session
