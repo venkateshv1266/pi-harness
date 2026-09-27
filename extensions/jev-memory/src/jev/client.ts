@@ -11,7 +11,7 @@ export type ChoiceAnswer = { type?: "choice"; choice: string; confidence: number
 export type ScoreAnswer = { type?: "score"; score: number; confidence?: number; probabilities?: Record<string, number> };
 export type JevAnswer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
 export type JevAnswers = Record<string, JevAnswer> & { __cached?: boolean };
-export type CallOpts = { budget?: CallBudget; mock?: boolean };
+export type CallOpts = { budget?: CallBudget; mock?: boolean; timeoutMs?: number };
 
 export class CallBudget {
 	private calls = 0;
@@ -81,7 +81,7 @@ export async function jevCall(state: JevState, questions: JevQuestions, opts?: C
 		const token = key();
 		if (!token) return null;
 		const retries = Math.max(0, Number(process.env.JEVM_MAX_RETRIES ?? "2"));
-		const timeout = Math.max(1, Number(process.env.JEVM_TIMEOUT_MS ?? "10000"));
+		const timeout = Math.max(1, opts?.timeoutMs ?? Number(process.env.JEVM_TIMEOUT_MS ?? "10000"));
 		let response: Response | null = null;
 		for (let attempt = 0; attempt <= retries; attempt++) {
 			try {

@@ -6,7 +6,7 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 const AGENTS_FILE = "AGENTS.md";
 const PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
-const CHILD_TOOLS = new Set(["subagent", "subagent_spawn"]);
+const CHILD_TOOLS = new Set(["subagent", "subagent_spawn", "delegate"]);
 
 type GovernedRepo = {
 	root: string;

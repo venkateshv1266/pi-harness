@@ -209,6 +209,36 @@ const scopeHashCache = new Map<string, string>();
 let nextCmdId = 0;
 let reaperTimer: NodeJS.Timeout | undefined;
 
+/** Whether a live in-process child currently holds `name` for this scope. */
+export function isNameLive(scopeKey: string, name: string): boolean {
+	return live.has(childKey(scopeKey, name));
+}
+
+export interface PersistentSpawnParams {
+	agent?: string;
+	task?: string;
+	name?: string;
+	tasks?: Array<{
+		agent: string;
+		task: string;
+		name: string;
+		cwd?: string;
+		tools?: string[];
+		model?: string;
+		wait?: boolean;
+	}>;
+	cwd?: string;
+	tools?: string[];
+	model?: string;
+	wait?: boolean;
+	agentScope?: AgentScope;
+}
+
+export interface PersistentExecContext {
+	cwd: string;
+	sessionManager: { getSessionFile(): string | undefined; getSessionId(): string };
+}
+
 function hashScope(scopeKey: string): string {
 	const cached = scopeHashCache.get(scopeKey);
 	if (cached) return cached;
@@ -478,7 +508,7 @@ function startChild(opts: SpawnOptions): LiveChild {
 		cwd: opts.cwd,
 		shell: false,
 		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, CMUX_PI_HOOKS_DISABLED: "1" },
+		env: { ...process.env, CMUX_PI_HOOKS_DISABLED: "1", PI_SUBAGENT_CHILD: "1" },
 	}) as ChildProcessWithoutNullStreams;
 
 	const entry: RegistryEntry = {
@@ -763,7 +793,7 @@ function renderRoster(details: RosterDetails, theme: ThemeLike): FramedBlockComp
 	});
 }
 
-function renderPersistentResult(
+export function renderPersistentResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: ThemeLike,
@@ -806,85 +836,18 @@ const BehaviorSchema = Type.Optional(
 	}),
 );
 
-export default function (pi: ExtensionAPI) {
-	ensureReaper();
 
-	const resolveScopeKey = (ctx: { sessionManager: { getSessionFile(): string | undefined; getSessionId(): string } }): string => {
-		const file = ctx.sessionManager.getSessionFile();
-		if (file) return `file:${file}`;
-		return `id:${ctx.sessionManager.getSessionId()}`;
-	};
-
-	const findAgent = (ctx: { cwd: string }, agentName: string, agentScope: AgentScope): AgentConfig | undefined =>
-		discoverAgents(ctx.cwd, agentScope).agents.find((a) => a.name === agentName);
-
-	pi.registerTool({
-		name: "subagent_spawn",
-		label: "Subagent Spawn",
-		description:
-			"Spawn NAMED persistent subagents (optionally a `tasks` batch that runs concurrently) and BLOCK until they " +
-			"settle — results come back in this call, so there is nothing to collect afterwards. Children run as long-lived " +
-			"`pi --mode rpc` processes with persistent sessions scoped to this root session, so they can be steered mid-flight " +
-			"(subagent_send) or given follow-up turns later in their retained sessions. " +
-			"Set wait:false to return handles immediately without results (advanced: mid-flight steering pattern) — then " +
-			"collect with subagent_wait. " +
-			"ONLY use this when children must outlive a single call: long-running tasks you will poll or steer, or iterative " +
-			"work with follow-up turns (e.g. parallel researchers, a writer a verifier sends fix requests to). " +
-			"If the parent aborts, the children stop gracefully (sessions retained) - waiting on them again resumes them automatically. " +
-			"For one-shot, parallel-batch, or chain delegation that just returns a result, use the plain `subagent` tool instead.",
-		parameters: Type.Object({
-			agent: Type.Optional(Type.String({ description: "Name of the agent definition to invoke (single form)" })),
-			task: Type.Optional(Type.String({ description: "Initial task for the agent (single form)" })),
-			name: Type.Optional(
-				Type.String({
-					description: "Persistent handle name for this child (single form). Pattern: [a-zA-Z0-9][a-zA-Z0-9_-]*",
-				}),
-			),
-			tasks: Type.Optional(
-				Type.Array(
-					Type.Object({
-						agent: Type.String({ description: "Name of the agent definition to invoke" }),
-						task: Type.String({ description: "Initial task for this child" }),
-						name: Type.String({ description: "Persistent handle name for this child" }),
-						cwd: Type.Optional(Type.String({ description: "Working directory for this child" })),
-						tools: ToolsParam,
-						model: Type.Optional(Type.String({ description: "Optional model ID or role alias (@smol, @slow, @task, @plan)" })),
-						wait: Type.Optional(
-							Type.Boolean({
-								description: "Block until this child settles and include its result. Default: true.",
-								default: true,
-							}),
-						),
-					}),
-					{
-						description:
-							"Batch: spawn several persistent subagents concurrently in ONE call. Prefer this over multiple separate spawn calls.",
-					},
-				),
-			),
-			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single form)" })),
-			tools: ToolsParam,
-			model: Type.Optional(Type.String({ description: "Optional model ID or role alias (@smol, @slow, @task, @plan)" })),
-			wait: Type.Optional(
-				Type.Boolean({
-					description:
-						"Block until every child settles and return all results in this call (default). Set false to return handles immediately for mid-flight steering — collect later with subagent_wait.",
-					default: true,
-				}),
-			),
-			agentScope: AgentScopeSchema,
-		}),
-		renderShell: "self",
-
-		renderCall(args, theme, context) {
-			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
-		},
-
-		renderResult(result, options, theme, context) {
-			return renderPersistentResult(result, options, theme, context.args);
-		},
-
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+/**
+ * Persistent engine entry point (single or `tasks` batch). Shared by the
+ * `subagent_spawn` tool and the `delegate` router. Blocks until waited children
+ * settle; children remain resumable afterwards.
+ */
+export async function executePersistentSpawn(
+	params: PersistentSpawnParams,
+	ctx: PersistentExecContext,
+	signal: AbortSignal | undefined,
+	onUpdate: UpdateSink | undefined,
+): Promise<AgentToolResult<PersistentDetails>> {
 			const agentScope = params.agentScope ?? "user";
 			const hasSingle = Boolean(params.agent && params.task && params.name);
 			const hasBatch = (params.tasks?.length ?? 0) > 0;
@@ -1050,6 +1013,87 @@ export default function (pi: ExtensionAPI) {
 				details: receipt,
 				content: [{ type: "text", text: `Spawned ${spawned.length} persistent subagent(s); tasks admitted and running.\n${summary}\nCollect results with subagent_wait (free read of settled output). subagent_send starts a new agent turn — use it for steering, not retrieval.` }],
 			};
+}
+
+export const resolveScopeKey = (ctx: { sessionManager: { getSessionFile(): string | undefined; getSessionId(): string } }): string => {
+	const file = ctx.sessionManager.getSessionFile();
+	if (file) return `file:${file}`;
+	return `id:${ctx.sessionManager.getSessionId()}`;
+};
+
+const findAgent = (ctx: { cwd: string }, agentName: string, agentScope: AgentScope): AgentConfig | undefined =>
+	discoverAgents(ctx.cwd, agentScope).agents.find((a) => a.name === agentName);
+
+export default function (pi: ExtensionAPI) {
+	ensureReaper();
+
+	pi.registerTool({
+		name: "subagent_spawn",
+		label: "Subagent Spawn",
+		description:
+			"Spawn NAMED persistent subagents (optionally a `tasks` batch that runs concurrently) and BLOCK until they " +
+			"settle — results come back in this call, so there is nothing to collect afterwards. Children run as long-lived " +
+			"`pi --mode rpc` processes with persistent sessions scoped to this root session, so they can be steered mid-flight " +
+			"(subagent_send) or given follow-up turns later in their retained sessions. " +
+			"Set wait:false to return handles immediately without results (advanced: mid-flight steering pattern) — then " +
+			"collect with subagent_wait. " +
+			"Prefer `delegate` — the unified spawn entry point that routes automatically between one-shot and persistent " +
+			"engines; use this tool directly only when you deliberately need persistent semantics. " +
+			"If the parent aborts, the children stop gracefully (sessions retained) - waiting on them again resumes them automatically.",
+		parameters: Type.Object({
+			agent: Type.Optional(Type.String({ description: "Name of the agent definition to invoke (single form)" })),
+			task: Type.Optional(Type.String({ description: "Initial task for the agent (single form)" })),
+			name: Type.Optional(
+				Type.String({
+					description: "Persistent handle name for this child (single form). Pattern: [a-zA-Z0-9][a-zA-Z0-9_-]*",
+				}),
+			),
+			tasks: Type.Optional(
+				Type.Array(
+					Type.Object({
+						agent: Type.String({ description: "Name of the agent definition to invoke" }),
+						task: Type.String({ description: "Initial task for this child" }),
+						name: Type.String({ description: "Persistent handle name for this child" }),
+						cwd: Type.Optional(Type.String({ description: "Working directory for this child" })),
+						tools: ToolsParam,
+						model: Type.Optional(Type.String({ description: "Optional model ID or role alias (@smol, @slow, @task, @plan)" })),
+						wait: Type.Optional(
+							Type.Boolean({
+								description: "Block until this child settles and include its result. Default: true.",
+								default: true,
+							}),
+						),
+					}),
+					{
+						description:
+							"Batch: spawn several persistent subagents concurrently in ONE call. Prefer this over multiple separate spawn calls.",
+					},
+				),
+			),
+			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single form)" })),
+			tools: ToolsParam,
+			model: Type.Optional(Type.String({ description: "Optional model ID or role alias (@smol, @slow, @task, @plan)" })),
+			wait: Type.Optional(
+				Type.Boolean({
+					description:
+						"Block until every child settles and return all results in this call (default). Set false to return handles immediately for mid-flight steering — collect later with subagent_wait.",
+					default: true,
+				}),
+			),
+			agentScope: AgentScopeSchema,
+		}),
+		renderShell: "self",
+
+		renderCall(args, theme, context) {
+			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+		},
+
+		renderResult(result, options, theme, context) {
+			return renderPersistentResult(result, options, theme, context.args);
+		},
+
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			return executePersistentSpawn(params, ctx as PersistentExecContext, signal, onUpdate);
 		},
 	});
 
@@ -1057,7 +1101,7 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent_send",
 		label: "Subagent Send",
 		description:
-			"Send a message to a named persistent subagent (spawned via subagent_spawn). If the child is mid-run the message " +
+			"Send a message to a named persistent subagent (spawned via delegate or subagent_spawn). If the child is mid-run the message " +
 			"steers it (delivered between tool calls); if idle it starts a new turn in the same retained session. If the child's " +
 			"process was unloaded (idle timeout, restart) it is transparently resumed from disk with full prior context. " +
 			"Set wait=true to block until the child settles and get its final output (e.g. a verifier telling a warm writer " +
@@ -1066,7 +1110,7 @@ export default function (pi: ExtensionAPI) {
 			"subagent_wait instead — it auto-resumes aborted children. Not this tool. " +
 			"Never use this merely to retrieve a finished child's output — subagent_wait reads the already-settled result for free, while this tool costs a new agent turn.",
 		parameters: Type.Object({
-			name: Type.String({ description: "Handle name of the subagent (from subagent_spawn)" }),
+			name: Type.String({ description: "Handle name of the subagent (from delegate or subagent_spawn)" }),
 			message: Type.String({ description: "Message / follow-up instruction for the child" }),
 			behavior: BehaviorSchema,
 			wait: Type.Optional(
@@ -1179,12 +1223,12 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent Wait",
 		description:
 			"Block until a named persistent subagent finishes its current run and return its final assistant output. " +
-			"Needed after subagent_spawn with wait:false or after steering (subagent_send without wait). " +
+			"Needed after a delegate/subagent_spawn with wait:false or after steering (subagent_send without wait). " +
 			"If the child's last run was aborted before producing output, this automatically resumes it " +
 			"(continues from where it stopped) and blocks until it finishes. If the child is idle, returns its last " +
 			"settled output. If the child's process is gone, reads the last assistant message from its session file on disk.",
 		parameters: Type.Object({
-			name: Type.String({ description: "Handle name of the subagent (from subagent_spawn)" }),
+			name: Type.String({ description: "Handle name of the subagent (from delegate or subagent_spawn)" }),
 			timeoutMs: Type.Optional(
 				Type.Number({
 					description: `Timeout in ms (default ${DEFAULT_WAIT_TIMEOUT_MS}; 0 = wait forever). On timeout the child keeps running.`,
@@ -1266,7 +1310,7 @@ export default function (pi: ExtensionAPI) {
 			const scopeKey = resolveScopeKey(ctx);
 			const entries = readRegistry(scopeKey);
 			if (entries.length === 0) {
-				return { details: emptyDetails(), content: [{ type: "text", text: "No persistent subagents in this session. Spawn one with subagent_spawn." }] };
+				return { details: emptyDetails(), content: [{ type: "text", text: "No persistent subagents in this session. Spawn one with delegate." }] };
 			}
 			const roster: RosterEntry[] = entries.map((e) => {
 				const child = live.get(childKey(scopeKey, e.name));

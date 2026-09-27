@@ -29,7 +29,7 @@ import {
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import {
 	type AgentConfig,
 	type AgentScope,
@@ -260,7 +260,7 @@ async function runSingleAgent(
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
-			const childEnv = { ...process.env, CMUX_PI_HOOKS_DISABLED: "1" };
+			const childEnv = { ...process.env, CMUX_PI_HOOKS_DISABLED: "1", PI_SUBAGENT_CHILD: "1" };
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: cwd ?? defaultCwd,
 				shell: false,
@@ -477,6 +477,15 @@ const SubagentParams = Type.Object({
 	timeoutMs: Type.Optional(Type.Number({ description: "Optional timeout in milliseconds" })),
 });
 
+export type SubagentParamsType = Static<typeof SubagentParams>;
+
+/** Minimal tool-ctx surface the one-shot engine needs. */
+export interface SubagentExecContext {
+	cwd: string;
+	hasUI: boolean;
+	ui: { confirm(title: string, message: string): Promise<boolean> };
+}
+
 function computeTotalDurationMs(results: SingleResult[]): number {
 	if (results.length === 0) return 0;
 	let minStart = Infinity;
@@ -489,43 +498,18 @@ function computeTotalDurationMs(results: SingleResult[]): number {
 	return Math.max(0, maxEnd - minStart);
 }
 
-export default function (pi: ExtensionAPI) {
-	const regDiscovery = discoverAgents(process.cwd(), "both");
-	const userRoster =
-		regDiscovery.agents
-			.filter((a) => a.source === "user")
-			.map((a) => `${a.name}: ${a.description}`)
-			.join("; ") || "none";
-	const projectAgentsAtReg = regDiscovery.agents.filter((a) => a.source === "project");
-	const projectRoster =
-		projectAgentsAtReg.length > 0
-			? projectAgentsAtReg.map((a) => `${a.name}: ${a.description}`).join("; ")
-			: null;
 
-	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
-		description: [
-			"Delegate tasks to specialized subagents with isolated context.",
-			"Use this for one-shot delegation where you wait for the full result — including parallel batches and chains. " +
-			"If the child must outlive a single call (long-running work you will poll or steer, iterative follow-up turns), " +
-			"use subagent_spawn/subagent_send/subagent_result instead.",
-			"MODES (choose exactly one):",
-			"- PARALLEL: { tasks: [{ agent, task }, { agent, task }, ...] } — Spawns multiple subagents concurrently in a single grouped batch. ALWAYS use this shape instead of emitting multiple separate tool calls.",
-			"- CHAIN: { chain: [{ agent, task }, { agent, task: '... {previous}' }] } — Sequential pipeline.",
-			"- SINGLE: { agent, task } — Single standalone subagent.",
-			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
-			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
-			`Available user-scope agents: ${userRoster}.`,
-			...(projectRoster ? [`Project-scope agents (require agentScope: "both"): ${projectRoster}.`] : []),
-		].join(" "),
-		parameters: SubagentParams,
-		// Render flush (no outer box/padding/bg) so the vendored framed block in
-		// render.ts draws its own omp-style border. Earendil's equivalent of
-		// omp's `markFramedBlockComponent`.
-		renderShell: "self",
-
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+/**
+ * One-shot engine entry point (single / batch / chain). Shared by the `subagent`
+ * tool and the `delegate` router; keeps one implementation of the spawn /
+ * collect / progress flow.
+ */
+export async function executeSubagent(
+	params: SubagentParamsType,
+	ctx: SubagentExecContext,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+): Promise<AgentToolResult<SubagentDetails>> {
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
@@ -764,6 +748,46 @@ export default function (pi: ExtensionAPI) {
 				content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
 				details: makeDetails("single")([]),
 			};
+}
+
+export default function (pi: ExtensionAPI) {
+	const regDiscovery = discoverAgents(process.cwd(), "both");
+	const userRoster =
+		regDiscovery.agents
+			.filter((a) => a.source === "user")
+			.map((a) => `${a.name}: ${a.description}`)
+			.join("; ") || "none";
+	const projectAgentsAtReg = regDiscovery.agents.filter((a) => a.source === "project");
+	const projectRoster =
+		projectAgentsAtReg.length > 0
+			? projectAgentsAtReg.map((a) => `${a.name}: ${a.description}`).join("; ")
+			: null;
+
+	pi.registerTool({
+		name: "subagent",
+		label: "Subagent",
+		description: [
+			"Delegate tasks to specialized subagents with isolated context.",
+			"Prefer `delegate` — the unified spawn entry point that routes automatically between this one-shot engine and persistent subagents. " +
+			"Use `subagent` directly only when you deliberately need one-shot semantics: the child exits after this call and cannot be revisited. " +
+			"Supports parallel batches and chains.",
+			"MODES (choose exactly one):",
+			"- PARALLEL: { tasks: [{ agent, task }, { agent, task }, ...] } — Spawns multiple subagents concurrently in a single grouped batch. ALWAYS use this shape instead of emitting multiple separate tool calls.",
+			"- CHAIN: { chain: [{ agent, task }, { agent, task: '... {previous}' }] } — Sequential pipeline.",
+			"- SINGLE: { agent, task } — Single standalone subagent.",
+			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
+			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
+			`Available user-scope agents: ${userRoster}.`,
+			...(projectRoster ? [`Project-scope agents (require agentScope: "both"): ${projectRoster}.`] : []),
+		].join(" "),
+		parameters: SubagentParams,
+		// Render flush (no outer box/padding/bg) so the vendored framed block in
+		// render.ts draws its own omp-style border. Earendil's equivalent of
+		// omp's `markFramedBlockComponent`.
+		renderShell: "self",
+
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			return executeSubagent(params, ctx as SubagentExecContext, signal, onUpdate);
 		},
 
 		renderCall(args, theme, context) {
