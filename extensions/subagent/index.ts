@@ -46,7 +46,6 @@ import {
 } from "./render.ts";
 
 const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 0; // 0 = no wall-clock timeout
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
@@ -133,26 +132,6 @@ function truncateOutput(output: string): string {
 		truncated = truncated.slice(0, -1);
 	}
 	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted.]`;
-}
-
-async function mapWithConcurrencyLimit<TIn, TOut>(
-	items: TIn[],
-	concurrency: number,
-	fn: (item: TIn, index: number) => Promise<TOut>,
-): Promise<TOut[]> {
-	if (items.length === 0) return [];
-	const limit = Math.max(1, Math.min(concurrency, items.length));
-	const results: TOut[] = new Array(items.length);
-	let nextIndex = 0;
-	const workers = new Array(limit).fill(null).map(async () => {
-		while (true) {
-			const current = nextIndex++;
-			if (current >= items.length) return;
-			results[current] = await fn(items[current], current);
-		}
-	});
-	await Promise.all(workers);
-	return results;
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
@@ -703,7 +682,7 @@ export default function (pi: ExtensionAPI) {
 				};
 				emitParallelUpdate();
 
-				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+				const results = await Promise.all(params.tasks.map(async (t, index) => {
 					const result = await runSingleAgent(
 						ctx.cwd,
 						agents,
@@ -728,7 +707,7 @@ export default function (pi: ExtensionAPI) {
 					allResults[index] = result;
 					emitParallelUpdate();
 					return result;
-				});
+				}));
 
 				const successCount = results.filter((r) => !isFailedResult(r)).length;
 				const summaries = results.map((r) => {
