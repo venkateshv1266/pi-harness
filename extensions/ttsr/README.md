@@ -25,7 +25,7 @@ the validator:
 ## Install
 
 Already at `~/.pi/agent/extensions/ttsr/` (auto-discovered). Restart pi or `/reload`.
-Native deps (`@ast-grep/napi`, `typebox`) are in `package.json`; run `npm install`
+Native deps (`@ast-grep/napi`, `typebox`, `yaml`) are in `package.json`; run `npm install`
 in this directory once if `node_modules` is missing.
 
 Verify:
@@ -58,6 +58,58 @@ Rule body — the reminder injected on match.
 ```
 
 Legacy aliases: `ttsrTrigger`/`ttsr_trigger` → `condition`; `ast_condition` → `astCondition`.
+
+## Context registry (synthesized rules)
+
+Context docs registered in a registry become TTSR rules automatically — no
+hand-written rule file per doc. Two registries merge (project wins by id):
+
+- `~/.pi/contexts/registry.yaml` — user contexts
+- `<dir>/contexts/registry.yaml` — project contexts, trusted sessions only; the
+  nearest ancestor of cwd (up to `$HOME`) carrying one is used, so a workspace
+  root registry also applies inside its sub-repos.
+
+```yaml
+version: 1
+defaults: { tier: advisory, onFail: suppress, gate: { mode: necessity } }
+contexts:
+  - id: kubernetes
+    file: kubernetes.md            # resolved under the registry's own dir
+    when: "before kubectl execution"          # embedded in the reminder
+    tier: gated                    # advisory | gated | index-only
+    triggers:
+      - tool: '^bash$'             # regex vs tool-name prefix of the haystack
+        match: '(^|[;&|\n]\s*)kubectl(\s|$)'  # optional payload regex
+    gate:
+      threshold: 0.85
+      criteria: { read_now: "...", already_covered: "...", not_needed: "..." }
+    reads: [kubernetes.md]         # extra docs read together (multi-doc)
+```
+
+- Each trigger group (same `globs`) synthesizes one rule `ctx-<id>` /
+  `ctx-<id>-2`; `tool` is anchored to the tool name, a trailing `$` becomes a
+  non-consuming boundary, and `match` must also match the payload.
+- `gate.mode: necessity` emits a Jev `noul` gate composed from the criteria
+  (`read_now` / `already_covered` / `not_needed`); `none` fires on match.
+  Defaults: threshold 0.8, `onFail: suppress`.
+- `digest:` (top level) wires the gate's session state to the curator, e.g.
+  `digest: { goalspecEntryType: jev-curator-goalspec, goalEntryType: jev-curator-goal }`.
+  Empty (default) → fallback to the pinned goal, then the last user message. The
+  chosen source is logged as `digestSource` on every adjudication.
+- `subagents: true` adds a `ctxdelegate-<id>` rule that blocks `delegate` /
+  `subagent_spawn` when the child task needs the context, so the parent
+  re-issues with the docs in the child's task (children start with empty
+  context). Its gate is forced `onFail: suppress` — Jev outages never block.
+- Session ledger: trigger rules re-arm only when their doc changed since the
+  last receipt (`read` and `read_context` both count); an ignored push gets one
+  retry (advisory), then a block (gated); ≤2 context pushes per turn; repeated
+  identical adjudications are cached.
+- `tier: index-only` entries synthesize no rule — pull them with
+  `context_list` / `read_context`; `status: retired` is skipped.
+- Session start writes `~/.pi/contexts/INDEX.md` (generated; do not hand-edit)
+  and injects a one-line pointer to it into the system prompt.
+- Disable the registry with `TTSR_CONTEXT_REGISTRY=0`. Run its tests with
+  `npm test` (Node ≥ 22.18 type stripping).
 
 ## Jev verification (second-stage arbiter)
 
@@ -129,6 +181,11 @@ package and register it — see the `langFromPath` map in `index.ts`.
 - `/ttsr` — list all rules with armed/fired status and AST on/off
 - `/rules` — alias for `/ttsr`
 - `/ttsr-reload` — reload rules from disk without restarting
+- `/contexts` — registry entries with per-entry fired/suppressed gate stats
+  (aggregated from `ttsr-jev.jsonl`; override the log path with
+  `TTSR_CONTEXT_STATS_FILE`)
+- `/contexts prune` — adds prune candidates (never fired but often suppressed,
+  suppression ≫ fires, or adverse outcomes) for the periodic hygiene pass
 - `/omfg <complaint>` — draft a TTSR rule: prompts for a regex trigger + name,
   writes `.pi/rules/<name>.md`, then `/ttsr-reload`
 
@@ -136,6 +193,10 @@ package and register it — see the `langFromPath` map in `index.ts`.
 
 - `read_rule` — callable by the LLM; loads a rulebook rule's full body by name.
   Only useful for the rare rulebook entry that passed the validator.
+- `context_list` — list context-registry entries (id, when-to-use, tier,
+  resolved doc paths); the pull path for `index-only` docs.
+- `read_context` — read registry docs by id (comma-separated), resolved across
+  user and project roots.
 
 ## Persistence
 

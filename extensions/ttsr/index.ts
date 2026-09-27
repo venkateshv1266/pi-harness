@@ -37,6 +37,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { logDecision, logOutcome, looksLikeUserCorrection, type Verdict as OutcomeVerdict } from "../../utils/jev-outcomes.ts";
+import { globToRegex } from "./glob.ts";
+import { noveltySatisfied, cacheKey, type ReadReceipt } from "./ledger.ts";
+import { contextStats, entryStatLine, pruneCandidates, statsFor } from "./telemetry.ts";
+import { buildContextRules, contextListText, readContextDocs, writeContextIndex, DEFAULT_DIGEST, type LoadedEntry, type RegistryDigestConfig } from "./registry.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -81,6 +85,7 @@ interface Rule {
 	body: string;
 	file: string;
 	flags: string;
+	context?: { id: string; reads: string[]; tier: string; kind: "trigger" | "delegate" };
 }
 
 interface PersistedInjection {
@@ -134,6 +139,13 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	let alwaysRules: Rule[] = [];
 
 	let injectedNames = new Set<string>();
+	let registryEntries: LoadedEntry[] = [];
+	let registryDigest: RegistryDigestConfig = { ...DEFAULT_DIGEST };
+	let readReceipts = new Map<string, ReadReceipt>();
+	let compliance = new Map<string, { pushes: number; escalated: boolean; reads: string[]; tier: string }>();
+	let pushesThisTurn = 0;
+	let verifyCache = new Map<string, Verdict>();
+	let digestCache: { turn: number; text: string; source: string } | null = null;
 	let gapCounters = new Map<string, number>();
 	let turnCount = 0;
 
@@ -178,6 +190,36 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		return out;
 	}
 
+	// Rules = hand-written files + registry-synthesized context rules. The
+	// registry is best-effort: a load failure never breaks rule loading.
+	function loadAllRules(cwd: string, trusted: boolean, notify?: (msg: string) => void): Rule[] {
+		const rules = loadRules(cwd, trusted);
+		registryEntries = [];
+		if (process.env.TTSR_CONTEXT_REGISTRY === "0") return rules;
+		try {
+			const reg = buildContextRules(cwd, trusted);
+			registryEntries = reg.entries;
+			registryDigest = reg.digest;
+			const seen = new Set(rules.map((r) => r.name));
+			for (const s of reg.rules) {
+				if (seen.has(s.name)) continue;
+				const parsed = parseRuleSource(s.source, `<context-registry:${s.id}>`);
+				if (!parsed) {
+					notify?.(`ttsr contexts: synthesized rule failed to parse: ${s.name}`);
+					continue;
+				}
+				parsed.context = { id: s.id, reads: s.reads, tier: s.tier, kind: s.kind };
+				seen.add(parsed.name);
+				rules.push(parsed);
+			}
+			for (const w of reg.warnings) notify?.(`ttsr contexts: ${w}`);
+			writeContextIndex(cwd, trusted);
+		} catch (e) {
+			notify?.(`ttsr contexts: registry load failed: ${(e as Error).message}`);
+		}
+		return rules;
+	}
+
 	function listMarkdownFiles(dir: string): string[] {
 		const acc: string[] = [];
 		(function walk(d: string) {
@@ -191,7 +233,10 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	}
 
 	function parseRule(file: string): Rule | null {
-		const raw = fs.readFileSync(file, "utf8");
+		return parseRuleSource(fs.readFileSync(file, "utf8"), file);
+	}
+
+	function parseRuleSource(raw: string, file: string): Rule | null {
 		const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
 		if (!m) return null;
 		const fm = parseFrontmatter(m[1]);
@@ -322,12 +367,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		try { return new RegExp(src, flags); } catch { return null; }
 	}
 
-	function globToRegex(glob: string): RegExp {
-		let re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-		re = re.replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*");
-		return new RegExp(re.endsWith("$") ? `^${re}` : `^${re}$`);
-	}
-
 	function parseRepeat(v: unknown): Rule["repeat"] {
 		if (typeof v !== "string") return "once";
 		const m = v.match(/^after-gap:?(\d+)$/i);
@@ -357,10 +396,60 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	// ─── Repeat / suppression ───────────────────────────────────────────────
 
+	function recordRead(p: string) {
+		try {
+			readReceipts.set(p, { turn: turnCount, mtimeMs: fs.statSync(p).mtimeMs });
+		} catch { /* non-file read target */ }
+	}
+
 	function canFire(rule: Rule): boolean {
-		if (rule.repeat === "once") return !injectedNames.has(rule.name);
+		if (rule.repeat === "once") {
+			if (injectedNames.has(rule.name)) return false;
+			// Already read and unchanged: satisfied without a push. Re-arms when the
+			// doc's mtime moves (see refreshContextCompliance).
+			if (rule.context && rule.context.kind === "trigger" && noveltySatisfied(rule.context.reads, readReceipts)) {
+				injectedNames.add(rule.name);
+				return false;
+			}
+			return true;
+		}
 		const last = gapCounters.get(rule.name) ?? -Infinity;
 		return turnCount - last >= rule.repeat.afterGap;
+	}
+
+	// Advisory: one re-push if ignored. Gated: re-push once, then arm a block
+	// for the next matching action. A read receipt clears the entry.
+	function refreshContextCompliance() {
+		for (const r of ttsrRules) {
+			if (!r.context || r.context.kind !== "trigger") continue;
+			if (!injectedNames.has(r.name)) continue;
+			if (noveltySatisfied(r.context.reads, readReceipts)) {
+				compliance.delete(r.name);
+				continue;
+			}
+			const c = compliance.get(r.name);
+			if (!c) {
+				compliance.set(r.name, { pushes: 1, escalated: false, reads: r.context.reads, tier: r.context.tier });
+				injectedNames.delete(r.name);
+				continue;
+			}
+			if (c.pushes < 2) {
+				c.pushes++;
+				injectedNames.delete(r.name);
+				continue;
+			}
+			if (r.context.tier === "gated" && !c.escalated) {
+				c.escalated = true;
+				injectedNames.delete(r.name);
+			}
+		}
+	}
+
+	function noteContextFires(rules: Rule[]) {
+		for (const r of rules) {
+			if (!r.context || r.context.kind !== "trigger") continue;
+			if (!compliance.has(r.name)) compliance.set(r.name, { pushes: 1, escalated: false, reads: r.context.reads, tier: r.context.tier });
+		}
 	}
 
 	function markInjected(names: string[]) {
@@ -593,13 +682,13 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		return { prob: probs[String(a.score)] ?? 0, confidence: a.confidence ?? 1 };
 	}
 
-	function logAdjudication(rule: Rule, scope: Scope, confirmed: boolean, degraded: boolean, prob: number | null, confidence: number | null, latencyMs: number, err: string | null) {
+	function logAdjudication(rule: Rule, scope: Scope, confirmed: boolean, degraded: boolean, prob: number | null, confidence: number | null, latencyMs: number, err: string | null, digestSource?: string) {
 		try {
 			const dir = path.join(homeDir(), ".pi", "agent", "jev-decisions");
 			fs.mkdirSync(dir, { recursive: true });
 			fs.appendFileSync(
 				path.join(dir, "ttsr-jev.jsonl"),
-				JSON.stringify({ ts: new Date().toISOString(), rule: rule.name, scope, decision: confirmed ? "fired" : "suppressed", mode: degraded ? "degraded" : "verified", prob, confidence, latencyMs, err }) + "\n",
+				JSON.stringify({ ts: new Date().toISOString(), rule: rule.name, scope, decision: confirmed ? "fired" : "suppressed", mode: degraded ? "degraded" : "verified", prob, confidence, latencyMs, err, ...(digestSource ? { digestSource } : {}) }) + "\n",
 			);
 		} catch { /* logging must never break rule evaluation */ }
 	}
@@ -607,15 +696,21 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	// Batch-verifies all rules with a verify spec against one shared state; rules
 	// without a spec pass through as confirmed. Unavailable/malformed answers
 	// resolve through the rule's onFail policy.
-	async function runVerify(hits: Rule[], state: string, scope: Scope): Promise<Map<string, Verdict>> {
+	async function runVerify(hits: Rule[], state: string, scope: Scope, digestSource?: string): Promise<Map<string, Verdict>> {
 		const out = new Map<string, Verdict>();
-		const need = hits.filter((r) => r.verify);
 		for (const r of hits) if (!r.verify) out.set(r.name, { confirmed: true, degraded: false });
-		if (need.length === 0) return out;
+		const misses: Rule[] = [];
+		for (const r of hits) {
+			if (!r.verify) continue;
+			const cached = verifyCache.get(cacheKey(r.name, state));
+			if (cached) out.set(r.name, cached);
+			else misses.push(r);
+		}
+		if (misses.length === 0) return out;
 
 		const unavailable = JEV_KILL || !jevKey();
 		const t0 = Date.now();
-		const questions = Object.fromEntries(need.map((r) => {
+		const questions = Object.fromEntries(misses.map((r) => {
 			const v = r.verify!;
 			return [r.name, v.type === "noul"
 				? { type: "noul", instructions: v.instructions }
@@ -624,26 +719,148 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		const answers = unavailable ? null : await jevCall(scrubSecrets(state), questions);
 		const latencyMs = Date.now() - t0;
 
-		for (const r of need) {
+		for (const r of misses) {
 			const spec = r.verify!;
 			const parsed = answers && answers[r.name] ? answerProb(spec, answers[r.name]) : null;
 			if (answers && parsed) {
 				const confirmed = parsed.prob >= spec.threshold && parsed.confidence >= spec.minConfidence;
-				out.set(r.name, { confirmed, degraded: false });
-				logAdjudication(r, scope, confirmed, false, parsed.prob, parsed.confidence, latencyMs, null);
+				const verdict = { confirmed, degraded: false };
+				out.set(r.name, verdict);
+				verifyCache.set(cacheKey(r.name, state), verdict);
+				if (verifyCache.size > 200) {
+					const oldest = verifyCache.keys().next().value;
+					if (oldest !== undefined) verifyCache.delete(oldest);
+				}
+				logAdjudication(r, scope, confirmed, false, parsed.prob, parsed.confidence, latencyMs, null, digestSource);
 			} else {
 				const fired = spec.onFail === "fire";
 				out.set(r.name, { confirmed: fired, degraded: true });
-				logAdjudication(r, scope, fired, true, null, null, latencyMs, unavailable ? "unavailable" : answers ? "malformed-answer" : "call-failed");
+				logAdjudication(r, scope, fired, true, null, null, latencyMs, unavailable ? "unavailable" : answers ? "malformed-answer" : "call-failed", digestSource);
 			}
 		}
 		return out;
+	}
+
+	// ─── Session digest (GoalSpec-first) ────────────────────────────────
+
+	function clip(s: string, n: number): string {
+		return s.length > n ? s.slice(0, n) + "…" : s;
+	}
+
+	interface SessionEntryLike {
+		type: string;
+		customType?: string;
+		data?: unknown;
+		message?: { role?: string; content?: unknown };
+	}
+
+	function readSessionEntries(ctx: ExtensionContextLike): SessionEntryLike[] {
+		try {
+			const sm = ctx.sessionManager as unknown as { getEntries?(): SessionEntryLike[]; getBranch?(): SessionEntryLike[] } | undefined;
+			return sm?.getEntries?.() ?? sm?.getBranch?.() ?? [];
+		} catch {
+			return [];
+		}
+	}
+
+	function messageTextOf(msg: { content?: unknown }): string {
+		if (typeof msg.content === "string") return msg.content;
+		if (!Array.isArray(msg.content)) return "";
+		return msg.content
+			.map((b) => (b && typeof b === "object" && (b as { type?: string; text?: string }).type === "text" ? String((b as { text?: string }).text ?? "") : ""))
+			.filter(Boolean)
+			.join("\n");
+	}
+
+	function goalspecText(data: unknown): string | null {
+		if (!data || typeof data !== "object") return null;
+		const d = data as Record<string, unknown>;
+		if (typeof d.userObjective !== "string") return null;
+		const lines: string[] = [`USER OBJECTIVE: ${clip(d.userObjective, 400)}`];
+		const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+		const push = (label: string, items: string[], cap = 4, itemClip = 180): void => {
+			if (items.length === 0) return;
+			lines.push(`${label}:`);
+			for (const it of items.slice(0, cap)) lines.push(`  - ${clip(it, itemClip)}`);
+		};
+		push("Success criteria", strs(d.successCriteria));
+		push("Constraints", strs(d.constraints));
+		push("Current plan", strs(d.currentPlan));
+		push("Open questions", strs(d.openQuestions));
+		const facts = Array.isArray(d.knownFacts)
+			? d.knownFacts.map((f) => (f && typeof f === "object" ? String((f as { fact?: unknown }).fact ?? "") : "")).filter(Boolean)
+			: [];
+		push("Known facts", facts, 5, 140);
+		return clip(lines.join("\n"), 1800);
+	}
+
+	function lastUserText(entries: SessionEntryLike[]): string | null {
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e.type === "message" && e.message?.role === "user") {
+				const t = messageTextOf(e.message).trim();
+				if (t) return clip(t, 500);
+			}
+		}
+		return null;
+	}
+
+	function sessionDigest(ctx: ExtensionContextLike): { turn: number; text: string; source: string } {
+		if (digestCache && digestCache.turn === turnCount) return digestCache;
+		const entries = readSessionEntries(ctx);
+		const pins: string[] = [];
+		let goalspec: string | null = null;
+		let goalspecVersion = 0;
+		for (const e of entries) {
+			if (e.type !== "custom") continue;
+			if (registryDigest.goalEntryType && e.customType === registryDigest.goalEntryType && e.data && typeof (e.data as { goal?: unknown }).goal === "string") {
+				pins.push(clip(String((e.data as { goal: string }).goal), 200));
+			}
+			if (registryDigest.goalspecEntryType && e.customType === registryDigest.goalspecEntryType) {
+				const t = goalspecText(e.data);
+				if (t) {
+					goalspec = t;
+					const v = (e.data as { version?: unknown }).version;
+					if (typeof v === "number") goalspecVersion = v;
+				}
+			}
+		}
+		let text: string;
+		let source: string;
+		if (goalspec) {
+			text = goalspec;
+			if (pins.length) text += `\nRefinement pins: ${pins.slice(-3).join(" | ")}`;
+			source = `goalspec:v${goalspecVersion || 1}`;
+		} else if (pins.length) {
+			text = `PINNED GOAL: ${clip(pins[pins.length - 1], 400)}`;
+			source = "fallback:goal-pin";
+		} else {
+			const u = lastUserText(entries);
+			text = u ? `LAST USER MESSAGE: ${u}` : "";
+			source = u ? "fallback:user-msg" : "none";
+		}
+		digestCache = { turn: turnCount, text: clip(text, 2000), source };
+		return digestCache;
+	}
+
+	function withDigest(ctx: ExtensionContextLike, eventText: string): { text: string; source: string } {
+		const d = sessionDigest(ctx);
+		return {
+			text: d.text ? `SESSION DIGEST (${d.source}):\n${d.text}\n\n${eventText}` : eventText,
+			source: d.source,
+		};
 	}
 
 	// ─── System prompt injection (always-apply + rulebook) ──────────────
 
 	pi.on("before_agent_start", async (event) => {
 		const parts: string[] = [];
+
+		if (registryEntries.length) {
+			parts.push(
+				`## Context library\n\n${registryEntries.filter((e) => e.status !== "retired").length} context docs available; call \`context_list\` (or read ~/.pi/contexts/INDEX.md) when you need domain context that no rule has pushed.`,
+			);
+		}
 
 		if (alwaysRules.length) {
 			parts.push("## Always-on rules\n\n" + alwaysRules.map((r) => `### ${r.name}\n\n${r.body}`).join("\n\n"));
@@ -681,11 +898,39 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	// Context registry tools: pull-based discovery for docs without a trigger.
+	pi.registerTool({
+		name: "context_list",
+		label: "List Context Docs",
+		description:
+			"List the context registry: available context doc ids, when to use each, tier, and resolved file paths. Use when you need domain context that no rule has pushed (unknown API endpoints, request tracing, etc.).",
+		parameters: Type.Object({}),
+		async execute(): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
+			return { content: [{ type: "text", text: contextListText(registryEntries) }], details: { count: registryEntries.length } };
+		},
+	});
+
+	pi.registerTool({
+		name: "read_context",
+		label: "Read Context Doc",
+		description:
+			"Read one or more context docs by registry id (comma-separated), e.g. \"kubernetes\" or \"grafana,redash\". Prefer this over reading context files by path.",
+		parameters: Type.Object({ id: Type.String({ description: "Registry id(s), comma-separated" }) }),
+		async execute(_id, params): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
+			const text = readContextDocs(registryEntries, params.id);
+			for (const id of String(params.id).split(",").map((s) => s.trim()).filter(Boolean)) {
+				const e = registryEntries.find((x) => x.id === id);
+				if (e) for (const p of e.resolvedReads) recordRead(p);
+			}
+			return { content: [{ type: "text", text }], details: {} };
+		},
+	});
+
 	// ─── Session lifecycle ──────────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
 		const trusted = ctx.isProjectTrusted();
-		allRules = loadRules(ctx.cwd, trusted);
+		allRules = loadAllRules(ctx.cwd, trusted, (m) => { if (ctx.hasUI) ctx.ui.notify(m, "warning"); });
 		ttsrRules = allRules.filter((r) => r.bucket === "ttsr");
 		rulebookRules = allRules.filter((r) => r.bucket === "rulebook");
 		alwaysRules = allRules.filter((r) => r.bucket === "always");
@@ -696,7 +941,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		restoreInjected(ctx.sessionManager.getBranch() as unknown as { type: string; customType?: string; data?: unknown }[]);
 
 		if (ctx.hasUI) {
-			const counts = `${allRules.length} rule(s) [ttsr=${ttsrRules.length} rulebook=${rulebookRules.length} always=${alwaysRules.length}]`;
+			const counts = `${allRules.length} rule(s) [ttsr=${ttsrRules.length} ctx=${registryEntries.length} rulebook=${rulebookRules.length} always=${alwaysRules.length}]`;
 			ctx.ui.setStatus("ttsr", allRules.length ? `ttsr: ${counts}` : undefined);
 			if (astGrep === null && allRules.some((r) => r.astConditions.length)) {
 				ctx.ui.notify("ttsr: @ast-grep/napi not loaded — astCondition rules will be ignored", "warning");
@@ -717,6 +962,9 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		textBuf = "";
 		thinkingBuf = "";
 		toolBufs = new Map();
+		pushesThisTurn = 0;
+		digestCache = null;
+		refreshContextCompliance();
 	});
 
 	pi.on("turn_end", () => {
@@ -762,12 +1010,13 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 				if (m && m.index < minIdx) minIdx = m.index;
 			}
 		}
-		const state = buffer.slice(Math.max(0, minIdx - 400), minIdx + 2400);
+		const window = buffer.slice(Math.max(0, minIdx - 400), minIdx + 2400);
+		const digest = withDigest(ctx, `EVENT (${scope}):\n${window}`);
 
 		// Fire-and-forget: the stream keeps flowing while Jev adjudicates; the
 		// abort fires on resolution if the turn is still live.
 		void (async () => {
-			const verdicts = await runVerify(batch, state, scope);
+			const verdicts = await runVerify(batch, digest.text, scope, digest.source);
 			for (const r of batch) pendingVerify.delete(r.name);
 
 			const verdict = (r: Rule) => verdicts.get(r.name);
@@ -811,6 +1060,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 				recordFires(softSet, scope, ctx, { delivered: false, modeOf });
 				markInjected(softSet.map((r) => r.name));
 			}
+			noteContextFires([...abortSet, ...remindSet, ...softSet]);
 			for (const r of suppressed) suppressCache.set(r.name, { turn: turnCount, len: buffer.length });
 		})();
 	}
@@ -856,6 +1106,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 		const input = event.input as { command?: string; path?: string; oldText?: string; newText?: string; content?: string; task?: string; query?: string; prompt?: string };
 		const toolPath = input.path ?? "";
+		if (event.toolName === "read" && toolPath) recordRead(path.resolve(ctx.cwd ?? process.cwd(), toolPath));
 		// Regex haystack includes the tool name so rules can target MCP tools by name
 		// (e.g. condition: ["postgres"] matches mcp__postgres__query).
 		const regexHay = event.toolName + "\n" + serializeToolInput(event.toolName, input);
@@ -879,17 +1130,33 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		const hits = dedupRules([...regexHits, ...astHits]);
 		if (hits.length === 0) return;
 
+		const digest = withDigest(ctx, `TOOL CALL (${event.toolName}):\n${scrubSecrets(serializeToolInput(event.toolName, input)).slice(0, 24000)}`);
 		const verdicts = hits.some((r) => r.verify)
-			? await runVerify(hits, event.toolName + "\n" + scrubSecrets(serializeToolInput(event.toolName, input)).slice(0, 24000), "tool")
+			? await runVerify(hits, digest.text, "tool", digest.source)
 			: null;
-		const fired = hits.filter((r) => {
+		let fired = hits.filter((r) => {
 			const v = verdicts?.get(r.name);
 			return !v || v.confirmed || (v.degraded && r.verify?.onFail !== "suppress");
 		});
 		if (fired.length === 0) return undefined;
+
+		// Per-turn context-push budget (gated first); non-context rules unaffected.
+		if (fired.some((r) => r.context && r.context.kind === "trigger")) {
+			const allowed = Math.max(0, 2 - pushesThisTurn);
+			const ctxFired = fired.filter((r) => r.context && r.context.kind === "trigger");
+			if (ctxFired.length > allowed) {
+				const sorted = [...ctxFired].sort((a, b) => (a.context!.tier === "gated" ? 0 : 1) - (b.context!.tier === "gated" ? 0 : 1));
+				const kept = new Set(sorted.slice(0, allowed).map((r) => r.name));
+				fired = fired.filter((r) => !r.context || r.context.kind !== "trigger" || kept.has(r.name));
+			}
+			pushesThisTurn += fired.filter((r) => r.context && r.context.kind === "trigger").length;
+			noteContextFires(fired);
+		}
+		if (fired.length === 0) return undefined;
 		const noBlock = new Set(fired.filter((r) => verdicts?.get(r.name)?.degraded && r.verify?.onFail === "degrade").map((r) => r.name));
 
-		const willBlock = fired.some((r) => r.interrupt && !noBlock.has(r.name));
+		const escalatedBlock = fired.some((r) => r.context && r.context.kind === "trigger" && compliance.get(r.name)?.escalated);
+		const willBlock = escalatedBlock || fired.some((r) => r.interrupt && !noBlock.has(r.name));
 		recordFires(fired, "tool", ctx, {
 			delivered: true,
 			modeOf: (r) => (r.verify ? (verdicts?.get(r.name)?.degraded ? "degraded" : "verified") : "plain"),
@@ -961,14 +1228,38 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		description: "Reload rules from disk without restarting",
 		handler: async (_args, ctx) => {
 			const trusted = ctx.isProjectTrusted();
-			allRules = loadRules(ctx.cwd, trusted);
+			allRules = loadAllRules(ctx.cwd, trusted, (m) => { if (ctx.hasUI) ctx.ui.notify(m, "warning"); });
 			ttsrRules = allRules.filter((r) => r.bucket === "ttsr");
 			rulebookRules = allRules.filter((r) => r.bucket === "rulebook");
 			alwaysRules = allRules.filter((r) => r.bucket === "always");
 			ctx.ui.notify(
-				`ttsr: ${allRules.length} rule(s) [ttsr=${ttsrRules.length} rulebook=${rulebookRules.length} always=${alwaysRules.length}]`,
+				`ttsr: ${allRules.length} rule(s) [ttsr=${ttsrRules.length} ctx=${registryEntries.length} rulebook=${rulebookRules.length} always=${alwaysRules.length}]`,
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("contexts", {
+		description: "Context registry status; '/contexts prune' adds prune candidates",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) return;
+			if (registryEntries.length === 0) { ctx.ui.notify("No context registry loaded.", "info"); return; }
+			const wantPrune = (args ?? "").trim() === "prune";
+			const stats = contextStats();
+			const lines: string[] = [];
+			let firedTotal = 0;
+			let suppressedTotal = 0;
+			for (const e of registryEntries) {
+				const t = statsFor(e, stats);
+				firedTotal += t.fired;
+				suppressedTotal += t.suppressed;
+				lines.push(entryStatLine(e, t));
+			}
+			if (wantPrune) {
+				const cands = pruneCandidates(registryEntries, stats);
+				lines.push("", cands.length ? `Prune candidates: ${cands.map((c) => c.entry.id).join(", ")}` : "Prune candidates: none");
+			}
+			ctx.ui.notify(`Context registry (${registryEntries.length} entries, fired=${firedTotal} suppressed=${suppressedTotal}):\n${lines.join("\n")}`, "info");
 		},
 	});
 
@@ -1001,9 +1292,10 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	// ─── Type shim ──────────────────────────────────────────────────────
 	type ExtensionContextLike = {
 		hasUI: boolean;
+		cwd?: string;
 		ui: { notify(msg: string, level: "info" | "warning" | "error"): void };
 		abort(): void;
 		isIdle(): boolean;
-		sessionManager?: { getSessionId(): string };
+		sessionManager?: { getSessionId(): string; getEntries?(): unknown[]; getBranch?(): unknown[] };
 	};
 }
