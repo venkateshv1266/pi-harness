@@ -63,8 +63,11 @@ Jev failure.
 - **Typed consolidation** — scheduled every `jev.consolidation.intervalWrites` successful
   adds (default 20) or via `/memory-consolidate`: batched
   `redundant`/`contradiction`/`obsolete` + `representation` per candidate pair, retire-only
-  executor (no free-text rewriting), atomic-shrink checked, non-destructive snapshots. Each
-  run is capped at 64 batched Jev calls within 5 minutes per target; partial progress is applied.
+  executor (no free-text rewriting), atomic-shrink checked, non-destructive snapshots. Pairs
+  are judged in batches of ≤20 per Jev call — a 40-pair (160-question) request exceeds the
+  Jev model's output-token cap — halving the batch after a failed call and stopping the run
+  only when a single-pair batch fails. Each run is capped at 128 batched Jev calls within 5
+  minutes per target; partial progress is applied.
 
 Config (`~/.pi/agent/jev-memory-config.json`, `jev` section, all optional with these defaults):
 

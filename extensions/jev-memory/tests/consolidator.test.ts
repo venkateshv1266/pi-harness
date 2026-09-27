@@ -597,6 +597,45 @@ test("runTypedConsolidation: stale stage stops at the first null chunk, judging 
 	});
 });
 
+test("runTypedConsolidation: pair batches halve past the output-token cap and finish the chunk", async () => {
+	await withAuditRedirected(async () => {
+		// 41 duplicate-ish entries force one chunk at the 40-pair cap. The fake
+		// Jev rejects any batch larger than 10 pairs, the way the real endpoint
+		// fails a request that exceeds its output-token budget.
+		const raws = Array.from({ length: 41 }, (_, i) =>
+			rawEntry(`user prefers pnpm install variant ${i}`, "2026-02-01", "2026-02-01"));
+		const { store, dir } = await seededMemoryStore(raws);
+		try {
+			const sizes: number[] = [];
+			const jev: typeof jevCall = async (state) => {
+				const candidates = (state as { candidates?: unknown[] }).candidates ?? [];
+				sizes.push(candidates.length);
+				if (candidates.length > 10) return null;
+				let answers: JevAnswers = {};
+				for (let p = 0; p < candidates.length; p++) {
+					answers = { ...answers, ...pairAnswers(p, "keep_separate", 0.5) };
+				}
+				return answers;
+			};
+			const outcome = await runTypedConsolidation(store, "memory", "memory", DEFAULT_JEV_CONFIG, {
+				deps: { jevCall: jev, now: () => NOW },
+			});
+			assert.equal(outcome.status, "empty");
+			assert.equal(outcome.pairsJudged, 40);
+			assert.equal(outcome.staleJudged, 0);
+			assert.deepEqual(sizes, [20, 10, 10, 10, 10]);
+			assert.equal(store.getMemoryEntries().length, 41);
+
+			const records = readAudit().filter((record) => record.decision === "consolidation");
+			assert.equal(records.length, 1);
+			assert.equal(records[0]?.outcome, "run");
+			assert.equal(records[0]?.scores?.pairs, 40);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 const rerankAnswers = (means: number[]): JevAnswers => {
 	const answers: JevAnswers = {};
 	for (let i = 0; i < means.length; i++) {

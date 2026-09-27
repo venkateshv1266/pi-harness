@@ -33,7 +33,7 @@ import { execChildPrompt } from "./pi-child-process.js";
 import { runDirectMemoryCompletion, usesDirectTransport } from "./review-memory-ops.js";
 import { AtomicLockCoordinator } from "../store/atomic-lock-coordinator.js";
 import { appendAudit } from "../jev/audit.js";
-import { CallBudget, jevCall, type JevState, type JevQuestions } from "../jev/client.js";
+import { CallBudget, jevCall, type JevAnswers, type JevState, type JevQuestions } from "../jev/client.js";
 import { DEFAULT_JEV_CONFIG, type JevConfig } from "../jev/config.js";
 import {
   buildExecutorPlan,
@@ -195,8 +195,12 @@ function buildConsolidationPrompt(
 
 // ── JEVCONSOLIDATE: typed retire-only engine ──
 
-const CONSOLIDATOR_MAX_CALLS = 64;
+const CONSOLIDATOR_MAX_CALLS = 128;
 const CONSOLIDATOR_DEADLINE_MS = 300_000;
+// A 40-pair call (160 questions) deterministically exceeds the Jev model's
+// output-token cap (HTTP 400 max_tokens_exceeded) on dense chunks; batching
+// pairs keeps requests comfortably under it.
+const CONSOLIDATOR_PAIR_BATCH = 20;
 
 type JevCallFn = typeof jevCall;
 
@@ -322,6 +326,7 @@ export async function runTypedConsolidation(
   let stoppedReason: string | undefined;
   const gathered: ExecutorRetire[] = [];
   let plannedShrinkBytes = 0;
+  let pairBatchSize = CONSOLIDATOR_PAIR_BATCH;
 
   for (const chunk of chunks) {
     if (options.signal?.aborted) {
@@ -343,11 +348,32 @@ export async function runTypedConsolidation(
       }
       continue;
     }
-    const startedAt = Date.now();
-    const answers = await callJev(buildConsolidationState(chunk, pairs), expandConsolidationQuestions(pairs), { budget });
-    const latencyMs = Date.now() - startedAt;
-    if (!answers) {
-      // Jev down or budget exhausted: stop after the first null chunk.
+    const chunkStartedAt = Date.now();
+    const mergedAnswers: JevAnswers = {};
+    let judged = 0;
+    while (judged < pairs.length) {
+      if (options.signal?.aborted) {
+        stoppedReason = "signal aborted";
+        break;
+      }
+      const size = Math.min(pairBatchSize, pairs.length - judged);
+      const batch = pairs.slice(judged, judged + size);
+      const startedAt = Date.now();
+      const answers = await callJev(buildConsolidationState(chunk, batch), expandConsolidationQuestions(batch), { budget });
+      if (answers) {
+        const { __cached, ...pairAnswers } = answers;
+        for (const [key, value] of Object.entries(pairAnswers)) {
+          const match = /^pair_(\d+)_(.*)$/.exec(key);
+          if (match) mergedAnswers[`pair_${judged + Number(match[1])}_${match[2]}`] = value;
+        }
+        judged += size;
+        continue;
+      }
+      // Too many questions for one response: halve and retry before giving up.
+      if (size > 1) {
+        pairBatchSize = Math.max(1, Math.floor(size / 2));
+        continue;
+      }
       if (auditEnabled) {
         appendAudit({
           ts: new Date().toISOString(),
@@ -355,15 +381,17 @@ export async function runTypedConsolidation(
           target: toolTarget,
           outcome: "degraded",
           degraded: true,
-          scores: { pairs: pairs.length },
-          latency_ms: latencyMs,
+          scores: { pairs: judged },
+          latency_ms: Date.now() - startedAt,
         });
       }
-      stoppedReason = "jev unavailable";
+      stoppedReason = stoppedReason ?? "jev unavailable";
       break;
     }
-    pairsJudged += pairs.length;
-    const plan = buildExecutorPlan(chunk, pairs, answers, { now: now() });
+    if (judged === 0) break;
+    pairsJudged += judged;
+    const judgedPairs = judged === pairs.length ? pairs : pairs.slice(0, judged);
+    const plan = buildExecutorPlan(chunk, judgedPairs, mergedAnswers, { now: now() });
     const shrinkBytes = plan.retires.reduce((sum, retire) => sum + retire.oldText.length + ENTRY_DELIMITER.length, 0);
     plannedShrinkBytes += shrinkBytes;
     if (auditEnabled) {
@@ -374,16 +402,17 @@ export async function runTypedConsolidation(
         outcome: plan.degraded ? "degraded" : "run",
         degraded: plan.degraded || undefined,
         scores: {
-          pairs: pairs.length,
+          pairs: judged,
           retires: plan.retires.length,
           merges_deferred: plan.mergeDeferred.length,
           sticky_blocked: plan.stickyBlocked,
           shrink_bytes: shrinkBytes,
         },
-        latency_ms: latencyMs,
+        latency_ms: Date.now() - chunkStartedAt,
       });
     }
     gathered.push(...plan.retires);
+    if (stoppedReason) break;
   }
 
   // Stale stage: deterministic pre-filter, then one batched Jev call per
