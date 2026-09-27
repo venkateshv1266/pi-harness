@@ -80,7 +80,7 @@ cap-at-rest and `jev_recall` remain the V2 foundation underneath.
             │  rule: "if uncertain, retainFull" · any failure → retain │
             └──────────────┬───────────────────────────────────────────┘
                            ▼
-            LOG every decision → jev-curator-v3-shadow.jsonl
+            LOG every decision → jev-curator.jsonl
                            ▼
             ┌──────────────────────────────────────────────────────────┐
             │ EMIT (evidence/quality modes only, scoped source types) │

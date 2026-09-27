@@ -36,7 +36,7 @@
  * (active/evidence/background/irrelevant) with type-aware extract proposals
  * (log line-scoring, code ranges, listing matches), and a batched frontier
  * verifier at turn_end that would approve retainFull/useExtract/indexOnly.
- * Every would-be decision is logged to jev-curator-v3-shadow.jsonl for human
+ * Every would-be decision is logged to jev-curator.jsonl for human
  * review; V2 keeps running unmodified so both streams stay comparable.
  *
  * V3 evidence mode (`JEVCURATOR_MODE=evidence`) additionally ACTIVATES the
@@ -106,7 +106,8 @@ const MODE: CuratorMode =
 		? (process.env.JEVCURATOR_MODE as CuratorMode)
 		: "quality";
 const V3 = MODE !== "v2";
-const SHADOW_LOG_FILE = "jev-curator-v3-shadow.jsonl";
+const CURATOR_LOG_FILE = "jev-curator.jsonl";
+const V2_LOG_FILE = "jev-curator-v2.jsonl";
 // evidence mode: sources whose replacement is active (Phase 2 scope);
 // quality mode extends the same gate to code/doc reads (Phase 3 scope)
 const EVIDENCE_SCOPE: ReadonlySet<string> =
@@ -923,9 +924,9 @@ function logShadowLine(obj: Record<string, unknown>) {
 	try {
 		const dir = path.join(os.homedir(), ".pi", "agent", "jev-decisions");
 		fs.mkdirSync(dir, { recursive: true });
-		fs.appendFileSync(path.join(dir, SHADOW_LOG_FILE), JSON.stringify({ ts: new Date().toISOString(), ...obj }) + "\n");
+		fs.appendFileSync(path.join(dir, CURATOR_LOG_FILE), JSON.stringify({ ts: new Date().toISOString(), ...obj }) + "\n");
 	} catch {
-		// log loss must never break curation; shadow jsonl is a review aid only
+		// log loss must never break curation; the decision log is a review aid only
 	}
 }
 
@@ -1092,7 +1093,7 @@ function emitEvidence(
 		};
 		ledger.set(item.entryId, item);
 		emitted.push(item);
-		logTelemetryDecision("curator", SHADOW_LOG_FILE, {
+		logTelemetryDecision("curator", CURATOR_LOG_FILE, {
 			id: r.cand.entryId,
 			action: "emit",
 			entryId: r.cand.entryId,
@@ -1317,7 +1318,7 @@ function logLine(obj: Record<string, unknown>) {
 	try {
 		const dir = path.join(os.homedir(), ".pi", "agent", "jev-decisions");
 		fs.mkdirSync(dir, { recursive: true });
-		fs.appendFileSync(path.join(dir, "jev-curator.jsonl"), JSON.stringify({ ts: new Date().toISOString(), ...obj }) + "\n");
+		fs.appendFileSync(path.join(dir, V2_LOG_FILE), JSON.stringify({ ts: new Date().toISOString(), ...obj }) + "\n");
 	} catch {
 		// log loss must never break curation; jsonl is a tuning aid only
 	}
@@ -1790,7 +1791,7 @@ ${goalspecSummary()}` }],
 				if (raw === undefined || raw === "") {
 					throw new Error(`No raw content found for entry ${params.entry_id}`);
 				}
-				logOutcome("curator", SHADOW_LOG_FILE, params.entry_id, "recalled", {
+				logOutcome("curator", CURATOR_LOG_FILE, params.entry_id, "recalled", {
 					verdict: "good",
 					detail: {
 						source: "jev_recall",
@@ -1867,7 +1868,7 @@ ${goalspecSummary()}` }],
 					const head = l.extract.length > 900 ? `${l.extract.slice(0, 900)}\n  [... extract continues — jev_recall "${l.entryId}" for raw ...]` : l.extract;
 					return `#${i + 1} [${l.sourceType} · ${l.role} · turn ${l.turn} · ${l.chars} chars condensed to ${l.extract.length}]\n${head}\nRaw paging: jev_recall entry_id "${l.entryId}" with offset/limit`;
 				});
-				logEvent("curator", SHADOW_LOG_FILE, {
+				logEvent("curator", CURATOR_LOG_FILE, {
 					action: "find",
 					query,
 					session: ctx.sessionManager.getSessionId(),

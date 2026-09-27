@@ -16,7 +16,7 @@ import { DECISIONS_DIR, parseTs, readDecisionLines } from "./jev-outcomes.ts";
 
 export const TTSR_FILE = "ttsr-jev.jsonl";
 export const ROUTER_FILE = "model-router.jsonl";
-export const CURATOR_FILE = "jev-curator-v3-shadow.jsonl";
+export const CURATOR_FILE = "jev-curator.jsonl";
 export const MEMORY_FILE = "jev-memory.jsonl";
 
 export const KNOWN_SYSTEMS: Record<string, string> = {
