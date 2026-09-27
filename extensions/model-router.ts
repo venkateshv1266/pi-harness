@@ -110,7 +110,7 @@ function resolveModel(ctx: ExtensionContext, ref: string): Model<Api> | undefine
 	return avail.find((m) => m.id === ref) ?? avail.find((m) => m.id.includes(ref));
 }
 
-const TIER_DEFAULT_ROLE: Record<Tier, string> = { fast: "smol", mid: "task", deep: "slow" };
+export const TIER_DEFAULT_ROLE: Record<Tier, string> = { fast: "smol", mid: "task", deep: "slow" };
 
 type TierResolution =
 	| { status: "disabled" }

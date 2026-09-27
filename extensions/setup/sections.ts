@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { TIER_DEFAULT_ROLE } from "../model-router.ts";
+import { roleSettingRef } from "../../utils/model-role.ts";
 import * as io from "./io.ts";
 import type { SetupItem, SetupSection } from "./types.ts";
 
@@ -10,6 +12,14 @@ const CLEAR = "__remove";
 function routerCfg(s: Record<string, unknown>): Record<string, unknown> {
 	const raw = s.modelRouter;
 	return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
+function tierDisplay(tier: "fast" | "mid" | "deep", raw: unknown): string {
+	if (raw === null) return "(off — disabled)";
+	if (typeof raw === "string") return raw;
+	const role = TIER_DEFAULT_ROLE[tier];
+	const ref = roleSettingRef(role);
+	return ref ? `(unset → defaults to @${role} → ${ref})` : `(unset — @${role} not configured via /roles)`;
 }
 
 function guardrailsCfg(s: Record<string, unknown>): Record<string, unknown> {
@@ -145,10 +155,10 @@ function modelSections(pi: ExtensionAPI, ctx: ExtensionCommandContext): SetupSec
 // ─── Roles ──────────────────────────────────────────────────────────────────
 
 const ROLE_DEFS: { key: string; detail: string }[] = [
-	{ key: "smolModel", detail: "Cheap/fast model for lightweight subagent work (@smol)." },
-	{ key: "slowModel", detail: "Deep-reasoning model for hard analysis and verification (@slow)." },
+	{ key: "smolModel", detail: "Cheap/fast model for lightweight subagent work (@smol); router fast-tier default." },
+	{ key: "slowModel", detail: "Deep-reasoning model for hard analysis and verification (@slow); router deep-tier default." },
 	{ key: "planModel", detail: "Planning model for decomposing and sequencing work (@plan)." },
-	{ key: "taskModel", detail: "General execution model for implementation subagents (@task)." },
+	{ key: "taskModel", detail: "General execution model for implementation subagents (@task); router mid-tier default." },
 	{ key: "designerModel", detail: "Model for UI/UX and visual design work (@designer)." },
 ];
 
@@ -156,7 +166,7 @@ function rolesSection(): SetupSection {
 	return {
 		id: "roles",
 		title: "Roles",
-		detail: "Model roles used by subagents. Same refs as /roles: \"provider/model\" plus optional \":thinking\".",
+		detail: "Model roles used by subagents and, as tier defaults/aliases, the router. Same refs as /roles: \"provider/model\" plus optional \":thinking\".",
 		items: ROLE_DEFS.map(({ key, detail }) => ({
 			id: `role:${key}`,
 			label: key.replace(/Model$/, "") + " role",
@@ -245,15 +255,12 @@ function routerSection(): SetupSection {
 			{
 				id: "router:fast",
 				label: "Fast tier",
-				detail: "Model used for cheap/mechanical prompts: formatting, quick lookups, trivial edits.",
+				detail: "Model used for cheap/mechanical prompts: formatting, quick lookups, trivial edits. Ref or @role alias; unset → @smol via /roles.",
 				effect: "next prompt",
 				owner: "model-router · /route tier fast",
 				kind: "model",
 				withThinking: true,
-				get: () => {
-					const f = routerCfg(io.settings()).fast;
-					return typeof f === "string" ? f : "(unset — routing inert for fast)";
-				},
+				get: () => tierDisplay("fast", routerCfg(io.settings()).fast),
 				apply: async (_c, value) => {
 					io.updateSettings((set) => {
 						set.modelRouter = { ...routerCfg(set), fast: value };
@@ -264,15 +271,12 @@ function routerSection(): SetupSection {
 			{
 				id: "router:mid",
 				label: "Mid tier",
-				detail: "Model used for careful judgment work: review triage, research synthesis, refactor planning.",
+				detail: "Model used for careful judgment work: review triage, research synthesis, refactor planning. Ref or @role alias; unset → @task via /roles.",
 				effect: "next prompt",
 				owner: "model-router · /route tier mid",
 				kind: "model",
 				withThinking: true,
-				get: () => {
-					const m = routerCfg(io.settings()).mid;
-					return typeof m === "string" ? m : "(unset — routing inert for mid)";
-				},
+				get: () => tierDisplay("mid", routerCfg(io.settings()).mid),
 				apply: async (_c, value) => {
 					io.updateSettings((set) => {
 						set.modelRouter = { ...routerCfg(set), mid: value };
@@ -283,15 +287,12 @@ function routerSection(): SetupSection {
 			{
 				id: "router:deep",
 				label: "Deep tier",
-				detail: "Model used for complex prompts: architecture, tricky bugs, multi-step reasoning.",
+				detail: "Model used for complex prompts: architecture, tricky bugs, multi-step reasoning. Ref or @role alias; unset → @slow via /roles.",
 				effect: "next prompt",
 				owner: "model-router · /route tier deep",
 				kind: "model",
 				withThinking: true,
-				get: () => {
-					const d = routerCfg(io.settings()).deep;
-					return typeof d === "string" ? d : "(unset — routing inert for deep)";
-				},
+				get: () => tierDisplay("deep", routerCfg(io.settings()).deep),
 				apply: async (_c, value) => {
 					io.updateSettings((set) => {
 						set.modelRouter = { ...routerCfg(set), deep: value };
