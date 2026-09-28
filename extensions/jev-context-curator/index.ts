@@ -60,16 +60,12 @@
  * `evidence` activates log/listing emission on top of the V2 floor. Kill
  * switch: JEVCURATOR=0.
  *
- * Tunables: JEVCURATOR_MIN_CHARS (1500),
- * JEVCURATOR_RECENCY_TURNS (3), JEVCURATOR_STUB_PROB (0.85),
- * JEVCURATOR_TRUNC_PROB (0.60), JEVCURATOR_MIN_CONF (0.65),
- * JEVCURATOR_MAX_STUBS (150), JEVCURATOR_MIN_BATCH_SAVED (3000),
- * JEVCURATOR_CONTEXT_FLOOR_PCT (70), JEVCURATOR_CRITICAL_PCT (85),
- * JEVCURATOR_MAX_HOLD_TURNS (10), JEVCURATOR_INGEST_CAP (25000),
- * JEVCURATOR_SAMPLES (3).
+ * Tunables live in settings.json (`jevCurator`) and are editable in /setup →
+ * "Jev curator"; JEVCURATOR_* env vars are fallbacks. The verifier model
+ * accepts an optional ":thinking" suffix (e.g. openrouter/z-ai/glm-5.3:max).
  */
 
-import { Type, uuidv7 } from "@earendil-works/pi-ai";
+import { Type, uuidv7, type AssistantMessage, type Context, type ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	defineTool,
@@ -89,6 +85,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { logDecision as logTelemetryDecision, logEvent, logOutcome } from "../../utils/jev-outcomes.ts";
+import { curatorEnabled, resolveCuratorConfig } from "./settings.ts";
 
 const GOAL_TYPE = "jev-curator-goal";
 const GOALSPEC_TYPE = "jev-curator-goalspec";
@@ -99,11 +96,10 @@ const AUDIT_TYPE = "jev-curator-stubs";
 // explicit opt-outs (v2 = pre-V3 benchmark arm; shadow-quality = review
 // logging without edits; evidence = phase-2 emission on the V2 floor)
 type CuratorMode = "v2" | "shadow-quality" | "evidence" | "quality";
+const CONFIG = resolveCuratorConfig();
 const MODE: CuratorMode =
-	process.env.JEVCURATOR_MODE === "v2" ||
-	process.env.JEVCURATOR_MODE === "shadow-quality" ||
-	process.env.JEVCURATOR_MODE === "evidence"
-		? (process.env.JEVCURATOR_MODE as CuratorMode)
+	CONFIG.mode === "v2" || CONFIG.mode === "shadow-quality" || CONFIG.mode === "evidence"
+		? (CONFIG.mode as CuratorMode)
 		: "quality";
 const V3 = MODE !== "v2";
 const CURATOR_LOG_FILE = "jev-curator.jsonl";
@@ -112,13 +108,13 @@ const V2_LOG_FILE = "jev-curator-v2.jsonl";
 // quality mode extends the same gate to code/doc reads (Phase 3 scope)
 const EVIDENCE_SCOPE: ReadonlySet<string> =
 	MODE === "quality" ? new Set(["log", "listing", "code", "doc"]) : new Set(["log", "listing"]);
-const VERIFIER_TIMEOUT_MS = Number(process.env.JEVCURATOR_VERIFIER_TIMEOUT_MS ?? 90000);
-const SHADOW_JEV_TIMEOUT_MS = Number(process.env.JEVCURATOR_SHADOW_JEV_TIMEOUT_MS ?? 8000);
-const SCORE_JEV_TIMEOUT_MS = Number(process.env.JEVCURATOR_SCORE_JEV_TIMEOUT_MS ?? 25000);
-const SHADOW_MAX_PER_TURN = Number(process.env.JEVCURATOR_SHADOW_MAX_PER_TURN ?? 10);
+const VERIFIER_TIMEOUT_MS = CONFIG.verifierTimeoutMs;
+const SHADOW_JEV_TIMEOUT_MS = CONFIG.shadowJevTimeoutMs;
+const SCORE_JEV_TIMEOUT_MS = CONFIG.scoreJevTimeoutMs;
+const SHADOW_MAX_PER_TURN = CONFIG.shadowMaxPerTurn;
 // the verifier must be able to confirm losslessness; give it the full raw
 // below this size and an excerpt above it (those are cap-at-rest'd anyway)
-const VERIFY_RAW_CAP = Number(process.env.JEVCURATOR_VERIFY_RAW_CAP ?? 60000);
+const VERIFY_RAW_CAP = CONFIG.verifyRawCap;
 // line-scoring shape mirrors the proven jev_triage_log defaults
 const SCORE_CHUNK_LINES = 150;
 const SCORE_CHUNK_CHARS = 48000;
@@ -136,31 +132,28 @@ const extractBudget = (chars: number): number => Math.min(12000, Math.max(2500, 
 const NEVER_PRUNE = new Set(["edit", "write", "todo", "jev_recall"]);
 
 const CFG = {
-	on: process.env.JEVCURATOR !== "0",
-	minChars: Number(process.env.JEVCURATOR_MIN_CHARS ?? 1500),
-	recencyTurns: Number(process.env.JEVCURATOR_RECENCY_TURNS ?? 3),
-	stubProb: Number(process.env.JEVCURATOR_STUB_PROB ?? 0.85),
-	truncProb: Number(process.env.JEVCURATOR_TRUNC_PROB ?? 0.6),
-	minConf: Number(process.env.JEVCURATOR_MIN_CONF ?? 0.65),
-	maxStubs: Number(process.env.JEVCURATOR_MAX_STUBS ?? 150),
-	minBatchSaved: Number(process.env.JEVCURATOR_MIN_BATCH_SAVED ?? 3000),
-	contextFloorPct: Number(process.env.JEVCURATOR_CONTEXT_FLOOR_PCT ?? 70),
-	criticalPct: Number(process.env.JEVCURATOR_CRITICAL_PCT ?? 85),
-	maxHoldTurns: Number(process.env.JEVCURATOR_MAX_HOLD_TURNS ?? 10),
-	// verifier model: "provider/model", defaults to the session model (same
-	// quality tier as the main task model per the V3 design)
-	verifierModel: process.env.JEVCURATOR_VERIFIER_MODEL ?? process.env.PI_MODEL ?? null,
-	ingestCap: Number(process.env.JEVCURATOR_INGEST_CAP ?? 25000),
-	capHead: Number(process.env.JEVCURATOR_CAP_HEAD ?? 15000),
-	capTail: Number(process.env.JEVCURATOR_CAP_TAIL ?? 5000),
-	truncHead: Number(process.env.JEVCURATOR_TRUNC_HEAD ?? 600),
-	truncTail: Number(process.env.JEVCURATOR_TRUNC_TAIL ?? 600),
-	samples: Math.max(1, Number(process.env.JEVCURATOR_SAMPLES ?? 3)),
+	on: curatorEnabled(CONFIG),
+	minChars: CONFIG.minChars,
+	recencyTurns: CONFIG.recencyTurns,
+	stubProb: CONFIG.stubProb,
+	truncProb: CONFIG.truncProb,
+	minConf: CONFIG.minConf,
+	maxStubs: CONFIG.maxStubs,
+	minBatchSaved: CONFIG.minBatchSaved,
+	contextFloorPct: CONFIG.contextFloorPct,
+	criticalPct: CONFIG.criticalPct,
+	maxHoldTurns: CONFIG.maxHoldTurns,
+	ingestCap: CONFIG.ingestCap,
+	capHead: CONFIG.capHead,
+	capTail: CONFIG.capTail,
+	truncHead: CONFIG.truncHead,
+	truncTail: CONFIG.truncTail,
+	samples: Math.max(1, CONFIG.samples),
 };
 
 const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
 const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
-const JEV_TIMEOUT_MS = Number(process.env.JEVCURATOR_JEV_TIMEOUT_MS ?? 2500);
+const JEV_TIMEOUT_MS = CONFIG.jevTimeoutMs;
 
 type AgentMessage = SessionMessageEntry["message"];
 type RoleMessage = Extract<AgentMessage, { role: "user" | "assistant" | "toolResult" | "custom" }>;
@@ -818,21 +811,61 @@ function parseVerifierJson(text: string): VerifierDecision[] | null {
 	return out.length > 0 ? out : null;
 }
 
-function verifierModelRef(ctx: ExtensionContext): NonNullable<ExtensionContext["model"]> | undefined {
-	const explicit = process.env.JEVCURATOR_VERIFIER_MODEL;
-	if (explicit && explicit.includes("/")) {
-		const i = explicit.indexOf("/");
-		const m = ctx.modelRegistry.find(explicit.slice(0, i), explicit.slice(i + 1));
-		if (m) return m;
+const THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function parseVerifierRef(ref: string): { modelRef: string; thinking?: ThinkingLevel } {
+	const colon = ref.lastIndexOf(":");
+	if (colon > 0 && THINKING_LEVELS.has(ref.slice(colon + 1))) {
+		return { modelRef: ref.slice(0, colon), thinking: ref.slice(colon + 1) as ThinkingLevel };
+	}
+	return { modelRef: ref };
+}
+
+interface VerifierModelRef {
+	model: NonNullable<ExtensionContext["model"]>;
+	thinking?: ThinkingLevel;
+}
+
+function verifierModelRef(ctx: ExtensionContext): VerifierModelRef | undefined {
+	const explicit = resolveCuratorConfig().verifierModel;
+	if (explicit) {
+		const { modelRef, thinking } = parseVerifierRef(explicit);
+		const slash = modelRef.indexOf("/");
+		if (slash > 0) {
+			const m = ctx.modelRegistry.find(modelRef.slice(0, slash), modelRef.slice(slash + 1));
+			if (m) return { model: m, thinking };
+		}
 	}
 	// the session's CURRENT model is the design intent (same quality tier as
 	// the main task model); CLI --provider/--model launches and settings
 	// defaults do NOT export PI_MODEL into the process env
-	if (ctx.model) return ctx.model;
+	if (ctx.model) return { model: ctx.model };
 	const provider = process.env.PI_PROVIDER ?? "openrouter";
 	const modelId = process.env.PI_MODEL;
-	if (modelId) return ctx.modelRegistry.find(provider, modelId);
+	if (modelId) {
+		const m = ctx.modelRegistry.find(provider, modelId);
+		if (m) return { model: m };
+	}
 	return undefined;
+}
+
+function verifierModelLabel(ref: VerifierModelRef | undefined): string {
+	if (!ref) return "(unset)";
+	return `${ref.model.provider}/${ref.model.id}${ref.thinking ? `:${ref.thinking}` : ""}`;
+}
+
+// the pinned thinking level must go through the provider-neutral stream so it
+// is clamped/mapped via the model's thinkingLevelMap before reaching the API
+function completeVerifier(
+	ctx: ExtensionContext,
+	ref: VerifierModelRef,
+	context: Context,
+	options: { maxTokens: number; signal: AbortSignal; sessionId: string },
+): Promise<AssistantMessage> {
+	if (ref.thinking) {
+		return ctx.modelRegistry.streamSimple(ref.model, context, { ...options, cacheRetention: "none", reasoning: ref.thinking }).result();
+	}
+	return ctx.modelRegistry.complete(ref.model, context, { ...options, cacheRetention: "none" });
 }
 
 function verifierPrompt(batch: VerifyItem[]): string {
@@ -878,10 +911,10 @@ interface VerifyResult {
 // approved (over-retains) and its 3 approvals were low-confidence frontier
 // vetoes — no threshold yields useful + safe approvals.
 async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promise<VerifyResult> {
-	const model = verifierModelRef(ctx);
-	const modelLabel = model ? `${model.provider}/${model.id}` : "(unset)";
+	const ref = verifierModelRef(ctx);
+	const modelLabel = verifierModelLabel(ref);
 	const fail = (error: string): VerifyResult => ({ verdicts: new Map(), model: modelLabel, ok: false, error });
-	if (!model) return fail("no verifier model resolved");
+	if (!ref) return fail("no verifier model resolved");
 	// parse a decision list out of a response body (or null if unusable)
 	const responseText = (r: { content: { type: string; text?: string }[] }): string =>
 		r.content
@@ -894,8 +927,9 @@ async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promi
 		let decisions: VerifierDecision[] | null = null;
 		let usage: { input?: number; output?: number; cacheRead?: number } | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
-			const r = await ctx.modelRegistry.complete(
-				model,
+			const r = await completeVerifier(
+				ctx,
+				ref,
 				{
 					messages: [
 						{
@@ -905,7 +939,7 @@ async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promi
 						},
 					],
 				},
-				{ maxTokens: 16384, signal: AbortSignal.timeout(VERIFIER_TIMEOUT_MS), cacheRetention: "none", sessionId: uuidv7() },
+				{ maxTokens: 16384, signal: AbortSignal.timeout(VERIFIER_TIMEOUT_MS), sessionId: uuidv7() },
 			);
 			const text = responseText(r);
 			decisions = parseVerifierJson(text);
@@ -1673,9 +1707,9 @@ ${goalspecSummary()}` }],
 			ensureGoalSpec(ctx);
 			hydrateLedger(ctx);
 			const { preparation, signal } = event;
-			const model = verifierModelRef(ctx);
-			if (!model) return;
-			const modelLabel = `${model.provider}/${model.id}`;
+			const ref = verifierModelRef(ctx);
+			if (!ref) return;
+			const modelLabel = verifierModelLabel(ref);
 			const allMessages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
 			if (allMessages.length === 0) return;
 			const ledgerIndex =
@@ -1696,8 +1730,9 @@ ${goalspecSummary()}` }],
 				`## SUMMARY\nFrom the conversation below: goals discussed, decisions and their rationale, code changes and technical details, current state of ongoing work, blockers/open questions, planned next steps. Include every fact, id, file path, error signature, and constraint later turns could need.${previous}\n\n` +
 				`<conversation>\n${serializeConversation(convertToLlm(allMessages))}\n</conversation>`;
 			try {
-				const response = await ctx.modelRegistry.complete(
-					model,
+				const response = await completeVerifier(
+					ctx,
+					ref,
 					{
 						messages: [
 							{
@@ -1707,7 +1742,7 @@ ${goalspecSummary()}` }],
 							},
 						],
 					},
-					{ maxTokens: 16384, signal, cacheRetention: "none", sessionId: uuidv7() },
+					{ maxTokens: 16384, signal, sessionId: uuidv7() },
 				);
 				const summary = response.content
 					.filter((b): b is { type: "text"; text: string } => b.type === "text")
