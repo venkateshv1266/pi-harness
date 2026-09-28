@@ -48,8 +48,8 @@ To uninstall an extension, delete its file (or directory) from
 
 Common entry points:
 
-- **Models** — [roles](extensions/model-roles.md), [route-ahead](extensions/model-router.md),
-  [failover](extensions/model-fallback.md), [OpenRouter guardrails](extensions/openrouter-guardrail-header.md)
+- **Models** — [roles](extensions/README.md#model-roles), [route-ahead](extensions/README.md#model-router),
+  [failover](extensions/README.md#model-fallback), [OpenRouter guardrails](extensions/README.md#openrouter-guardrail-header)
 - **Delegation** — [delegate](extensions/delegate/README.md) with the
   [one-shot engine](extensions/subagent/README.md) and
   [persistent engine](extensions/persistent-subagent/README.md)
@@ -87,10 +87,10 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
   revert steps: [scripts/README.md](scripts/README.md).
 - **Usage dashboard** — `/stats [port]` launches the omp-stats dashboard after a
   one-time `bun install` under `~/.pi/agent/utils/omp-stats/`; see
-  [extensions/stats.md](extensions/stats.md).
+  [the stats section](extensions/README.md#stats).
 - **web-search keys** — fully optional; without keys the tools fall back to free
   DuckDuckGo scraping + Jina Reader. See
-  [extensions/web-search.md](extensions/web-search.md).
+  [the web-search section](extensions/README.md#web-search).
 - **MCP servers** — declare them in `~/.pi/agent/mcp-servers.json` (walkthrough:
   [add-mcp-server](skills/add-mcp-server/SKILL.md)); OAuth, auth hooks, and the
   env denylist live in [mcp-bridge](extensions/mcp-bridge/README.md).

@@ -21,7 +21,7 @@ TEMPLATE RULES — read before writing, delete this comment block in the final d
 
 Placement:
 - Directory extension  -> <dir>/README.md
-- Single-file extension -> extensions/<name>.md (sibling of <name>.ts)
+- Single-file extension -> a `## <name>` section in extensions/README.md (no separate file)
 -->
 
 ## What it does
