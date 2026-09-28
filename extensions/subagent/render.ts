@@ -98,7 +98,7 @@ export interface TaskParamsLike {
 // Constants
 // ============================================================================
 
-const COLLAPSED_AGENT_LIMIT = 4;
+const COLLAPSED_AGENT_LIMIT = 8;
 const ASSIGNMENT_FRAME_INSET = 3; // left border + 1-cell inset + right border
 
 // ============================================================================
