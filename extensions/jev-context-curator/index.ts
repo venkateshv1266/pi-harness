@@ -60,9 +60,10 @@
  * `evidence` activates log/listing emission on top of the V2 floor. Kill
  * switch: JEVCURATOR=0.
  *
- * Tunables live in settings.json (`jevCurator`) and are editable in /setup →
- * "Jev curator"; JEVCURATOR_* env vars are fallbacks. The verifier model
- * accepts an optional ":thinking" suffix (e.g. openrouter/z-ai/glm-5.3:max).
+ * /setup → "Jev curator" exposes the master switch, mode, and verifier model
+ * (persisted to settings.json `jevCurator`); every other knob is
+ * env/defaults-only. The verifier model accepts an optional ":thinking"
+ * suffix (e.g. openrouter/z-ai/glm-5.3:max).
  */
 
 import { Type, uuidv7, type AssistantMessage, type Context, type ThinkingLevel } from "@earendil-works/pi-ai";

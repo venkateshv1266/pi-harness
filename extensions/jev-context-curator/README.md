@@ -34,7 +34,7 @@ Kill switch: `JEVCURATOR=0` makes the curator fully inert; `/curator off` disabl
 
 ## Configuration
 
-Every knob below is editable in `/setup` → **Jev curator**, which persists values to `settings.json` under `jevCurator`; the environment variables act as fallbacks, then code defaults. `JEVCURATOR=0` in the environment still forces the curator off regardless. Everything is read when the extension loads (`/reload` or a new session) except the verifier model, which is re-resolved on every verifier call so `/setup` edits to it apply immediately.
+`/setup` → **Jev curator** exposes three knobs — `JEVCURATOR`, `JEVCURATOR_MODE`, and `JEVCURATOR_VERIFIER_MODEL` — persisted to `settings.json` under `jevCurator`; every other knob below is set through the environment, then code defaults. `JEVCURATOR=0` in the environment still forces the curator off regardless. Settings are read when the extension loads (`/reload` or a new session) except the verifier model, which is re-resolved on every verifier call so `/setup` edits to it apply immediately.
 
 | Env var | Default | Effect |
 |---|---|---|

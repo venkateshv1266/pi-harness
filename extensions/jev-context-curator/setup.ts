@@ -1,6 +1,7 @@
 /**
- * /setup → "Jev curator": every curator knob, persisted to settings.json
- * `jevCurator` so it can be edited without touching the environment.
+ * /setup → "Jev curator": the master switch, mode, and verifier model,
+ * persisted to settings.json `jevCurator`. All other knobs stay
+ * env/defaults-only and are documented in the extension README.
  */
 import type { SetupItem, SetupSection } from "../setup/types.ts";
 import {
@@ -30,8 +31,6 @@ function item(spec: CuratorSettingSpec): SetupItem {
 		owner: `jev-context-curator · env ${spec.env}`,
 		kind: spec.kind,
 		options: spec.options,
-		min: spec.min,
-		max: spec.max,
 		withThinking: spec.kind === "model",
 		removable: spec.kind === "model",
 		get: () => display(spec),
@@ -42,14 +41,7 @@ function item(spec: CuratorSettingSpec): SetupItem {
 				});
 				return `${spec.label} cleared — env/default applies`;
 			}
-			let parsed: number | boolean | string = value;
-			if (spec.kind === "number") {
-				const n = Number(value);
-				if (!Number.isFinite(n)) return `✗ not a number: ${value}`;
-				parsed = n;
-			} else if (spec.kind === "toggle") {
-				parsed = value === "on";
-			}
+			const parsed: boolean | string = spec.kind === "toggle" ? value === "on" : value;
 			updateCuratorSettings((settings) => {
 				settings[spec.key] = parsed;
 			});
@@ -63,7 +55,7 @@ export default function curatorSetup(): SetupSection {
 		id: "jev-curator",
 		title: "Jev curator",
 		detail:
-			"Context-curation gates and the verifier model. Saved to settings.json (jevCurator); JEVCURATOR_* env vars act as fallbacks and JEVCURATOR=0 forces curation off.",
+			"Master switch, mode, and verifier model, saved to settings.json (jevCurator). JEVCURATOR=0 in the environment forces curation off; the other tuning knobs stay env-only.",
 		items: CURATOR_SETTING_SPECS.map(item),
 	};
 }

@@ -1,7 +1,7 @@
 /**
- * Curator settings layer. Precedence: settings.json `jevCurator` (edited in
- * /setup → "Jev curator"), then JEVCURATOR_* env vars, then defaults.
- * JEVCURATOR=0 remains a hard kill switch.
+ * Curator settings layer. /setup → "Jev curator" exposes the master switch,
+ * mode, and verifier model, persisted to settings.json `jevCurator`; every
+ * other knob is env/defaults-only. JEVCURATOR=0 remains a hard kill switch.
  */
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
@@ -38,12 +38,10 @@ export interface CuratorConfig {
 export interface CuratorSettingSpec {
 	key: keyof CuratorConfig;
 	env: string;
-	kind: "number" | "toggle" | "enum" | "model";
+	kind: "toggle" | "enum" | "model";
 	label: string;
 	detail: string;
-	defaultValue: number | boolean | string;
-	min?: number;
-	max?: number;
+	defaultValue: boolean | string;
 	options?: { value: string; label?: string; description?: string }[];
 }
 
@@ -80,210 +78,38 @@ export const CURATOR_SETTING_SPECS: CuratorSettingSpec[] = [
 			"Frontier model for the losslessness gate and compaction summaries; empty = session model. Accepts provider/model:thinking (e.g. openrouter/z-ai/glm-5.3:max).",
 		defaultValue: "",
 	},
-	{
-		key: "verifierTimeoutMs",
-		env: "JEVCURATOR_VERIFIER_TIMEOUT_MS",
-		kind: "number",
-		label: "Verifier timeout (ms)",
-		detail: "Abort deadline for one verifier call; on timeout every candidate keeps full.",
-		defaultValue: 90000,
-		min: 1000,
-	},
-	{
-		key: "verifyRawCap",
-		env: "JEVCURATOR_VERIFY_RAW_CAP",
-		kind: "number",
-		label: "Verifier raw cap (chars)",
-		detail: "Candidates larger than this go to the verifier as an excerpt instead of the full raw.",
-		defaultValue: 60000,
-		min: 1000,
-	},
-	{
-		key: "minChars",
-		env: "JEVCURATOR_MIN_CHARS",
-		kind: "number",
-		label: "Min output size (chars)",
-		detail: "Tool outputs shorter than this are never curated.",
-		defaultValue: 1500,
-		min: 0,
-	},
-	{
-		key: "recencyTurns",
-		env: "JEVCURATOR_RECENCY_TURNS",
-		kind: "number",
-		label: "V2 recency (turns)",
-		detail: "V2: turns an output waits before its keep/stub/truncate verdict is due.",
-		defaultValue: 3,
-		min: 0,
-	},
-	{
-		key: "ingestCap",
-		env: "JEVCURATOR_INGEST_CAP",
-		kind: "number",
-		label: "Cap-at-rest threshold (chars)",
-		detail: "Outputs larger than this are replaced with a head+tail excerpt before first model exposure.",
-		defaultValue: 25000,
-		min: 1000,
-	},
-	{
-		key: "capHead",
-		env: "JEVCURATOR_CAP_HEAD",
-		kind: "number",
-		label: "Cap head (chars)",
-		detail: "Head chars kept when cap-at-rest applies.",
-		defaultValue: 15000,
-		min: 0,
-	},
-	{
-		key: "capTail",
-		env: "JEVCURATOR_CAP_TAIL",
-		kind: "number",
-		label: "Cap tail (chars)",
-		detail: "Tail chars kept when cap-at-rest applies.",
-		defaultValue: 5000,
-		min: 0,
-	},
-	{
-		key: "truncHead",
-		env: "JEVCURATOR_TRUNC_HEAD",
-		kind: "number",
-		label: "Truncate head (chars)",
-		detail: "Head chars kept when a V2 truncate verdict fires.",
-		defaultValue: 600,
-		min: 0,
-	},
-	{
-		key: "truncTail",
-		env: "JEVCURATOR_TRUNC_TAIL",
-		kind: "number",
-		label: "Truncate tail (chars)",
-		detail: "Tail chars kept when a V2 truncate verdict fires.",
-		defaultValue: 600,
-		min: 0,
-	},
-	{
-		key: "stubProb",
-		env: "JEVCURATOR_STUB_PROB",
-		kind: "number",
-		label: "V2 stub probability",
-		detail: "Jev probability at/above which an output is stubbed (0–1).",
-		defaultValue: 0.85,
-		min: 0,
-		max: 1,
-	},
-	{
-		key: "truncProb",
-		env: "JEVCURATOR_TRUNC_PROB",
-		kind: "number",
-		label: "V2 truncate probability",
-		detail: "Jev probability at/above which an output is truncated (0–1).",
-		defaultValue: 0.6,
-		min: 0,
-		max: 1,
-	},
-	{
-		key: "minConf",
-		env: "JEVCURATOR_MIN_CONF",
-		kind: "number",
-		label: "V2 min confidence",
-		detail: "Verdicts below this Jev confidence are discarded (0–1).",
-		defaultValue: 0.65,
-		min: 0,
-		max: 1,
-	},
-	{
-		key: "maxStubs",
-		env: "JEVCURATOR_MAX_STUBS",
-		kind: "number",
-		label: "V2 max stubs",
-		detail: "Session cap on emitted stubs.",
-		defaultValue: 150,
-		min: 0,
-	},
-	{
-		key: "minBatchSaved",
-		env: "JEVCURATOR_MIN_BATCH_SAVED",
-		kind: "number",
-		label: "V2 batch floor (chars)",
-		detail: "A ready batch of stub/truncate edits is held until combined savings reach this.",
-		defaultValue: 3000,
-		min: 0,
-	},
-	{
-		key: "contextFloorPct",
-		env: "JEVCURATOR_CONTEXT_FLOOR_PCT",
-		kind: "number",
-		label: "V2 context floor %",
-		detail: "Above this context usage, truncate gates loosen.",
-		defaultValue: 70,
-		min: 0,
-		max: 100,
-	},
-	{
-		key: "criticalPct",
-		env: "JEVCURATOR_CRITICAL_PCT",
-		kind: "number",
-		label: "V2 critical %",
-		detail: "Above this context usage, gates escalate and the batch floor drops.",
-		defaultValue: 85,
-		min: 0,
-		max: 100,
-	},
-	{
-		key: "maxHoldTurns",
-		env: "JEVCURATOR_MAX_HOLD_TURNS",
-		kind: "number",
-		label: "V2 max hold turns",
-		detail: "A held batch is emitted anyway after this many turns.",
-		defaultValue: 10,
-		min: 0,
-	},
-	{
-		key: "samples",
-		env: "JEVCURATOR_SAMPLES",
-		kind: "number",
-		label: "Jev samples",
-		detail: "Median-of-N Jev sampling per verdict (classification robustness).",
-		defaultValue: 3,
-		min: 1,
-		max: 9,
-	},
-	{
-		key: "shadowMaxPerTurn",
-		env: "JEVCURATOR_SHADOW_MAX_PER_TURN",
-		kind: "number",
-		label: "Candidates per turn",
-		detail: "Cap on tool outputs classified and proposed per turn in V3.",
-		defaultValue: 10,
-		min: 1,
-	},
-	{
-		key: "jevTimeoutMs",
-		env: "JEVCURATOR_JEV_TIMEOUT_MS",
-		kind: "number",
-		label: "Jev timeout (ms)",
-		detail: "Default timeout for Jev client calls.",
-		defaultValue: 2500,
-		min: 100,
-	},
-	{
-		key: "shadowJevTimeoutMs",
-		env: "JEVCURATOR_SHADOW_JEV_TIMEOUT_MS",
-		kind: "number",
-		label: "Classify timeout (ms)",
-		detail: "Timeout for V3 role/shape classification calls.",
-		defaultValue: 8000,
-		min: 100,
-	},
-	{
-		key: "scoreJevTimeoutMs",
-		env: "JEVCURATOR_SCORE_JEV_TIMEOUT_MS",
-		kind: "number",
-		label: "Line-score timeout (ms)",
-		detail: "Timeout for per-chunk line scoring when building extracts.",
-		defaultValue: 25000,
-		min: 100,
-	},
+];
+
+interface CuratorEnvSpec {
+	key: keyof CuratorConfig;
+	env: string;
+	defaultValue: number;
+}
+
+// env/defaults-only knobs: not persisted, not rendered in /setup
+const CURATOR_ENV_SPECS: CuratorEnvSpec[] = [
+	{ key: "verifierTimeoutMs", env: "JEVCURATOR_VERIFIER_TIMEOUT_MS", defaultValue: 90000 },
+	{ key: "verifyRawCap", env: "JEVCURATOR_VERIFY_RAW_CAP", defaultValue: 60000 },
+	{ key: "minChars", env: "JEVCURATOR_MIN_CHARS", defaultValue: 1500 },
+	{ key: "recencyTurns", env: "JEVCURATOR_RECENCY_TURNS", defaultValue: 3 },
+	{ key: "ingestCap", env: "JEVCURATOR_INGEST_CAP", defaultValue: 25000 },
+	{ key: "capHead", env: "JEVCURATOR_CAP_HEAD", defaultValue: 15000 },
+	{ key: "capTail", env: "JEVCURATOR_CAP_TAIL", defaultValue: 5000 },
+	{ key: "truncHead", env: "JEVCURATOR_TRUNC_HEAD", defaultValue: 600 },
+	{ key: "truncTail", env: "JEVCURATOR_TRUNC_TAIL", defaultValue: 600 },
+	{ key: "stubProb", env: "JEVCURATOR_STUB_PROB", defaultValue: 0.85 },
+	{ key: "truncProb", env: "JEVCURATOR_TRUNC_PROB", defaultValue: 0.6 },
+	{ key: "minConf", env: "JEVCURATOR_MIN_CONF", defaultValue: 0.65 },
+	{ key: "maxStubs", env: "JEVCURATOR_MAX_STUBS", defaultValue: 150 },
+	{ key: "minBatchSaved", env: "JEVCURATOR_MIN_BATCH_SAVED", defaultValue: 3000 },
+	{ key: "contextFloorPct", env: "JEVCURATOR_CONTEXT_FLOOR_PCT", defaultValue: 70 },
+	{ key: "criticalPct", env: "JEVCURATOR_CRITICAL_PCT", defaultValue: 85 },
+	{ key: "maxHoldTurns", env: "JEVCURATOR_MAX_HOLD_TURNS", defaultValue: 10 },
+	{ key: "samples", env: "JEVCURATOR_SAMPLES", defaultValue: 3 },
+	{ key: "shadowMaxPerTurn", env: "JEVCURATOR_SHADOW_MAX_PER_TURN", defaultValue: 10 },
+	{ key: "jevTimeoutMs", env: "JEVCURATOR_JEV_TIMEOUT_MS", defaultValue: 2500 },
+	{ key: "shadowJevTimeoutMs", env: "JEVCURATOR_SHADOW_JEV_TIMEOUT_MS", defaultValue: 8000 },
+	{ key: "scoreJevTimeoutMs", env: "JEVCURATOR_SCORE_JEV_TIMEOUT_MS", defaultValue: 25000 },
 ];
 
 const SETTINGS_PATH = path.join(getAgentDir(), "settings.json");
@@ -315,36 +141,27 @@ export function updateCuratorSettings(mutate: (settings: Record<string, unknown>
 	fs.writeFileSync(SETTINGS_PATH, JSON.stringify(all, null, 2) + "\n");
 }
 
-function fromStored(spec: CuratorSettingSpec, raw: unknown): number | boolean | string | undefined {
+function fromStored(spec: CuratorSettingSpec, raw: unknown): boolean | string | undefined {
 	if (raw === undefined) return undefined;
-	switch (spec.kind) {
-		case "number":
-			return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
-		case "toggle":
-			return typeof raw === "boolean" ? raw : undefined;
-		default:
-			return typeof raw === "string" ? raw : undefined;
-	}
+	if (spec.kind === "toggle") return typeof raw === "boolean" ? raw : undefined;
+	return typeof raw === "string" ? raw : undefined;
 }
 
-function fromEnv(spec: CuratorSettingSpec): number | boolean | string | undefined {
+function fromEnv(spec: CuratorSettingSpec): boolean | string | undefined {
 	const raw = process.env[spec.env];
 	if (raw === undefined || raw === "") return undefined;
-	switch (spec.kind) {
-		case "number": {
-			const n = Number(raw);
-			return Number.isFinite(n) ? n : undefined;
-		}
-		case "toggle":
-			return raw !== "0" && raw.toLowerCase() !== "false";
-		default:
-			return raw;
-	}
+	if (spec.kind === "toggle") return raw !== "0" && raw.toLowerCase() !== "false";
+	return raw;
 }
 
 export function resolveCuratorConfig(): CuratorConfig {
 	const stored = readCuratorSettings();
 	const resolved: Record<string, unknown> = {};
+	for (const spec of CURATOR_ENV_SPECS) {
+		const raw = process.env[spec.env];
+		const n = raw === undefined || raw === "" ? undefined : Number(raw);
+		resolved[spec.key] = n !== undefined && Number.isFinite(n) ? n : spec.defaultValue;
+	}
 	for (const spec of CURATOR_SETTING_SPECS) {
 		resolved[spec.key] = fromStored(spec, stored[spec.key]) ?? fromEnv(spec) ?? spec.defaultValue;
 	}
