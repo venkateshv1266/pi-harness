@@ -21,6 +21,7 @@ New docs follow
 | `jev-memory` | [README](jev-memory/README.md) | Persistent memory, session search, and skills with Jev-gated admission, review, correction adjudication, and search rerank. |
 | `recite` | [README](recite/README.md) | Tail recitation — keeps a compact goal/todo block at the model's most-attended position, exactly one live copy. |
 | `ttsr` | [README](ttsr/README.md) | Time-Traveling Stream Rules with zero idle token cost, plus the context registry (`/ttsr`, `/contexts`, `context_list`). |
+| `course-check` | [README](course-check/README.md) | Periodic Jev supervision — every N turns, judge the trajectory against the session goal; off-track verdicts inject a rethink nudge. |
 | `decision-tuner` | [README](decision-tuner/README.md) | Weekly auto-run of the decision report plus prune/reword proposals, surfaced in `/setup → Decisions`. |
 | `mcp-bridge` | [README](mcp-bridge/README.md) | MCP servers as `mcp__<server>__<tool>` tools: lazy connect, OAuth 2.0 PKCE, env denylist, result truncation. |
 | `setup` | [README](setup/README.md) | `/setup` — full-screen settings window plus a command/rule/MCP cheat sheet; extensible via `setup.ts`. |

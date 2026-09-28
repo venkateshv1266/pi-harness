@@ -1,7 +1,7 @@
 # my-pi-setup
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup:
-29 extensions, 9 subagent definitions, 20 generic TTSR rules, 4 skills, and
+30 extensions, 9 subagent definitions, 20 generic TTSR rules, 4 skills, and
 3 themes. Clone this repo and run `./install.sh` to get the same setup.
 
 This README is the index. Each component documents itself next to its code —
@@ -37,7 +37,7 @@ To uninstall an extension, delete its file (or directory) from
 
 | Path | What it is | Docs |
 |---|---|---|
-| `extensions/` | 29 pi extensions — delegation, models, context/memory, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
+| `extensions/` | 30 pi extensions — delegation, models, context/memory, supervision, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
 | `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
 | `rules/` | 20 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
 | `skills/` | 4 skills: add-rule, add-agent, add-mcp-server, code-review | [`skills/README.md`](skills/README.md) |
@@ -55,7 +55,8 @@ Common entry points:
   [persistent engine](extensions/persistent-subagent/README.md)
 - **Memory and context** — [jev-memory](extensions/jev-memory/README.md),
   [jev-context-curator](extensions/jev-context-curator/README.md),
-  [ttsr](extensions/ttsr/README.md), [recite](extensions/recite/README.md)
+  [ttsr](extensions/ttsr/README.md), [recite](extensions/recite/README.md),
+  [course-check](extensions/course-check/README.md) (periodic Jev trajectory supervision)
 - **Settings UI** — [`/setup`](extensions/setup/README.md) changes most of the
   above without memorizing individual commands
 - **MCP servers** — [mcp-bridge](extensions/mcp-bridge/README.md) plus the
