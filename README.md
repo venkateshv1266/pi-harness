@@ -1,10 +1,12 @@
 # my-pi-setup
 
-My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup —
-the extensions in `extensions/`, themes in `themes/`, a pack of generic TTSR
-rules in `rules/`, nine subagent definitions in `agents/`, and skills in
-`skills/`. Clone this repo
-and run `./install.sh` to get the same setup.
+My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup:
+29 extensions, 9 subagent definitions, 20 generic TTSR rules, 4 skills, and
+3 themes. Clone this repo and run `./install.sh` to get the same setup.
+
+This README is the index. Each component documents itself next to its code —
+directory extensions own a `README.md`, single-file extensions have a sibling
+`.md`, and every other directory has its own README.
 
 ## Prerequisites
 
@@ -23,35 +25,41 @@ cd my-pi-setup
 ./install.sh
 ```
 
-Then restart pi (or run `/reload` in an open session). That's it — pi
-auto-discovers the installed extensions and themes in `~/.pi/agent/`.
+Then restart pi (or run `/reload` in an open session). Pi auto-discovers the
+installed extensions, themes, rules, and agents in `~/.pi/agent/`. The
+installer is add-only for settings: it seeds the model-role aliases and the
+router tiers but never overwrites keys you have already set.
 
 To uninstall an extension, delete its file (or directory) from
 `~/.pi/agent/extensions/` and `/reload`.
 
-## Optional: YubiKey alerts for Git in cmux
+## What's in this repo
 
-If Git uses a YubiKey for SSH authentication or signing, install the optional
-cmux alert wrappers:
+| Path | What it is | Docs |
+|---|---|---|
+| `extensions/` | 29 pi extensions — delegation, models, context/memory, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
+| `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
+| `rules/` | 20 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
+| `skills/` | 4 skills: add-rule, add-agent, add-mcp-server, code-review | [`skills/README.md`](skills/README.md) |
+| `themes/` | 3 custom pi themes | [`themes/README.md`](themes/README.md) |
+| `utils/` | Shared helpers (decision contract, role resolution, Jev ask) + the omp-stats dashboard | [`utils/README.md`](utils/README.md) |
+| `scripts/` + `bin/` | YubiKey Git notification wrappers + installer, settings migration | [`scripts/README.md`](scripts/README.md) |
+| `docs/` | Extension README template and postmortems | [`docs/README.md`](docs/README.md) |
 
-```bash
-./scripts/install-yubikey-notifications.sh
-```
+Common entry points:
 
-This installs wrappers and the selected alert sound under `~/.pi/agent/`, then
-configures Git's global `core.sshCommand` and `gpg.program` settings:
-
-- SSH-backed `git pull`, `fetch`, `push`, and similar operations alert before
-  SSH authentication starts. SSH cannot expose in advance whether the agent
-  will require a hardware touch, so this may alert when an existing session
-  does not need one.
-- GPG signing operations alert when Git actually invokes GPG. Verification
-  operations remain silent.
-
-The default sound is `~/.pi/agent/sounds/yubikey-alert-2-beep.wav`. Set
-`PI_YUBIKEY_NOTIFICATION_SOUND` before launching Git or pi to use another
-`.wav`/`.aiff` file. The installer preserves an existing custom Git setting
-instead of overwriting it.
+- **Models** — [roles](extensions/model-roles.md), [route-ahead](extensions/model-router.md),
+  [failover](extensions/model-fallback.md), [OpenRouter guardrails](extensions/openrouter-guardrail-header.md)
+- **Delegation** — [delegate](extensions/delegate/README.md) with the
+  [one-shot engine](extensions/subagent/README.md) and
+  [persistent engine](extensions/persistent-subagent/README.md)
+- **Memory and context** — [jev-memory](extensions/jev-memory/README.md),
+  [jev-context-curator](extensions/jev-context-curator/README.md),
+  [ttsr](extensions/ttsr/README.md), [recite](extensions/recite/README.md)
+- **Settings UI** — [`/setup`](extensions/setup/README.md) changes most of the
+  above without memorizing individual commands
+- **MCP servers** — [mcp-bridge](extensions/mcp-bridge/README.md) plus the
+  [add-mcp-server](skills/add-mcp-server/SKILL.md) skill
 
 ## Updating an existing setup
 
@@ -72,563 +80,49 @@ One caveat: if an extension was **removed or renamed** in the repo, the old
 copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 `/reload`.
 
-## Themes
-
-Custom Pi themes are stored in `themes/` and installed to
-`~/.pi/agent/themes/` by `./install.sh`.
-
-| Theme | Description |
-|---|---|
-| **onedark-obsidian** | One Dark-inspired dark theme with a softened steel-blue accent (`#789bbd`). |
-| **quiet-night** | Warm, low-glare dark theme with muted accents for long sessions. |
-| **low-lumen** | Deep dark theme with low-saturation colors, warm text, and high readability contrast. |
-
-Select a theme from `/settings`, or use one for a single run:
-
-```bash
-pi --use-theme onedark-obsidian
-pi --use-theme quiet-night
-pi --use-theme low-lumen
-```
-
-## Extensions
-
-### Single-file extensions (`~/.pi/agent/extensions/*.ts`)
-
-| Extension | What it does |
-|---|---|
-| **web-search.ts** | Gives the LLM `web_search` + `web_fetch` tools. DuckDuckGo/Jina by default (no key needed); optionally set `TAVILY_API_KEY` or `BRAVE_SEARCH_API_KEY` for better search. |
-| **rewind.ts** | `/rewind` — Claude-Code-style checkpoints & rewind. Tracks every file the agent edits and snapshots state at each user prompt. |
-| **handoff.ts** | `/handoff <task>` — instead of a lossy compact, extracts what matters and spawns a fresh focused session with a generated prompt. |
-| **todo.ts** | `todo` tool + `/todos` command — todo state persisted in session entries, not files. |
-| **summarize.ts** | `/summarize` — full-terminal scrollable summary overlay (mouse wheel + keyboard); model selected via role alias (`@smol` by default, any alias accepted as the command arg); `/summarize view` reopens the last summary from cache without re-running the model. |
-| **claude-compat.ts** | Makes pi discover Claude Code resources (`.claude/` contexts, skills, hooks) by walking cwd → root. |
-| **custom-footer.ts** | Two-line status footer: cwd, git branch, tokens in/out, context %, cost, model. Toggle with `/footer`. |
-| **openrouter-guardrail-header.ts** | Sticky top header showing daily/monthly OpenRouter usage and configured caps. Reads the current session key via `GET /api/v1/key`; no MCP or Management API key is required. |
-| **model-roles.ts** | `/roles` — interactive TUI to assign the subagent model roles (`smolModel`, `slowModel`, `planModel`, `taskModel`, `designerModel`) in settings.json: role picker with one-line purpose descriptions → searchable model picker → thinking level. See [Model roles](#model-roles) below. |
-| **model-fallback.ts** | Auto-failover on provider-attributable failures (rate limits, provider 5xx, stream errors) — switches to a configured fallback model (with its own thinking level) and the in-flight run continues on it. Transport-level errors (dead network) never switch; fallback ping-pong is blocked by sticky cycle detection + a 60s cross-model backstop, and post-run auto-resume is capped at 2 short markers instead of re-sending the prompt. Covers the main session **and** subagents, since subagents are spawned `pi` processes that load global extensions. See [Model fallback](#model-fallback) below. |
-| **model-router.ts** | Route-ahead model selection: at each task boundary, Jev (System One decision model) classifies the prompt — new task? decided execution handoff or open-ended reasoning? compute tier (keep/fast/mid/deep)? — and switches models *before* the first token is spent. The execution shape is logged for audit only. Confidence-gated, honors manual model choices, fails open. Tier refs accept `@role` aliases and default to the matching `/roles` setting when unset. See [Model routing](#model-routing-route-ahead) below. |
-| **decisions-report.ts** | `/decisions-report [days]` — closes the decision loop: auto-discovers every `*.jsonl` decision log under `~/.pi/agent/jev-decisions/`, joins decisions to their outcome records (TTSR fires → survived/retried/repeated/corrected; router routes → overrides/corrections/test results; curator emits → later `jev_recall`; plus any new system using the `utils/jev-outcomes.ts` contract), flags rules to prune or reword and extracts never recalled, and writes a markdown report under `~/.pi/agent/jev-decisions/reports/`. See [Decision outcome loop](#decision-outcome-loop) below. |
-| **decision-tuner/** | Weekly auto-tuning on top of the decision logs: regenerates the report on session start when stale and proposes `prune` actions for rules that never deliver (rules marked `safety: true` exempt; apply renames to `.md.disabled`, reversible) plus advisory reword/router/curator flags with sample gates. `/decision-tuner [status\|run\|list\|apply <id>\|dismiss <id>]`; also contributes the **Decisions** section to `/setup` (run report, see last run, apply/dismiss proposals, with each row reporting its state after the action); `DECISION_TUNER=0` disables, `DECISION_TUNER_DAYS` sets the interval. See [Decision outcome loop](#decision-outcome-loop) below, or `extensions/decision-tuner/README.md` for the full design. |
-| **jev-context-curator/** | Goal-quality-first context manager (V3; directory extension — `index.ts` + `jev-curator-v3-architecture.md`, an architecture/session-flow overview, inside). **Default mode is `quality`** (the full system): a versioned **GoalSpec** (user objective + criteria/constraints/plan/facts/open questions, immutable objective, `amend_goalspec` tool, displayed by `/goal`); Jev evidence-role classification (active/evidence/background/irrelevant + source type + GoalSpec links) with type-aware extract proposals (log line-scoring with deterministic ERROR/summary retention, code/doc line ranges, listing matches); a batched **frontier verifier** at turn_end over the full raw source — retains full whenever uncertain; verifier-approved extracts emitted for log/listing/code/doc sources into a searchable **evidence ledger** with `curator_find` (Jev rerank vs GoalSpec) + `jev_recall` paged raw recovery as the no-loss contract; compaction carries the complete GoalSpec + ledger (with recall ids) into the frontier-generated summary (default compaction fallback); outputs >25k capped to head/tail before first exposure (never billed in full); the V2 recency stub/truncate judge is retired in this mode — the verifier owns every full→non-full transition. Explicit modes via `JEVCURATOR_MODE`: `v2` (pre-V3 economics layer — benchmark arm), `shadow-quality` (classify/propose/verify, log only), `evidence` (log/listing emission on the V2 floor). Fail-open everywhere; `JEVCURATOR=0` kill switch; audit in `~/.pi/agent/jev-decisions/jev-curator.jsonl` (V3) + `jev-curator-v2.jsonl` (V2); `/curator` shows mode + stats. Its `turn_end` drafts compose with other extensions' boundary entries (e.g. `recite/`). |
-| **recite/** | Tail recitation — after every turn, appends a compact (≤~300-token) state block as a context-only message so the goal sits at the model's most-attended position: GoalSpec objective/goal/plan/open questions/criteria/constraints plus the live todo list, filled in priority order up to a char budget. Exactly one copy is live — the fresh block is appended and the previous one is omitted from model context via a context edit. State is read from session entries (curator GoalSpec + `todo` tool results), so it works standalone: with `JEVCURATOR=0` the objective falls back to the latest user request. `/recite` shows the next block; `RECITE=0` disables, `RECITE_CHARS` sets the budget (default 1200). Unit tests: `node --test extensions/recite/compose.test.ts`. |
-| **confirm-destructive.ts** | Asks for confirmation before destructive session actions (`/clear`, switch, branch). |
-| **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
-| **repo-agents-guard.ts** | Blocks agent tool calls targeting a repository until its nearest `AGENTS.md` is successfully read with `read`; covers path tools, shell working directories/paths, and subagent launch paths. |
-| **plugins.ts** | `/plugins` — browse & install skills from Claude Code plugin marketplaces (local `.claude-plugin/marketplace.json` catalogs). Interactive searchable picker + detail views, or CLI: `/plugins install\|uninstall\|enable\|disable\|list <name>`, `/plugins marketplace add <path>`. Installed plugins load in place via `resources_discover` — `git pull` of the marketplace updates skills. State: `~/.pi/agent/plugins.json` (local, not synced); seed marketplaces there or via `PI_PLUGIN_MARKETPLACE`. |
-| **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. `install.sh` installs it only when the `cmux` binary is on PATH and removes any stale installed copy otherwise (its hooks would fail on every session event without the binary). |
-| **stats.ts** | `/stats [port]` — opens a browser-based usage dashboard for pi session cost, token, and cache statistics. |
-
-### Repository instruction guard
-
-`repo-agents-guard.ts` finds the nearest `AGENTS.md` for each agent tool target. It treats `AGENTS.md` files already preloaded by Pi into the current system context as satisfied, so a sibling repository can reuse an already-loaded parent file; a closer `AGENTS.md` still requires its own read. Otherwise, it allows the `read` call for the applicable file, then records the repository as cleared only after the read succeeds. Other path tools, shell calls, and subagent launches are blocked until then. Shell detection covers the current working directory, absolute and `~` paths, `cd`, and `git -C`/work-tree arguments. It does not intercept user `!`/`!!` shell commands or paths hidden inside shell variables.
-
-### Usage statistics
-
-The `/stats` command launches the `@oh-my-pi/omp-stats` dashboard with Bun.
-The dashboard is installed under `~/.pi/agent/utils/omp-stats/` and reads the
-session logs from the same pi agent directory.
-
-After running `./install.sh`, install the dashboard dependency once:
-
-```bash
-cd ~/.pi/agent/utils/omp-stats
-bun install
-```
-
-Then reload pi and run:
-
-```text
-/stats
-```
-
-Pass a port to use something other than the default `3847`, for example
-`/stats 4000`. Set `PI_STATS_HOST` to change the bind host. The command opens
-the dashboard in the system browser and writes startup errors to
-`~/.pi/agent/utils/omp-stats/server.log`.
-
-### Subdirectory extensions (own `package.json`, `npm install` runs in `install.sh`)
-
-| Extension | What it does |
-|---|---|
-| **mcp-bridge/** | Adds MCP server support to pi: lazy-connects servers from `~/.pi/agent/mcp-servers.json`, registers their tools as `mcp__<server>__<tool>`, does OAuth 2.0 PKCE login for remote servers (Slack, Linear, …), strips sensitive env vars from child processes, and truncates oversized tool results. Config lives in `~/.pi/agent/mcp-servers.json` (see below). |
-| **delegate/** | Unified spawn tool and the only spawn door in root sessions: routes each delegation between the one-shot engine (`subagent`) and the persistent engine (`subagent_spawn`) with a Jev classifier on `mode: "auto"` (override with `mode`). Decisions log to `~/.pi/agent/jev-decisions/subagent-router.jsonl`; raw spawn tools are hidden in root sessions (children keep them via `PI_SUBAGENT_CHILD=1`; `DELEGATE_RAW_TOOLS=1` disables hiding). |
-| **subagent/** | One-shot engine behind `delegate`: isolated `pi --mode json -p --no-session` children that block, return once, and exit. Parallel task batches (up to 8, all concurrent), sequential chains with a `{previous}` placeholder, per-agent tool allowlists, model-role aliases (`@smol`, `@slow`, …). Hidden as a raw tool in root sessions; children and `DELEGATE_RAW_TOOLS=1` sessions keep it. Agent definitions ship in `agents/` below. |
-| **persistent-subagent/** | Persistent engine behind `delegate`: named, steering-able, resumable children as long-lived `pi --mode rpc` processes with per-child persistent sessions; **blocks until they settle, returning results in the same call** (`wait: false` returns handles for mid-flight steering). `subagent_send` steers a running child or starts a follow-up turn; `subagent_wait` collects results — waiting on an aborted child auto-resumes it; `subagent_list` shows the roster. Children are scoped to the root session, survive restarts via on-disk session files, idle-unload after 30 min and transparently resume; print/one-shot (`-p`) parents reap live children when the run settles (those processes exit cleanly), while interactive sessions keep them across turns. |
-| **ttsr/** | TTSR (Time-Traveling Stream Rules) engine — rules sit dormant with **zero token cost** until the model's live output matches a regex or [ast-grep](https://ast-grep.github.io/) pattern, then abort+remind or block/prepend. Manage with `/ttsr`; rules are `.md` files in `.pi/rules/` (project) or `~/.pi/agent/rules/` (user). Context docs register in `registry.yaml` (user + project roots) and synthesize gated `ctx-*` rules with a GoalSpec-first session digest, read receipts, and subagent seeding; `/contexts [prune]` shows gate telemetry and `context_list`/`read_context` pull docs on demand. See `extensions/ttsr/README.md`. |
-| **refine/** | Evidence-gated self-refinement — `/refine` reviews a session trajectory and promotes recurring lessons into TTSR rules or notes; `refine_propose` lets the agent submit a draft mid-session (approval + rollback history). Plus a **background self-improvement loop**: pre-gated every `REFINE_AUTO_TURNS` turns (default 10 — fires only on user-correction regex hits or 2+ repeated identical tool errors), the planner proposes, Jev adjudicates (weakest-link score over evidence / trigger-precision / novelty), notes auto-apply, and rules land **staged** in `~/.pi/agent/refine/rules-staging/` (dormant by construction) for one-glance arming via `/refine-review` (arm / keep / `discard`). Dedup is name + content-hash + Jev redundancy vs existing rule bodies; rules are born with optional `verify:` Jev gating; every decision audits to `~/.pi/agent/refine/auto-refine.jsonl` with per-session attribution. `REFINE_AUTO=0` / `REFINE_JEV=0` kill switches, `REFINE_AUTO_RULE_THRESHOLD` (0.8) / `REFINE_AUTO_NOTE_THRESHOLD` (0.6), `REFINE_AUTO_HEADLESS=1` for non-TUI sessions; Jev unavailable degrades to manual-only — nothing auto-writes ungated. |
-| **jev-memory/** | Persistent memory + session search with a Jev System-One decision layer — admission gate on every save (blocked low-value writes return their reason), review pre-gate (skips the periodic LLM review on quiet turns), correction adjudication behind the regex pre-filter, search rerank over BM25, and scheduled typed (retire-only) consolidation. Every decision degrades to plain hermes behavior when Jev is unavailable. Data lives in `~/.pi/agent/jev-memory/` (auto-migrates from a legacy `pi-hermes-memory` store on first start); `JEVM_JEV=0` kill switch; decisions audit to `~/.pi/agent/jev-decisions/jev-memory.jsonl`. See `extensions/jev-memory/README.md`. |
-| **setup/** | `/setup` — full-screen setup window: every setting from pi core and the installed extensions (models, roles, router, fallbacks, guardrails, appearance, core behavior, packages/plugins) plus a cheat sheet of every loaded slash command, TTSR rules, and MCP servers — with a detail pane explaining what each setting does and when changes apply. Extensible: any extension can contribute a section via a `setup.ts` file (see [Setup window](#setup-window) below). |
-
-## Subagent definitions (`agents/`)
-
-Six agents, used with the `subagent` tool above. Full file-format docs in
-`agents/README.md`.
-
-| Agent | Role | Tools |
-|---|---|---|
-| **explorer** | Fast read-only codebase recon — "where is X?" lookups, returns a compressed map for handoff (`@smol`) | read, grep, find, ls, bash |
-| **research** | Open-ended investigation across files/logs/docs, returns a structured briefing with citations (`@smol`) | read-only + web_search, web_fetch |
-| **writer** | Code-typing executor for fully-decided specs — implements, doesn't design (`@smol`) | read, bash, edit, write, grep, find, ls |
-| **verifier** | Quality-gate pass — grades a writer's diff against the frozen spec and the lint/typecheck/test harness (`@slow`, xhigh thinking) | read-only |
-| **reviewer** | Backend review orchestrator — dispatches parallel lens sub-agents + a validator pass, synthesizes prioritized findings (`@slow`) | read-only + subagent |
-| **task** | General-purpose worker, can fan out to nested subagents (`@task`) | full set + subagent |
-| **security-auditor** | Dedicated security lens for review fan-outs — threat-models new entry points (authn/authz bypasses, IDOR, injection, secrets, PII). Spawned by `reviewer` on non-trivial diffs; usable standalone (`@slow`) | read, bash, grep, find, ls |
-| **concurrency-auditor** | Dedicated concurrency & state lens — transaction/isolation gaps, idempotency violations, races, lock ordering, outbox/dual-write, saga rollback. Spawned by `reviewer` on diffs touching state, queues, or money paths (`@slow`) | read, bash, grep, find, ls |
-| **review-validator** | Fact-checker for review findings — independently verifies each finding against the cited code, classifies as CONFIRMED / DOWNGRADE / REFUTED / UNVERIFIABLE; never generates new findings (`@slow`, xhigh thinking) | read, bash, grep, find, ls |
-
-`install.sh` auto-configures the role aliases (add-only — it never
-overwrites keys you've already set): `@smol` → OpenAI GPT-5.6 Luna,
-`@slow` → GLM-5.3, `@plan` → GPT-5.6 Terra, `@task` → GLM-5.3 Flash, all
-routed via OpenRouter (needs an OpenRouter key configured in pi). It also
-seeds the [model-router](#model-routing-route-ahead) `modelRouter` block
-(fast/deep tiers + threshold) the same add-only way, so route-ahead works
-out of the box on a fresh install. Thinking
-levels are pinned per-agent in the frontmatter (e.g. verifier runs `xhigh`).
-Override anytime via `smolModel` / `slowModel` / `planModel` / `taskModel` in
-`~/.pi/agent/settings.json` or `PI_SMOL_MODEL` / `PI_SLOW_MODEL` env vars;
-fully unset, agents inherit your session model. The `writer` → `verifier`
-pair is the cascade pattern: a cheap model types, a strong model grades.
-Project-local agents can override these via `.pi/agents/<name>.md`.
-
-### OpenRouter guardrail header
-
-The installer adds this block to `~/.pi/agent/settings.json` without overwriting an existing value:
-
-```json
-"openrouterGuardrails": {
-  "monthlyLimit": 500,
-  "dailyLimit": 75
-}
-```
-
-The header combines OpenRouter credit usage and BYOK usage for the active key,
-refreshes every five minutes, and displays the configured monthly (`M`) and daily
-(`D`) caps. Update the two limits in `settings.json` if the dashboard budgets
-change, then run `/reload`.
-
-### Model fallback
-
-**model-fallback.ts** watches every provider response and switches to a fallback
-model when the current one fails for real — HTTP 429 (rate limit), 5xx, or
-provider-attributable stream errors. User aborts (Esc) never trigger a switch,
-and each failure is attributed to the model that produced it. It covers the main
-session and subagents (subagents are spawned `pi` processes that load global
-extensions).
-
-Switching is guarded so an outage can't turn into a loop:
-
-- **Transport errors never switch.** `fetch failed`, DNS failures,
-  `ECONNREFUSED`, `socket hang up`, premature stream ends, and friends mean the
-  connection itself is dead — every model behind it fails identically, so the
-  run just ends with a notice instead of thrashing models.
-- **Cross-model backstop.** When two *different* models fail within 60s, the
-  fault is shared infrastructure (local network or the router), not either
-  model — further switches are refused.
-- **Sticky cycle detection.** The visited-model set survives auto-resume runs
-  and only resets on an outside-initiated run, so bidirectional pairs can't
-  ping-pong.
-- **Bounded auto-resume.** When a run dies after a mid-run switch, the turn is
-  resumed with a short `[model-fallback] …` marker (the original prompt is
-  already in the branch) — never a full prompt copy — and at most 2 markers are
-  sent per logical prompt before the extension gives up.
-
-**Setup** — pairs live in `~/.pi/agent/settings.json` under a `modelFallback`
-map, using the same `provider/model:thinking` syntax as the model roles:
-
-```jsonc
-"modelFallback": {
-  "openrouter/z-ai/glm-5.3": "openrouter/openai/gpt-5.6-terra:high",
-  "openrouter/openai/gpt-5.6-luna:xhigh": "openrouter/z-ai/glm-5.3:max"
-}
-```
-
-- Key = primary model: full `provider/modelId`, bare `modelId`, or a
-distinctive substring of the model id
-- Value = fallback; a `:thinking` suffix (`high`, `xhigh`, `max`, …)
-auto-applies that thinking level on switch
-- Optional `"failThreshold": N` tolerates N−1 transient failures before
-switching (default `1` = switch on first failure)
-- Chains work: a fallback can have its own fallback (cycles are blocked)
-
-**Manage with `/fallback`:**
-
-| Command | What it does |
-|---|---|
-| `/fallback` | Show configured pairs, threshold, caps, and live failure counters |
-| `/fallback add` | Interactive: searchable picker for primary → fallback → thinking level, saved to settings.json |
-| `/fallback add <primary> <fallback> [thinking]` | One-liner, e.g. `/fallback add glm-5.3 openrouter/openai/gpt-5.6-terra high` |
-| `/fallback remove [primary]` | Drop a pair (picker if no arg) |
-
-Config is re-read on every failure, so edits apply immediately — no reload
-needed. When a run dies after retries are exhausted and the last switch left it
-on a different model, the turn is resumed with a short marker (auto-resume,
-capped at 2 per prompt) so the work continues on the fallback.
-
-### Model routing (route-ahead)
-
-**model-router.ts** complements model-fallback: instead of reacting to
-failures, it picks the right starting model *before* the task begins. On every
-prompt that starts a new task, it sends the prompt (plus the last few user
-prompts as continuity evidence) to Jev — TypeSafe's System One decision model,
-served via OpenRouter at ~100–600 ms and ~$0.00003/call — with three
-questions: is this a new task, which compute tier fits (keep / fast / mid /
-deep), and — logged for audit only — is the prompt a decided execution
-handoff or an open-ended deciding task? It switches the model only when the
-gating answers clear the confidence threshold.
-
-Design properties:
-
-- **Task-boundary routing only.** Follow-up prompts never re-route, so the
-  prompt cache stays warm within a task (switching models mid-task would
-  invalidate it). The first prompt of a session is structurally a new task.
-- **Calibrated gate.** Both questions must clear `threshold` (default 0.75);
-  anything less is a silent no-op. Criteria are asymmetric: when in doubt, err
-  toward the deeper tier — but a decided execution handoff (frozen spec, exact
-  files/contracts) is never upgraded to deep just because the artifact it
-  describes is complex.
-- **Manual choice wins.** A model picked via `/model` or Ctrl+P is honored for
-  the current task; auto-routing resumes at the next task boundary.
-- **Fails open.** Jev unreachable → no-op, with a circuit breaker that pauses
-  routing for 10 minutes after 3 consecutive failures.
-- **Layers with model-fallback:** the router picks the starting model; the
-  fallback repairs failures. Neither depends on the other.
-- **Subagents route too — and their badges follow.** Children are spawned
-  `pi` processes that load global extensions, so a spawn-time `model`
-  override can be rerouted. Status rows, the persistent roster, and resumed
-  children reflect the model actually in use (resume re-pins to the last
-  model a child really ran on), not the stale spawn-time request.
-
-**Setup** — tiers live in `~/.pi/agent/settings.json` using the same
-`provider/model:thinking` syntax as fallback pairs:
-
-```jsonc
-"modelRouter": {
-  "enabled": true,
-  "threshold": 0.75,
-  "timeoutMs": 1500,
-  "fast": "openrouter/z-ai/glm-5.3-flash:medium",
-  "mid": "openrouter/z-ai/glm-5.3-flash:high",
-  "deep": "openrouter/z-ai/glm-5.3-flash:max"
-}
-```
-
-Tier refs accept the same `@role` aliases as subagent model overrides —
-`@smol`, `@task`, `@slow`, `@plan`, `@designer` (plus the `@fast`/`@reasoning`
-synonyms), optionally with a thinking override (`@slow:xhigh`) — resolved
-through the `/roles` settings, so a tier stays in sync with its role. When a
-tier key is absent it defaults to the matching role (`fast`→`@smol`,
-`mid`→`@task`, `deep`→`@slow`); defaults read the `/roles` settings only, so
-installs that never configured roles keep the router inert. `/route tier
-<tier> off` disables a tier outright (stored as `null`: no routing, no
-default), while `/route clear <tier>` removes the override and restores the
-role default. `/route status` shows each tier's resolution with provenance
-(explicit / role default / roles-prefer / disabled).
-
-`preferRoles` (default off) flips the precedence: when on, tiers resolve
-from the `/roles` settings (fast→@smol, mid→@task, deep→@slow) even when
-explicit tier refs are set — a one-switch way to make `/roles` the single
-source of truth; 'off' tiers stay off, and an unconfigured role falls open
-to the explicit ref. Toggle it in `/setup` (Router section) or with
-`/route prefer on|off`.
-
-Tiers map to work shapes: `fast` — mechanical edits and lookups; `mid` —
-executing a fully-decided handoff (frozen spec: exact files, interfaces,
-contracts) even when the artifact itself is complex, plus bounded judgment
-(review triage, research synthesis, local debugging); `deep` — genuine
-reasoning required now (incident triage, architecture or design decisions,
-designing or diagnosing concurrency/retry contracts, open-ended implementation
-where no decided spec exists). All three tiers
-share one base model, so every route is a thinking-level change: it never
-switches to a more expensive model (a measured 2.3× billing premium with no
-pass-rate gain) and never invalidates the prompt cache — the extension detects
-same-model routes and only adjusts thinking.
-
-Requires an OpenRouter key (`~/.pi/agent/auth.json` → `openrouter.key`, or
-`OPENROUTER_API_KEY`). Endpoint/model are overridable via `JEV_BASE_URL` and
-`JEV_MODEL`; `MODEL_ROUTER=0` disables the Jev call entirely. Every decision
-—including no-ops, with reasons, probabilities, and the execution-shape signal
-(executing/deciding)—is appended to
-`~/.pi/agent/jev-decisions/model-router.jsonl` for auditing hit rate and calibration;
-outcome events (manual override, correction, test result) land in the same file
-and join by route id (`ref`) — see [Decision outcome loop](#decision-outcome-loop).
-
-**Manage with `/route`:**
-
-| Command | What it does |
-|---|---|
-| `/route` | Status: config, pin state, circuit breaker, last 8 decisions |
-| `/route on` / `/route off` | Toggle routing in settings.json (applies immediately, no reload) |
-| `/route prefer <on\|off>` | When on, tiers follow the `/roles` settings even over explicit refs; 'off' tiers stay off (also a toggle in `/setup` → Router) |
-| `/route tier` | Interactive (same searchable picker TUI as `/roles`): pick tier → role alias, (off), or model → thinking level, saved to settings.json |
-| `/route tier <fast\|mid\|deep> [model:thinking \| @role[:thinking] \| off]` | One-liner, e.g. `/route tier deep @slow` or `/route tier fast openrouter/openai/gpt-5.6-luna:xhigh`; `off` disables the tier (no role default) |
-| `/route clear [fast\|mid\|deep]` | Unset a tier — falls back to the matching role default (fast→@smol, mid→@task, deep→@slow) |
-| `/route threshold [0.6\|0.7\|0.75\|0.8\|0.9]` | Minimum calibrated p for both questions before the router acts (default 0.75) |
-
-### Decision outcome loop
-
-Every extension that makes non-trivial decisions can log them to its own file
-under `~/.pi/agent/jev-decisions/` using the contract in
-`utils/jev-outcomes.ts`. **decisions-report.ts** reads *what happened next* and
-joins the two sides; any new `*.jsonl` log is discovered automatically, so a
-new extension needs no changes in the report or tuner:
-
-```ts
-import { logDecision, logOutcome, logEvent } from "../utils/jev-outcomes.ts";
-
-const id = logDecision("mysystem", "mysystem.jsonl", { action: "do-thing" });
-logOutcome("mysystem", "mysystem.jsonl", id, "worked", { verdict: "good" });
-```
-
-- Three record kinds: `decision` (what was decided, with an `id`), `outcome`
-  (resolves a decision via `ref`, carries a domain `outcome` string and the
-  universal `verdict`: `good` / `bad` / `mixed` / `unknown`), and `event`
-  (context that is not a decision). A decision with no outcome after 24h shows
-  up as stale in the report. Reserved keys: `kind`, `system`, `id`, `ref`,
-  `outcome`, `verdict`, `ts`.
-- **TTSR** — each fire logs rule, scope, session, turn, delivered, and whether
-  the call was blocked. Outcomes: `survived` (nothing adverse within 5 turns),
-  `retried` (a blocked tool call re-issued unchanged with no user input),
-  `repeated`, `user_corrected`, `unresolved` (session ended first).
-- **Router** — each route is a decision carrying `id` / `session` / `turn`;
-  outcomes `model_override`, `user_corrected`, `tests_passed` / `tests_failed`
-  join by `ref` within 10 turns.
-- **Curator** — each emitted extract is a decision (`id` = entry id); every
-  `jev_recall` resolves it with `recalled` (verdict `good`), while
-  `curator_find` is an `event`. Emitted-but-never-recalled is the signal that
-  an extraction was unnecessary.
-- **Memory** — legacy audit rows (admission, corrections, consolidation
-  degradation) are surfaced as pipeline health; no contract records yet.
-
-`/decisions-report [days]` (default 7) joins every discovered log, shows a
-per-system table (decisions / outcomes / joined / verdicts / stale / untyped),
-and flags prune candidates, adverse rules, acted routes followed by failing
-tests, and emitted extracts never recalled. Outcome records only exist for
-decisions made after the telemetry rollout, so the report separates
-telemetry-era counts from legacy rows. The markdown lands in
-`~/.pi/agent/jev-decisions/reports/decisions-<date>.md`.
-
-**decision-tuner/** automates the loop: on session start it re-runs the
-analysis every `DECISION_TUNER_DAYS` (default 7), regenerates the report, and
-notifies only when there are proposals. With sample gates it proposes
-- `prune` — rules evaluated ≥20 times that never delivered a fire. Rules marked
-  `safety: true` in frontmatter (or listed in `~/.pi/agent/decision-tuner/config.json`
-  `neverPrune`) are exempt. Apply renames the rule file to `<name>.md.disabled`
-  — reversible, never deleted — and `/ttsr-reload` picks it up.
-- `reword` / `config` — advisory flags with the triggering evidence (adverse
-  rules, acted routes with failing tests, `useExtract` without emission, emitted
-  extracts never recalled). Nothing is changed automatically.
-
-Manage with `/decision-tuner` (`status`, `run`, `list`, `apply <id>`,
-`dismiss <id>`; dismissal cools down 30 days). State, proposals, and the run
-audit live in `~/.pi/agent/decision-tuner/`. `DECISION_TUNER=0` disables it.
-The same state is in `/setup → Decisions`: run the report, check the last run,
-and apply/dismiss open proposals from the window — no command to remember.
-
-### Model roles
-
-**model-roles.ts** provides `/roles` for assigning the model roles resolved
-via `@smol` / `@slow` / `@plan` / `@task` / `@designer` aliases — consumed by
-the subagent engine and, as tier refs and tier defaults, by
-[model routing](#model-routing-route-ahead). Keys live at the top level of
-`~/.pi/agent/settings.json` using the same `provider/model:thinking` syntax
-as fallback pairs:
-
-```jsonc
-"smolModel": "openrouter/openai/gpt-5.6-luna:xhigh",
-"slowModel": "openrouter/z-ai/glm-5.3:max",
-"planModel": "openrouter/z-ai/glm-5.3:max",
-"taskModel": "openrouter/z-ai/glm-5.3-flash",
-"designerModel": "google/gemini-3.7-flash"
-```
-
-| Command | What it does |
-|---|---|
-| `/roles` | Interactive: role picker (shows each alias's purpose and current model) → searchable model picker → thinking level |
-| `/roles <role> <model:thinking>` | One-liner, e.g. `/roles smolModel openai/gpt-5.6-luna:xhigh` |
-| `/roles clear [role]` | Remove a role assignment (falls back to its alias chain) |
-
-`PI_SMOL_MODEL` / `PI_SLOW_MODEL` / etc. env vars take precedence over these
-settings, and an unset role falls back through its chain to `defaultModel`
-(see the subagent section above). Restart pi or `/reload` after changing.
-
-`PI_SMOL_MODEL` / `PI_SLOW_MODEL` / etc. env vars take precedence over these
-settings, and an unset role falls back through its chain to `defaultModel`
-(see the subagent section above). Restart pi or `/reload` after changing.
-
-### Setup window
-
-**setup/** provides `/setup [section]` — a full-screen, two-pane window that
-covers every setting in one place so you never have to remember which command
-tweaks what:
-
-```
-╭ pi setup ─ Models ────────────────────────────── ? help · esc close ╕
-│ [Models] · Roles · Router · Fallbacks · Guardrails · … │
-├──────────────────────────────────┬─────────────────────────────────┤
-│ → Default model        glm-5.3-… │ Default model                   │
-│   Default thinking     high     │ current: openrouter/…           │
-│   + Add override                │ Model used when a session …     │
-│                                 │ ● applies: new sessions         │
-╘═╧═══════════════════════════════╧═══════════════════════════════╛
-```
-
-- **Left pane** lists settings for the active section with current values;
-  **right pane** explains the highlighted setting: what it is, when a change
-  takes effect (immediately / next prompt / next start), which extension owns
-  it, and its allowed values.
-- **Editors are inline** — no nested dialogs: `←/→` cycles enums and toggles,
-  `enter` opens a type-to-filter model picker (with a thinking-level suffix
-  step), numbers/text get an inline input, `⌫` removes an entry (fallback
-  pair, thinking override, package), `+ Add …` rows add new ones.
-- **Sections**: Models, Roles, Router, Fallbacks, Guardrails, Appearance,
-  Core, Packages, Commands (every loaded slash command with its description —
-  built via `pi.getCommands()`), Rules (TTSR), MCP, Decisions (`**decision-tuner/**`:
-  run the report, see the tuner's last run, apply/dismiss open proposals).
-  `/setup router` deep-links to a section; `/` filters across all sections; `?`
-  shows key help.
-- Changes are written with the same read-merge-write pattern the individual
-  commands use, so concurrent writers (router, roles, fallback) never clobber
-  each other. Where the API allows, changes also apply to the live session
-  (`pi.setModel`, `pi.setThinkingLevel`).
-
-**Contributing a section:** any extension can plug into the window without
-touching it. Ship `foo.setup.ts` next to `foo.ts` (or `<dir>/setup.ts` for
-directory extensions) exporting a default function that returns a
-`SetupSection` — see `extensions/setup/types.ts` for the small typed surface
-(`SetupItem` kinds: enum, model, model-pair, number, text, toggle, action,
-info). Failed contributors show up as a "Broken" section instead of breaking
-the window.
-
-## TTSR rules (`rules/`)
-
-17 generic rules for the TTSR engine above. They sit dormant with **zero token
-cost** until the model's output matches a trigger, then abort+remind or
-block/prepend. Delete any you disagree with before installing — `install.sh`
-copies them all into `~/.pi/agent/rules/` without deleting yours.
-
-**Git discipline**
-
-| Rule | Fires when | Effect |
-|---|---|---|
-| `no-force-without-lease` | `git push --force` without `--with-lease` | blocks |
-| `amend-ci-fixes` | a standalone `git commit` for a lint/type-only fixup | blocks (amend instead) |
-
-**Code quality (write/edit scope)**
-
-| Rule | Fires when |
-|---|---|
-| `no-ts-any` / `no-ts-ignore` | `: any`, `as any`, `@ts-ignore`, blanket `eslint-disable` |
-| `no-empty-catch` | empty `catch {}` |
-| `no-console-log-in-prod-code` | `console.log` written into non-script source |
-| `no-localhost-in-prod-code` | `localhost`/`127.0.0.1` URLs in prod-path code |
-| `no-hardcoded-api-keys` / `no-placeholder-api-key` | literal keys, or placeholder keys that should've been real config |
-| `no-temp-fixes` | "for now" / "quick fix" / `// HACK` — in prose or code |
-
-**Process discipline**
-
-| Rule | Fires when | Effect |
-|---|---|---|
-| `verify-before-done` | "I'm done / the task is complete" in prose | abort + remind to run lint/tests first |
-| `no-prod-migrations-local` | a prod-mode DB migration run locally | blocks |
-| `search-before-creating-utility` | writing into a shared-utils dir without grepping for an existing helper | reminder |
-| `tests-validate-behavior-not-implementation` | snapshot tests / mock-only tests | reminder |
-| `delegate-read-only-exploration` | announcing a broad multi-pronged repo survey inline | abort + remind to use a subagent |
-| `no-console-log-prose` | "let me just log this to see…" | abort + suggest a debugger/proper test |
-
-## Skills (`skills/`)
-
-| Skill | What it does |
-|---|---|
-| **add-rule/** | Full procedure for authoring a new TTSR rule: failure analysis, bucket decision tree, quality gates, trigger crafting (regex / ast-grep / globs), a Jev adjudication (`utils/jev-ask.mjs`) of whether the rule needs an opt-in `verify:` gate (with `onFail` policy guidance and a manual fallback), the rule-file template, and a validator script (`node skills/add-rule/scripts/validate-rule.js <rule.md> --sample "..."`) that checks both triggers and gate specs — a malformed `verify:` is silently dropped by the engine, so its errors are blocking — and must print `OK — rule is valid.` before a rule ships. |
-| **add-agent/** | Procedure for creating a new pi-native subagent (`~/.pi/agent/agents/` or `.pi/agents/`): scope + naming rules, a task-profile → model-role table (`@smol`/`@slow`/`@plan`/`@task`/`@designer` with matching thinking + tool allowlists), description and system-prompt authoring guidance, a copy-paste template, and RFC 2119 tool-allowlist rules (tool names MUST be discovered from the live toolset — session tools, extension tools, `mcp__<server>__<tool>` — never assumed). |
-| **code-review/** | Reviews a PR, branch, or working diff through the read-only `reviewer` agent, including applicable lens fan-out, validator verification, severity ordering, and the required consolidated review format. |
-| **add-mcp-server/** | How to add an MCP server to pi via `mcp-bridge` — local `stdio` launchers AND remote `http`/`sse` endpoints (OAuth 2.0 PKCE browser flow, static Bearer headers, or public unauthenticated), the config-file shape, the lazy-connect model, the env denylist security model, and verification steps. |
-
-### Adding an HTTP-type MCP server (quick version)
-
-Remote servers need no local process — just a `url` in
-`~/.pi/agent/mcp-servers.json`. Full details in `skills/add-mcp-server/SKILL.md`.
-
-OAuth 2.0 PKCE (e.g. Slack — the bridge opens a browser on first connect and
-caches tokens in `~/.pi/agent/mcp-oauth.json`, mode 0600):
-
-```json
-"slack": {
-  "type": "http",
-  "url": "https://mcp.slack.com/mcp",
-  "oauth": { "clientId": "<your-slack-app-client-id>", "callbackPort": 3118 }
-}
-```
-
-Static API key / Bearer token:
-
-```json
-"my-remote-service": {
-  "type": "http",
-  "url": "https://mcp.example.com/mcp",
-  "headers": { "Authorization": "Bearer <TOKEN>" }
-}
-```
-
-Then `/reload` + `/mcp <name>` to connect, and the server's tools appear as
-`mcp__<name>__<tool>`.
+## Optional components
+
+- **YubiKey alerts for Git in cmux** — `./scripts/install-yubikey-notifications.sh`
+  wraps SSH and GPG so a hardware touch alerts. Behavior, sound override, and
+  revert steps: [scripts/README.md](scripts/README.md).
+- **Usage dashboard** — `/stats [port]` launches the omp-stats dashboard after a
+  one-time `bun install` under `~/.pi/agent/utils/omp-stats/`; see
+  [extensions/stats.md](extensions/stats.md).
+- **web-search keys** — fully optional; without keys the tools fall back to free
+  DuckDuckGo scraping + Jina Reader. See
+  [extensions/web-search.md](extensions/web-search.md).
+- **MCP servers** — declare them in `~/.pi/agent/mcp-servers.json` (walkthrough:
+  [add-mcp-server](skills/add-mcp-server/SKILL.md)); OAuth, auth hooks, and the
+  env denylist live in [mcp-bridge](extensions/mcp-bridge/README.md).
 
 ## Not included (on purpose)
 
-- **`~/.pi/agent/mcp-servers.json`** — your MCP server config. It names your
-  servers, endpoints, and env wiring; it is *your* data, not setup boilerplate.
-  mcp-bridge will simply find no servers until you write one. Shape:
-  ```json
-  {
-    "mcpServers": {
-      "my-server": {
-        "command": "npx",
-        "args": ["-y", "some-mcp-server"],
-        "env": { "API_KEY": "..." }
-      }
-    }
-  }
-  ```
-  Remote servers needing OAuth just need a `url` + optional `oauth` block; the
-  bridge handles the browser PKCE flow and stores tokens in
-  `~/.pi/agent/mcp-oauth.json` (mode 0600). See "Adding an HTTP-type MCP
-  server" above and `skills/add-mcp-server/SKILL.md`.
-- **Most TTSR rule content** — the rules here are the generic, shareable
-  subset. Rules referencing my employer's infra, internal docs, or personal
-  context files stay local in `~/.pi/agent/rules/`. Author your own; the
-  `add-rule` skill walks you through it.
+- **`~/.pi/agent/mcp-servers.json`** — your MCP server config: it names your
+  servers, endpoints, and env wiring. mcp-bridge simply finds no servers until
+  you write one. Shape and walkthrough:
+  [add-mcp-server](skills/add-mcp-server/SKILL.md).
+- **Most TTSR rule content** — `rules/` ships the generic, shareable subset.
+  Rules referencing employer infra, internal docs, or personal context stay
+  local in `~/.pi/agent/rules/`. Author your own with the
+  [add-rule](skills/add-rule/SKILL.md) skill.
 - **Project-local agents** (`.pi/agents/` in work repos) — those encode
-  team/project-specific workflows; the six generic user-scope agents ship in
+  team/project-specific workflows; the nine generic user-scope agents ship in
   `agents/`.
-- **`auth.json`, `settings.json`, prompts, skills** — account/session state and
-  personal tooling, not shareable setup.
-
-## Optional bits to know
-
-- **mcp-bridge auth hooks**: for servers whose name starts with `grafana-` or
-  `redash-`, the bridge runs a pre-tool auth-check script, expecting it under
-  `~/mcp-servers/` (override the directory with the `MCP_SERVERS_ROOT` env
-  var). If you don't configure such servers, this never fires — harmless. See
-  `AUTH_HOOKS` in `mcp-bridge/index.ts` to wire your own.
-- **mcp-bridge Slack OAuth**: set your own app's client ID via
-  `oauth.clientId` in `mcp-servers.json`; there is no built-in fallback.
-- **web-search keys**: fully optional; without keys it falls back to free
-  DuckDuckGo scraping + Jina Reader.
+- **`auth.json`, `settings.json`, prompts, personal skills** — account and
+  session state, not shareable setup.
 
 ## Maintenance (repo owner)
 
 After tweaking things live in `~/.pi/agent/`, pull them back into the repo,
-review the README, then commit and push. See `AGENTS.md` for the complete
+review the docs, then commit and push. See `AGENTS.md` for the complete
 workflow:
 
 ```bash
 ./sync.sh
 git status --short
-git diff -- README.md
-# Update README.md if it does not document the change.
-git add README.md
-# Stage only the other relevant files for this change.
+git diff
+# Update the README that documents the change (this index or the directory README).
+git add README.md extensions/README.md  # and any other relevant files
 git diff --cached --check
 git commit -m "type(scope): describe the change"
 git push origin "$(git branch --show-current)"
@@ -637,9 +131,8 @@ git push origin "$(git branch --show-current)"
 `sync.sh` mirrors the whole `extensions/` dir, refreshes the allowlisted
 `themes/` and rules in the repo (their file lists are the allowlists —
 private/work rules stay local), refreshes the shipped agent definitions, and
-refreshes both skills.
-`node_modules/`, lock files, and transient dotfiles are excluded on both
-`install.sh` and `sync.sh`.
+refreshes both skills. `node_modules/`, lock files, and transient dotfiles are
+excluded on both `install.sh` and `sync.sh`.
 
 Note to self: keep this repo free of machine/employer-specific details —
 server names, endpoints, internal doc names, and personal paths belong in

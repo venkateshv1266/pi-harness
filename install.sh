@@ -48,7 +48,7 @@ echo ">> installed $(find "$REPO_DIR/themes" -maxdepth 1 -type f -name '*.json' 
 # 3. Generic TTSR rules
 mkdir -p "$AGENT/rules"
 rsync -a "$REPO_DIR/rules/" "$AGENT/rules/"
-echo ">> installed $(ls "$REPO_DIR/rules" | wc -l | tr -d ' ') TTSR rules"
+echo ">> installed $(find "$REPO_DIR/rules" -maxdepth 1 -type f -name '*.md' ! -name 'README.md' | wc -l | tr -d ' ') TTSR rules"
 
 # 4. Subagent definitions
 mkdir -p "$AGENT/agents"
