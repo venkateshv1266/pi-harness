@@ -873,6 +873,10 @@ interface VerifyResult {
 	usage?: { input?: number; output?: number; cacheRead?: number };
 }
 
+// Keep this gate on the frontier model: an A/B with Jev as verifier (59 paired
+// decisions, 2026-09-28) agreed 78% but approved 0/10 extracts the frontier
+// approved (over-retains) and its 3 approvals were low-confidence frontier
+// vetoes — no threshold yields useful + safe approvals.
 async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promise<VerifyResult> {
 	const model = verifierModelRef(ctx);
 	const modelLabel = model ? `${model.provider}/${model.id}` : "(unset)";
