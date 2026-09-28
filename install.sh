@@ -16,7 +16,15 @@ fi
 
 # 1. Extensions
 mkdir -p "$AGENT/extensions"
-rsync -a --exclude='node_modules' --exclude='.DS_Store' "$REPO_DIR/extensions/" "$AGENT/extensions/"
+# cmux-session.ts is managed by cmux (README: "Skip it if you don't use cmux").
+# Without the cmux binary its hooks fail on every event, so skip it and remove
+# any stale installed copy when cmux is not on PATH.
+RSYNC_EXCLUDES=(--exclude='node_modules' --exclude='.DS_Store')
+if ! command -v cmux >/dev/null 2>&1; then
+  RSYNC_EXCLUDES+=(--exclude='cmux-session.ts')
+  rm -f "$AGENT/extensions/cmux-session.ts"
+fi
+rsync -a "${RSYNC_EXCLUDES[@]}" "$REPO_DIR/extensions/" "$AGENT/extensions/"
 
 # 1b. Shared utils imported by extensions
 mkdir -p "$AGENT/utils"
@@ -24,7 +32,12 @@ rsync -a --exclude='.DS_Store' "$REPO_DIR/utils/" "$AGENT/utils/"
 find "$AGENT/extensions" -maxdepth 2 -name package.json -not -path '*/node_modules/*' | while read -r pkg; do
   dir="$(dirname "$pkg")"
   echo ">> npm install in $dir"
-  (cd "$dir" && npm install --silent)
+  # --silent hides npm output; on failure re-run verbosely so the cause is visible.
+  if ! (cd "$dir" && npm install --silent --no-fund --no-audit); then
+    echo "error: npm install failed in $dir — verbose re-run follows" >&2
+    (cd "$dir" && npm install --no-fund --no-audit) >&2
+    exit 1
+  fi
 done
 
 # 2. Themes

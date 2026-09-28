@@ -114,7 +114,7 @@ pi --use-theme low-lumen
 | **dirty-repo-guard.ts** | Blocks session-clearing actions while the repo has uncommitted changes. |
 | **repo-agents-guard.ts** | Blocks agent tool calls targeting a repository until its nearest `AGENTS.md` is successfully read with `read`; covers path tools, shell working directories/paths, and subagent launch paths. |
 | **plugins.ts** | `/plugins` — browse & install skills from Claude Code plugin marketplaces (local `.claude-plugin/marketplace.json` catalogs). Interactive searchable picker + detail views, or CLI: `/plugins install\|uninstall\|enable\|disable\|list <name>`, `/plugins marketplace add <path>`. Installed plugins load in place via `resources_discover` — `git pull` of the marketplace updates skills. State: `~/.pi/agent/plugins.json` (local, not synced); seed marketplaces there or via `PI_PLUGIN_MARKETPLACE`. |
-| **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. Skip it if you don't use cmux. |
+| **cmux-session.ts** | Bridges pi into [cmux](https://github.com/earendil-works/cmux) (session lifecycle, telemetry, notifications). **Managed by cmux** — `cmux hooks pi install` writes/overwrites this file. `install.sh` installs it only when the `cmux` binary is on PATH and removes any stale installed copy otherwise (its hooks would fail on every session event without the binary). |
 | **stats.ts** | `/stats [port]` — opens a browser-based usage dashboard for pi session cost, token, and cache statistics. |
 
 ### Repository instruction guard

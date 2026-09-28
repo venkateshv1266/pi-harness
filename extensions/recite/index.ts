@@ -37,7 +37,9 @@ function readBranch(ctx: ExtensionContext): readonly SessionEntry[] | null {
 
 export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", (event, ctx): TurnEndEventResult | undefined => {
-		if (!ENABLED || event.outcome !== "completed") return;
+	// Print mode prints only the last session message; a recitation entry appended
+	// after the assistant reply would displace it and pi -p would output nothing.
+	if (!ENABLED || ctx.mode === "print" || event.outcome !== "completed") return;
 		const entries = readBranch(ctx);
 		if (!entries) return;
 		const drafts = buildRecitationDrafts(entries, BUDGET);
