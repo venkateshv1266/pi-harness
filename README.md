@@ -10,7 +10,9 @@ and run `./install.sh` to get the same setup.
 
 - **Node.js >= 22.15.0** (pi uses `zlib.createZstdDecompress`, which older
   Node versions lack — pi will crash on startup below this version)
-- **pi** installed globally: `npm i -g @earendil-works/pi-coding-agent`
+- **pi >= 0.87.0** installed globally: `npm i -g @earendil-works/pi-coding-agent`
+  (the extensions use `turn_end` boundary results and `context_edit` drafts,
+  both added in 0.87.0)
 - `rsync` (present on macOS; on Linux install it via your package manager)
 
 ## Setup
