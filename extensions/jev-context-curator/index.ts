@@ -1566,7 +1566,8 @@ ${goalspecSummary()}` }],
 
 	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: SessionBoundaryDraft[] } | void> => {
 		// boundary entries compose by replacement: keep drafts from earlier handlers
-		const drafts: SessionBoundaryDraft[] = [...event.entries];
+		// Agent-loop emissions (abort/error/lane paths) omit BoundaryState entirely
+		const drafts: SessionBoundaryDraft[] = Array.isArray(event.entries) ? [...event.entries] : [];
 		if (pendingGoal !== null) {
 			goal = pendingGoal;
 			drafts.push({ type: "custom", customType: GOAL_TYPE, data: { goal: pendingGoal } });
