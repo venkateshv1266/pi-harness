@@ -59,8 +59,9 @@ Common entry points:
   [course-check](extensions/course-check/README.md) (periodic Jev trajectory supervision)
 - **Settings UI** — [`/setup`](extensions/setup/README.md) changes most of the
   above without memorizing individual commands
-- **MCP servers** — [mcp-bridge](extensions/mcp-bridge/README.md) plus the
-  [add-mcp-server](skills/add-mcp-server/SKILL.md) skill
+- **MCP servers** — pi's built-in MCP support plus
+  [mcp-cookie-gate](extensions/README.md#mcp-cookie-gate) (pre-call SSO cookie
+  hooks); walkthrough: [add-mcp-server](skills/add-mcp-server/SKILL.md)
 
 ## Updating an existing setup
 
@@ -92,14 +93,14 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 - **web-search keys** — fully optional; without keys the tools fall back to free
   DuckDuckGo scraping + Jina Reader. See
   [the web-search section](extensions/README.md#web-search).
-- **MCP servers** — declare them in `~/.pi/agent/mcp-servers.json` (walkthrough:
-  [add-mcp-server](skills/add-mcp-server/SKILL.md)); OAuth, auth hooks, and the
-  env denylist live in [mcp-bridge](extensions/mcp-bridge/README.md).
+- **MCP servers** — declare them in `~/.pi/agent/mcp.json` (walkthrough:
+  [add-mcp-server](skills/add-mcp-server/SKILL.md)); pre-call SSO auth hooks
+  live in [mcp-cookie-gate](extensions/README.md#mcp-cookie-gate).
 
 ## Not included (on purpose)
 
-- **`~/.pi/agent/mcp-servers.json`** — your MCP server config: it names your
-  servers, endpoints, and env wiring. mcp-bridge simply finds no servers until
+- **`~/.pi/agent/mcp.json`** — your MCP server config: it names your
+  servers, endpoints, and env wiring. pi simply finds no servers until
   you write one. Shape and walkthrough:
   [add-mcp-server](skills/add-mcp-server/SKILL.md).
 - **Most TTSR rule content** — `rules/` ships the generic, shareable subset.
@@ -137,4 +138,4 @@ excluded on both `install.sh` and `sync.sh`.
 
 Note to self: keep this repo free of machine/employer-specific details —
 server names, endpoints, internal doc names, and personal paths belong in
-local config (`mcp-servers.json`, rules, agents), not in extension code.
+local config (`mcp.json`, rules, agents), not in extension code.

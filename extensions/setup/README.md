@@ -22,7 +22,7 @@ Outside the TUI (`ctx.mode !== "tui"`), `/setup` prints every section and curren
 | Packages | Installed pi packages and marketplace plugins | pi core packages · `/plugins` |
 | Commands | Every slash command in the session, sorted by source | per-item source |
 | Rules | TTSR rule files and their triggers/scopes | [ttsr](../ttsr/README.md) · `/ttsr` |
-| MCP | Configured MCP servers | [mcp-bridge](../mcp-bridge/README.md) · `/mcp` |
+| MCP | Configured MCP servers | pi core MCP · `/mcp` |
 
 ## Commands and tools
 
@@ -41,7 +41,7 @@ The extension itself has no settings or env vars. It reads and writes these file
 |---|---|
 | `~/.pi/agent/settings.json` | Nearly all settings (table below) |
 | `~/.pi/agent/plugins.json` | Plugin enable/disable toggles (Packages section) |
-| `~/.pi/agent/mcp-servers.json` | Display only; edit the file to change servers |
+| `~/.pi/agent/mcp.json` | Display only; edit the file to change servers |
 | `~/.pi/agent/themes/` | Custom `*.json` themes offered alongside `dark`/`light` |
 | `~/.pi/agent/rules/*.md`, `<project>/.pi/rules/*.md` | Display only; TTSR rules with parsed frontmatter |
 

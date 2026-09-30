@@ -15,7 +15,7 @@ TEMPLATE RULES — read before writing, delete this comment block in the final d
 - Paths: use `~/.pi/agent/...` and repo-relative paths. Never absolute machine
   paths, usernames, employer names, internal URLs, or secrets.
 - Cross-reference sibling extensions with relative links, e.g.
-  `../mcp-bridge/README.md`.
+  `../jev-memory/README.md`.
 - If something cannot be determined from the code, write "not documented in
   code" and flag it in your return summary — do not guess.
 

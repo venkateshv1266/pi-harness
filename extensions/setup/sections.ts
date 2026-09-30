@@ -842,11 +842,12 @@ interface McpServerDef {
 }
 
 function mcpSection(): SetupSection {
-	const servers = io.readJson<Record<string, McpServerDef>>(io.MCP_PATH) ?? {};
+	const servers =
+		io.readJson<{ mcpServers?: Record<string, McpServerDef> }>(io.MCP_PATH)?.mcpServers ?? {};
 	return {
 		id: "mcp",
 		title: "MCP",
-		detail: "Configured MCP servers (mcp-servers.json).",
+		detail: "Configured MCP servers (mcp.json).",
 		items: Object.entries(servers).map(([name, def]) => ({
 			id: `mcp:${name}`,
 			label: name,
@@ -854,11 +855,11 @@ function mcpSection(): SetupSection {
 				def.command ? `Command: ${def.command}${def.args?.length ? " " + def.args.join(" ") : ""}` : "",
 				def.url ? `URL: ${def.url}` : "",
 				def.env ? `Env keys: ${Object.keys(def.env).join(", ")}` : "",
-				"Edit mcp-servers.json to change; /mcp <name> connects on demand.",
+				"Edit mcp.json to change; /mcp manages servers.",
 			]
 				.filter(Boolean)
 				.join("\n"),
-			owner: "mcp-bridge · /mcp",
+			owner: "pi core MCP · /mcp",
 			kind: "info",
 			get: () => def.type ?? "stdio",
 		})),

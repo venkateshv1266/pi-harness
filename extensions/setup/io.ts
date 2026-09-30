@@ -7,7 +7,7 @@ import { join } from "node:path";
 export const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 export const THEMES_DIR = join(homedir(), ".pi", "agent", "themes");
 export const PLUGINS_PATH = join(homedir(), ".pi", "agent", "plugins.json");
-export const MCP_PATH = join(homedir(), ".pi", "agent", "mcp-servers.json");
+export const MCP_PATH = join(homedir(), ".pi", "agent", "mcp.json");
 export const RULES_DIR = join(homedir(), ".pi", "agent", "rules");
 export const PROJECT_RULES_DIR = join(process.cwd(), ".pi", "rules");
 

@@ -23,7 +23,6 @@ New docs follow
 | `ttsr` | [README](ttsr/README.md) | Time-Traveling Stream Rules with zero idle token cost, plus the context registry (`/ttsr`, `/contexts`, `context_list`). |
 | `course-check` | [README](course-check/README.md) | Periodic Jev supervision — every N turns, judge the trajectory against the session goal; off-track verdicts inject a rethink nudge. |
 | `decision-tuner` | [README](decision-tuner/README.md) | Weekly auto-run of the decision report plus prune/reword proposals, surfaced in `/setup → Decisions`. |
-| `mcp-bridge` | [README](mcp-bridge/README.md) | MCP servers as `mcp__<server>__<tool>` tools: lazy connect, OAuth 2.0 PKCE, env denylist, result truncation. |
 | `setup` | [README](setup/README.md) | `/setup` — full-screen settings window plus a command/rule/MCP cheat sheet; extensible via `setup.ts`. |
 | `refine` | [README](refine/README.md) | `/refine` plus a background self-improvement loop: proposes rules/notes, stages rules for one-glance arming. |
 
@@ -38,6 +37,7 @@ New docs follow
 | [`decisions-report`](#decisions-report) | `/decisions-report` joins decision logs to outcomes and flags prune/reword candidates. |
 | [`dirty-repo-guard`](#dirty-repo-guard) | Blocks session switch/fork while the repo has uncommitted changes. |
 | [`handoff`](#handoff) | `/handoff <goal>` distills the conversation into a fresh focused session. |
+| [`mcp-cookie-gate`](#mcp-cookie-gate) | Pre-call SSO cookie checks before `mcp__grafana-*`/`mcp__redash-*` tool calls; blocks the call and launches browser re-auth. |
 | [`model-fallback`](#model-fallback) | Switches to a fallback model on provider-attributable failures; loops and transport errors are guarded. |
 | [`model-roles`](#model-roles) | `/roles` assigns the `@smol`/`@slow`/`@plan`/`@task`/`@designer` role settings. |
 | [`model-router`](#model-router) | Route-ahead: Jev classifies each new task and picks the tier before the first token. |
@@ -177,6 +177,16 @@ Claude-Code-style checkpointing with `/rewind` to restore code and/or conversati
 **How it works** — The original is captured from disk just before a path's first `edit`/`write` (`@` prefixes stripped, resolved against the session cwd). A checkpoint is written when a user message ends; a duplicate (retry, auto-compaction re-run) keeps the earliest snapshot. The restore target for a checkpoint is its snapshot if present, else the original. Conversation rewind navigates the session tree to the selected prompt's parent — rewound messages are never deleted and stay reachable via `/tree` — and puts the prompt text back in the editor for editing/re-sending; rewinding at the first prompt navigates to the prompt itself without pre-filling. "Summarize from here" navigates to the selected prompt with summarize enabled. Restoring writes captured content, re-applies saved permission bits (best-effort), and deletes files that did not exist at the checkpoint.
 
 **Caveats** — Files modified through `bash` (sed/awk/…) are not tracked; use git. Directories are never checkpointed. Symlinked/hard-linked paths are restored best-effort and may be skipped. Failed restores are logged to stderr and skipped; the reported count reflects what actually changed. Non-interactive (print/json) mode silently does nothing. Session-scoped local undo, not a git replacement.
+
+## mcp-cookie-gate
+
+Pre-call SSO cookie checks for MCP servers, layered on pi's built-in MCP support.
+
+**What it does** — Before any `mcp__<grafana-*>` or `mcp__<redash-*>` tool call, runs the matching `check-*-cookies.sh` hook (under `$MCP_SERVERS_ROOT`, default `~/mcp-servers`). The hook validates SSO cookies and launches browser re-auth when they expired; exit 0 allows the call, anything else blocks it with the hook output shown to the model.
+
+**How it works** — `session_start` reads `~/.pi/agent/mcp.json` plus the project `.pi/mcp.json` override to resolve server env; a `tool_call` handler matches the server-name prefix against `AUTH_HOOKS` and spawns the hook detached (its own process group) with stdin `{"tool_name": …}` and an env of denylist-filtered `process.env` merged with the server's configured env, so URL/cookie-file vars reach the hook. The 120 s timeout and `session_shutdown` SIGKILL the whole process group, reaping wrapper-script grandchildren.
+
+**Caveats** — A new brand with its own `check-*-cookies.sh` needs one line added to `AUTH_HOOKS`. The hook's exit code is the contract: 0 allow, non-zero block. Removing the extension removes cookie-SSO re-auth for grafana/redash MCP servers.
 
 ## model-fallback
 

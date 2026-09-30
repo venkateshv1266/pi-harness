@@ -19,7 +19,7 @@ A project-scope directory for skills is not documented in this repo's docs (proj
 | Skill | Ships | What it does | Use when |
 |---|---|---|---|
 | `add-agent/` | `SKILL.md` | Creates a new pi-native subagent definition — an `.md` file in `~/.pi/agent/agents/` (user scope) or `.pi/agents/` (project scope) — with valid frontmatter and a task-appropriate model role, thinking level, and tool allowlist. | Asked to add, create, or define a new agent, subagent, or specialist. |
-| `add-mcp-server/` | `SKILL.md` | Adds an MCP server to pi by editing `~/.pi/agent/mcp-servers.json` — local `stdio` or remote `http`/`sse` endpoints, OAuth 2.0 PKCE, static auth headers, auth-hook prefixes, lazy-connect model, verification. | Asked to add/configure/register a new MCP server in pi. |
+| `add-mcp-server/` | `SKILL.md` | Adds an MCP server to pi by editing `~/.pi/agent/mcp.json` — local `stdio` or remote `http` endpoints, OAuth sign-in, exposure settings, cookie-gate auth-hook prefixes, verification. | Asked to add/configure/register a new MCP server in pi. |
 | `add-rule/` | `SKILL.md`, `scripts/validate-rule.js` | Authors a TTSR rule end to end: failure analysis, bucket decision tree, quality gates, trigger crafting, verify-gate adjudication, rule template, validation, rules-engine reload. | "Add a rule for X", "make a rule that the agent shouldn't do Y", "whenever I do Z, remind the agent to W". |
 | `code-review/` | `SKILL.md` | Reviews a PR, branch, or working diff by spawning one read-only `reviewer` subagent (persistent, resumable on failure) and relaying its consolidated review verbatim. | Asked to review a PR or diff. |
 
@@ -32,10 +32,10 @@ A project-scope directory for skills is not documented in this repo's docs (proj
 
 ### add-mcp-server
 
-- No code change for most servers: the `mcp-bridge` extension reads `~/.pi/agent/mcp-servers.json` at session start and lazily connects to each server on first use.
-- Covers the config shape for `stdio`, `http`, and `sse` types; the OAuth 2.0 PKCE browser flow (tokens cached in `~/.pi/agent/mcp-oauth.json`, mode 0600); static header/Bearer auth; public unauthenticated endpoints; the name-prefix auth-hook rule (servers named `grafana-*`/`redash-*` get a pre-tool cookie check); and the denylist-filtered `env` model for `stdio` processes.
-- Verify with `/reload`, then `/mcp` (or a `mcp__list` call); tools register as `mcp__<server>__<tool>`.
-- Full bridge behavior: `../extensions/mcp-bridge/README.md`.
+- No code change for most servers: pi's built-in MCP support reads `~/.pi/agent/mcp.json` at session start and connects each server (config edits need `/reload`).
+- Covers the config shape for `stdio` and `http` types (legacy SSE is rejected); OAuth sign-in (`pi mcp login`, tokens cached in `~/.pi/agent/mcp-auth.json`, auto-refresh); `${VAR}`/`!command` secret interpolation; exposure settings (`direct` for skills that call `mcp__<server>__<tool>` directly); and the cookie-gate rule (servers named `grafana-*`/`redash-*` get a pre-call cookie check).
+- Verify with `pi mcp list`, then `/reload` and `/mcp` in-session; tools register as `mcp__<server>__<tool>`.
+- Pre-call cookie-SSO hooks: the `mcp-cookie-gate` extension, `../extensions/README.md#mcp-cookie-gate`.
 
 ### add-rule
 
