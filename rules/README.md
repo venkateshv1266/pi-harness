@@ -51,6 +51,7 @@ installing, or override it with a same-named file in `~/.pi/agent/rules/`
 | `tests-validate-behavior-not-implementation` | snapshots or heavy mocks in test files | reminder to assert against known-good values |
 | `concurrency-retry-contract` | concurrency / idempotency / retry / in-flight semantics in text or thinking | aborts; Jev gate suppresses when the task is not changing concurrency semantics |
 | `kubectl-logs-via-jev` | an unbounded `kubectl` log dump | blocks; suggests saving to a file and using the Jev log-triage MCP tool; the Jev gate degrades to a reminder when Jev is unreachable |
+| `no-respawn-after-failure` | re-spawn / re-run phrasing after a delegated subagent fails (`spawn a new <agent>`, re-run … from scratch) | aborts; reminds to resume the retained session (`subagent_wait` / `subagent_send`) — Jev gate suppresses doc/quote mentions, fires anyway on Jev outage |
 
 `kubectl-logs-via-jev` assumes a `jev` MCP server exposing its log-triage tool.
 Without it, ignore or override the rule — its advice cannot be followed.
