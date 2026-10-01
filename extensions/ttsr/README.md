@@ -71,27 +71,76 @@ hand-written rule file per doc. Two registries merge (project wins by id):
 
 ```yaml
 version: 1
-defaults: { tier: advisory, onFail: suppress, gate: { mode: necessity } }
+defaults:
+  tier: advisory
+  onFail: suppress
+  gate: { mode: necessity, threshold: 0.75 }   # 0.75 = proven calibration for gated entries
+
 contexts:
-  - id: kubernetes
-    file: kubernetes.md            # resolved under the registry's own dir
-    when: "before kubectl execution"          # embedded in the reminder
-    tier: gated                    # advisory | gated | index-only
+  # 1) Tool-EXECUTION trigger — the tool name only appears when the tool is
+  #    actually invoked. Gateless: fires deterministically on the first
+  #    matching call per session (the ledger bounds noise, see below).
+  - id: grafana
+    file: grafana-runbook.md       # resolved under the registry's own dir
+    when: "before Grafana queries — env choice, time window, label filters"
     triggers:
-      - tool: '^bash$'             # regex vs tool-name prefix of the haystack
-        match: '(^|[;&|\n]\s*)kubectl(\s|$)'  # optional payload regex
+      - tool: '^mcp__grafana'      # regex vs tool-name prefix of the haystack
+    gate: { mode: none }
+    reads: [grafana-runbook.md]    # extra docs read together (multi-doc)
+    subagents: true                # seed delegated children with the docs
+
+  # 2) Incidental-match bash trigger — the hostname can also appear in greps,
+  #    so a necessity gate separates executions from mentions.
+  - id: prod-db
+    file: prod-db.md
+    when: "before psql access to the prod database"
+    tier: gated                    # advisory | gated | index-only
+    onFail: fire                   # fail-closed: a Jev outage still pre-flights
+    triggers:
+      - tool: '^bash$'
+        match: 'psql.*prod-db-internal|prod-db-internal:5432'
     gate:
-      threshold: 0.85
-      criteria: { read_now: "...", already_covered: "...", not_needed: "..." }
-    reads: [kubernetes.md]         # extra docs read together (multi-doc)
+      threshold: 0.75
+      criteria:
+        read_now: "the command connects to or queries the prod DB, or prepares to (probing connection details ahead of a planned query)"
+        not_needed: "the match is incidental — grepping source or docs for the hostname, editing code that references it — with no DB connection in preparation"
+    reads: [prod-db.md]
 ```
+
+### Choosing the gate per entry (measured, not guessed)
+
+| Trigger signal | Example | Gate |
+|---|---|---|
+| MCP tool name | `^mcp__grafana` | `mode: none` |
+| Command-position CLI regex | `(^|[;&|\n]\s*)kubectl(\s|$)` | `mode: none` |
+| write/edit with repo globs | `globs: ['**/migrations/**']` | `mode: none` |
+| The delegate tool itself | `^(delegate)$` | `mode: none` |
+| Bash payload that can be a grep/mention | hostname in `match:` | `necessity` + decidable criteria |
+| Intent-narrow doc (sub-case of a broad tool family) | "only when checking agent status" | `necessity` + digest-decidable criteria |
+
+Why: a Jev gate can only suppress what it cannot decide. On an execution
+signal there is no mention-vs-execution ambiguity to resolve — telemetry on
+gated MCP-tool entries showed probabilities hovering 0.3–0.6 against the
+threshold, i.e. every fire suppressed (a dead rule). Rules for gated entries:
+
+1. Criteria must be decidable from tool name + payload + session digest alone.
+   Never write session-state clauses ("not already read this session") — the
+   ledger enforces those mechanically and Jev cannot see them.
+2. Override `read_now` AND `not_needed` together; the default `not_needed` is
+   bash-oriented.
+3. Threshold 0.75 is the proven calibration (0.8 suppresses genuine fires;
+   delegate gates stay at 0.85 by design).
+4. Verify after arming: `grep '"rule":"ctx-<id>"'
+   ~/.pi/agent/jev-decisions/ttsr-jev.jsonl` — real usage showing only
+   `suppressed` at prob <0.5 means a dead gate; `fired` entries are healthy.
 
 - Each trigger group (same `globs`) synthesizes one rule `ctx-<id>` /
   `ctx-<id>-2`; `tool` is anchored to the tool name, a trailing `$` becomes a
   non-consuming boundary, and `match` must also match the payload.
 - `gate.mode: necessity` emits a Jev `noul` gate composed from the criteria
   (`read_now` / `already_covered` / `not_needed`); `none` fires on match.
-  Defaults: threshold 0.8, `onFail: suppress`.
+  Engine defaults: threshold 0.8, `onFail: suppress` — prefer setting 0.75 in
+  `defaults` (calibration note above).
 - `digest:` (top level) wires the gate's session state to the curator, e.g.
   `digest: { goalspecEntryType: jev-curator-goalspec, goalEntryType: jev-curator-goal }`.
   Empty (default) → fallback to the pinned goal, then the last user message. The
