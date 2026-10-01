@@ -140,7 +140,8 @@ export default function (pi: ExtensionAPI) {
 		if (!toolName.startsWith("mcp__")) return;
 		const parts = toolName.split("__");
 		if (parts.length < 3 || !parts[1]) return;
-		const serverName = parts[1];
+		// pi >= 0.99.2 sanitizes MCP server "-" to "_" in tool names; map back to the mcp.json key.
+		const serverName = parts[1].replace(/_/g, "-");
 		const prefix = Object.keys(AUTH_HOOKS).find((p) => serverName.startsWith(p));
 		if (!prefix) return;
 
