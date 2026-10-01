@@ -904,6 +904,7 @@ interface VerifyResult {
 	model: string;
 	ok: boolean;
 	error: string;
+	durationMs: number;
 	usage?: { input?: number; output?: number; cacheRead?: number };
 }
 
@@ -914,7 +915,8 @@ interface VerifyResult {
 async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promise<VerifyResult> {
 	const ref = verifierModelRef(ctx);
 	const modelLabel = verifierModelLabel(ref);
-	const fail = (error: string): VerifyResult => ({ verdicts: new Map(), model: modelLabel, ok: false, error });
+	const started = Date.now();
+	const fail = (error: string): VerifyResult => ({ verdicts: new Map(), model: modelLabel, ok: false, error, durationMs: Date.now() - started });
 	if (!ref) return fail("no verifier model resolved");
 	// parse a decision list out of a response body (or null if unusable)
 	const responseText = (r: { content: { type: string; text?: string }[] }): string =>
@@ -952,7 +954,7 @@ async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promi
 		if (!decisions) return fail("no verifier response");
 		const verdicts = new Map<string, VerifierDecision>();
 		for (const d of decisions) verdicts.set(d.id, d);
-		return { verdicts, model: modelLabel, ok: true, error: "", usage };
+		return { verdicts, model: modelLabel, ok: true, error: "", usage, durationMs: Date.now() - started };
 	} catch (e) {
 		return fail(`verifier call failed: ${e instanceof Error ? e.message : String(e)}`);
 	}
@@ -1012,6 +1014,7 @@ async function runShadow(
 			count: needVerify.length,
 			model: verify.model,
 			ok: verify.ok,
+			durationMs: verify.durationMs,
 			error: verify.error || undefined,
 			usage: verify.usage,
 		});
