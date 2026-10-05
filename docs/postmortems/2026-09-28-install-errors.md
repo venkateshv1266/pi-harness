@@ -6,7 +6,7 @@
 
 ## Preface
 
-This repo (`my-pi-setup`) syncs a personal pi coding-agent configuration: `install.sh` copies extensions, themes, TTSR rules (a runtime rule-stream engine), subagent definitions, and skills from this repo into `~/.pi/agent/`. Pi (the `@earendil-works/pi-coding-agent` CLI) then auto-loads everything in `~/.pi/agent/extensions/` at startup.
+This repo (`pi-harness`) syncs a personal pi coding-agent configuration: `install.sh` copies extensions, themes, TTSR rules (a runtime rule-stream engine), subagent definitions, and skills from this repo into `~/.pi/agent/`. Pi (the `@earendil-works/pi-coding-agent` CLI) then auto-loads everything in `~/.pi/agent/extensions/` at startup.
 
 The problem this note solves: after running `./install.sh`, pi either refused to start at all, or started but behaved subtly broken (non-interactive `pi -p` printed nothing; every session emitted five hook-failure warnings). This note records the root causes, the fixes, the evidence, and the sharp edges left behind.
 

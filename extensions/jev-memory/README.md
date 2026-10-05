@@ -1,7 +1,7 @@
 # jev-memory
 
 Hybrid markdown + Jev System-One decision-layer memory for pi.  
-Vendored from pi-hermes-memory@0.9.8 (MIT). See `tasks/todo-jev-memory.md` in my-pi-setup.
+Vendored from pi-hermes-memory@0.9.8 (MIT). See `tasks/todo-jev-memory.md` in pi-harness.
 
 ## Overview
 

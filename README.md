@@ -1,4 +1,4 @@
-# my-pi-setup
+# pi-harness
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup:
 30 extensions, 9 subagent definitions, 21 generic TTSR rules, 4 skills, and
@@ -20,8 +20,8 @@ directory extensions own a `README.md`, single-file extensions have a sibling
 ## Setup
 
 ```bash
-git clone https://github.com/venkateshv1266/my-pi-setup.git
-cd my-pi-setup
+git clone https://github.com/venkateshv1266/pi-harness.git
+cd pi-harness
 ./install.sh
 ```
 
@@ -68,7 +68,7 @@ Common entry points:
 Already installed? Pull and re-run the installer:
 
 ```bash
-cd my-pi-setup
+cd pi-harness
 git pull
 ./install.sh
 ```
