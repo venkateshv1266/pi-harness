@@ -5,10 +5,11 @@
  *   - `web_search` : search the web and return titles + URLs + snippets
  *   - `web_fetch`  : fetch a URL and return its content as clean markdown
  *
- * Backends (auto-selected, no key required for the defaults):
+ * Backends (tried in order until one succeeds):
  *   - Search: Tavily API if TAVILY_API_KEY is set, Brave Search API if
- *     BRAVE_SEARCH_API_KEY is set, otherwise DuckDuckGo HTML scraping (free,
- *     no key).
+ *     BRAVE_SEARCH_API_KEY is set, otherwise DuckDuckGo HTML scraping with a
+ *     Jina Reader proxy fallback (DDG serves anti-bot challenges to some
+ *     egress IPs; Jina's egress is not).
  *   - Fetch : Jina Reader (https://r.jina.ai/) — free, no key, returns
  *     markdown. Falls back to a raw fetch + text extraction if Jina fails.
  *
@@ -208,6 +209,75 @@ function decodeUddg(href: string): string | undefined {
   }
 }
 
+/**
+ * DuckDuckGo results scraped through Jina Reader — fallback for networks
+ * where DDG serves its anti-bot challenge to the machine's own egress IP.
+ */
+async function searchDuckDuckGoViaJina(
+  query: string,
+  maxResults: number,
+  signal?: AbortSignal,
+): Promise<SearchResult[]> {
+  const url = `https://r.jina.ai/https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const { status, text } = await fetchText(
+    url,
+    { headers: { Accept: "text/plain" }, timeoutMs: 30_000 },
+    signal,
+  );
+  if (status !== 200) {
+    throw new Error(`Jina-proxied DuckDuckGo returned HTTP ${status}`);
+  }
+
+  const headingRe = /^##\s+\[([^\]]*)\]\((\S+?)(?:\s+"[^"]*")?\)\s*$/gm;
+  const headings: { title: string; href: string; start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = headingRe.exec(text)) !== null) {
+    headings.push({
+      title: m[1].trim(),
+      href: m[2],
+      start: m.index,
+      end: headingRe.lastIndex,
+    });
+  }
+
+  const results: SearchResult[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < headings.length && results.length < maxResults; i++) {
+    const target = decodeUddg(headings[i].href);
+    if (!headings[i].title || !target) continue;
+    // Drop DDG-internal pages (nav links, the search page itself).
+    if (/duckduckgo\.com/i.test(new URL(target).hostname)) continue;
+    const key = target.replace(/\/$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const segment = text.slice(headings[i].end, headings[i + 1]?.start ?? text.length);
+    results.push({
+      title: headings[i].title,
+      url: target,
+      snippet: snippetFromJinaSegment(segment),
+    });
+  }
+  if (results.length === 0) {
+    throw new Error("Jina-proxied DuckDuckGo returned no parseable results");
+  }
+  return results;
+}
+
+/** First prose line between two headings — skips favicons and breadcrumbs. */
+function snippetFromJinaSegment(segment: string): string {
+  for (const line of segment.split("\n")) {
+    const text = line
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/[*`]/g, "")
+      .trim();
+    if (text.length < 15) continue;
+    if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(text)) continue;
+    return text.slice(0, 300);
+  }
+  return "";
+}
+
 /** Tavily Search API — requires TAVILY_API_KEY. */
 async function searchTavily(
   query: string,
@@ -282,24 +352,34 @@ async function searchBrave(
   }));
 }
 
-/** Pick the best available search backend. */
+/** Try backends in order until one succeeds. */
 async function search(
   query: string,
   maxResults: number,
   signal?: AbortSignal,
 ): Promise<{ backend: string; results: SearchResult[] }> {
-  const tavily = process.env.TAVILY_API_KEY;
-  const brave = process.env.BRAVE_SEARCH_API_KEY;
-  if (tavily) {
-    return { backend: "tavily", results: await searchTavily(query, maxResults, signal) };
+  const backends: Array<[string, () => Promise<SearchResult[]>]> = [];
+  if (process.env.TAVILY_API_KEY) {
+    backends.push(["tavily", () => searchTavily(query, maxResults, signal)]);
   }
-  if (brave) {
-    return { backend: "brave", results: await searchBrave(query, maxResults, signal) };
+  if (process.env.BRAVE_SEARCH_API_KEY) {
+    backends.push(["brave", () => searchBrave(query, maxResults, signal)]);
   }
-  return {
-    backend: "duckduckgo",
-    results: await searchDuckDuckGo(query, maxResults, signal),
-  };
+  backends.push(["duckduckgo", () => searchDuckDuckGo(query, maxResults, signal)]);
+  backends.push([
+    "duckduckgo-jina",
+    () => searchDuckDuckGoViaJina(query, maxResults, signal),
+  ]);
+
+  const failures: string[] = [];
+  for (const [name, run] of backends) {
+    try {
+      return { backend: name, results: await run() };
+    } catch (err) {
+      failures.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw new Error(`all backends failed — ${failures.join(" | ")}`);
 }
 
 /* ---------------------------- Fetch backend ---------------------------- */
@@ -373,7 +453,7 @@ export default function (pi: ExtensionAPI) {
       ? "tavily"
       : process.env.BRAVE_SEARCH_API_KEY
         ? "brave"
-        : "duckduckgo";
+        : "duckduckgo → jina (fallback chain)";
     ctx.ui.notify(`Web search loaded (backend: ${backend})`, "info");
   });
 
