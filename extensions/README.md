@@ -48,7 +48,7 @@ New docs follow
 | [`stats`](#stats) | `/stats [port]` launches the omp-stats usage dashboard. |
 | [`summarize`](#summarize) | `/summarize [role]` scrollable summary overlay; `/summarize view` reopens the cached one. |
 | [`todo`](#todo) | `todo` tool + `/todos` — todo state persisted in session entries, not files. |
-| [`web-search`](#web-search) | `web_search` + `web_fetch` tools with keyless defaults, optional Tavily/Brave. |
+| [`web-search`](#web-search) | `web_search` + `web_fetch` tools with keyless defaults (DuckDuckGo → Jina proxy fallback), optional Tavily/Brave. |
 
 ---
 ## claude-compat
@@ -135,9 +135,9 @@ Blocks repo-targeting tool calls until the repo's nearest `AGENTS.md` has been r
 **Caveats** — Does not intercept user `!`/`!!` shell commands or paths hidden inside shell variables (literal assignments like `d=~/repo` are caught). No env or setting can disable it — removing the extension is the only off switch.
 ## web-search
 
-LLM-callable `web_search` and `web_fetch` tools with keyless default backends.
+LLM-callable `web_search` and `web_fetch` tools with keyless default backends and a search fallback chain.
 
-**What it does** — Registers two tools the model can call: `web_search` returns ranked title/URL/snippet results; `web_fetch` returns a URL's content as clean markdown. Search backend is auto-selected: Tavily if `TAVILY_API_KEY` is set, Brave if `BRAVE_SEARCH_API_KEY` is set, otherwise keyless DuckDuckGo HTML scraping. Fetching goes through Jina Reader with a raw-fetch fallback. Notifies `Web search loaded (backend: <name>)` at session start.
+**What it does** — Registers two tools the model can call: `web_search` returns ranked title/URL/snippet results; `web_fetch` returns a URL's content as clean markdown. Search backends are tried in order until one succeeds: Tavily if `TAVILY_API_KEY` is set, Brave if `BRAVE_SEARCH_API_KEY` is set, otherwise keyless DuckDuckGo HTML scraping with a Jina Reader proxy fallback (DDG serves anti-bot challenges to some egress IPs; Jina's egress is not blocked). Fetching goes through Jina Reader with a raw-fetch fallback. Notifies `Web search loaded (backend: <name>)` at session start.
 
 **Commands and tools**
 
@@ -152,13 +152,13 @@ LLM-callable `web_search` and `web_fetch` tools with keyless default backends.
 |---|---|---|
 | `TAVILY_API_KEY` | unset | Tavily search (highest priority) |
 | `BRAVE_SEARCH_API_KEY` | unset | Brave search when Tavily unset |
-| (neither set) | — | DuckDuckGo HTML scraping, no key |
+| (neither set) | — | DuckDuckGo HTML scraping, then Jina-proxied DuckDuckGo when DDG blocks the egress IP (no key) |
 
 No settings.json keys and no state files.
 
-**How it works** — Backend selection is re-evaluated per call from env. DuckDuckGo results are regex-parsed from the HTML page and `uddg` redirect params are decoded to real URLs. Tool results render collapsed to a 5-line preview, expandable like the bash tool. Install as `extensions/web-search.ts` for auto-discovery.
+**How it works** — Backends are re-evaluated per call from env and tried in order until one returns results; when all fail, the error lists each backend's failure. Direct DuckDuckGo results are regex-parsed from the HTML page; Jina-proxied results are parsed from the reader's markdown headings and snippet text. `uddg` redirect params are decoded to real URLs in both cases. Tool results render collapsed to a 5-line preview, expandable like the bash tool. Install as `extensions/web-search.ts` for auto-discovery.
 
-**Caveats** — No failover between search backends: if the selected one errors, the tool call fails even when another backend is available. DuckDuckGo scraping depends on the page's HTML layout and can silently return no results after markup changes. Both tools cap output at 20 000 chars.
+**Caveats** — DDG scraping (direct and Jina-proxied) depends on the page/markdown layout and can silently return no results after markup changes. The Jina proxy is rate-limited without an API key. Hard failures fall through to the next backend; the final error lists each backend's failure. Both tools cap output at 20 000 chars.
 
 ## rewind
 
