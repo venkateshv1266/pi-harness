@@ -1382,6 +1382,27 @@ export function models(db: Database, range: Range) {
 	};
 }
 
+/**
+ * Which way a verdict counts on the router's quality card. `verdict` is the
+ * universal answer; `outcome` is domain-specific and only votes where its writer
+ * says how it scores. model-router classes a `model_override` as bad — the routed
+ * model was replaced — so it gets a column of its own instead of landing in "other",
+ * which is what made the biggest signal in the table invisible.
+ */
+function verdictKind(verdict: unknown, outcome: unknown): "good" | "bad" | "override" | "other" {
+	const o = typeof outcome === "string" ? outcome : null;
+	// A replaced model is split out even though model-router stamps those records
+	// `verdict: "bad"` as well: replacement and correction are different failures,
+	// and this column is what shows how much of the badness is which.
+	if (o === "model_override") return "override";
+	const v = typeof verdict === "string" ? verdict : null;
+	if (v === "good") return "good";
+	if (v === "bad") return "bad";
+	if (o === "tests_passed" || o === "good") return "good";
+	if (o === "tests_failed" || o === "user_corrected" || o === "bad") return "bad";
+	return "other";
+}
+
 // ------------------------------------------------------------------ router
 
 export function router(db: Database, range: Range, limit = 300) {
@@ -1413,21 +1434,18 @@ export function router(db: Database, range: Range, limit = 300) {
 	});
 
 	const all = db.query<EventRow, [number, number]>("SELECT * FROM events WHERE system = 'router' AND ts_ms BETWEEN ? AND ? LIMIT 20000").all(range.from, range.to);
-	const tiers: Record<string, { count: number; cost: number; latencies: number[] }> = {};
+	const tiers: Record<string, { count: number; latencies: number[] }> = {};
 	const outcomes: Record<string, number> = {};
 	// Outcome verdicts attach to the decision they judged, so per-tier quality is
 	// the missing half of the tier picture: volume alone says nothing about value.
-	const tierOutcomes: Record<string, { good: number; bad: number; other: number }> = {};
+	const tierOutcomes: Record<string, { good: number; bad: number; override: number; other: number }> = {};
 	const ps: number[] = [];
 	const latencies: number[] = [];
-	let cost = 0;
 	for (const row of all) {
 		const data = parseData(row);
 		const tier = typeof data.tier === "string" ? data.tier : "unknown";
-		const entry = (tiers[tier] ??= { count: 0, cost: 0, latencies: [] });
+		const entry = (tiers[tier] ??= { count: 0, latencies: [] });
 		entry.count += 1;
-		entry.cost += row.cost_usd ?? 0;
-		cost += row.cost_usd ?? 0;
 		if (row.latency_ms != null) {
 			entry.latencies.push(row.latency_ms);
 			latencies.push(row.latency_ms);
@@ -1436,10 +1454,8 @@ export function router(db: Database, range: Range, limit = 300) {
 		const outcome = typeof data.outcome === "string" ? data.outcome : typeof data.verdict === "string" ? data.verdict : null;
 		if (outcome) {
 			outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
-			const bucket = (tierOutcomes[tier] ??= { good: 0, bad: 0, other: 0 });
-			if (outcome === "good" || outcome === "tests_passed") bucket.good += 1;
-			else if (outcome === "bad" || outcome === "user_corrected") bucket.bad += 1;
-			else bucket.other += 1;
+			const bucket = (tierOutcomes[tier] ??= { good: 0, bad: 0, override: 0, other: 0 });
+			bucket[verdictKind(data.verdict, data.outcome)] += 1;
 		}
 	}
 	const edges = [0, 0.2, 0.4, 0.6, 0.8, 1.01];
@@ -1448,19 +1464,39 @@ export function router(db: Database, range: Range, limit = 300) {
 		count: ps.filter((p) => p >= edge && p < edges[i + 1]).length,
 	}));
 
+	const judgedTotal = Object.values(tierOutcomes).reduce((a, e) => a + e.good + e.bad + e.override + e.other, 0);
+
+	// The router logs a decision, not a price: cost_usd is null on every router event,
+	// so there is no cost to show here — a `$0` would be a missing field, not a cheap
+	// router, and the calls a decision steers are the sessions' spend, not its own.
 	return {
 		decisions,
 		stats: {
 			total: all.length,
-			byTier: Object.entries(tiers).map(([tier, e]) => ({ tier, count: e.count, cost: e.cost, p50: pct(e.latencies, 50), p90: pct(e.latencies, 90) })),
+			byTier: Object.entries(tiers).map(([tier, e]) => ({ tier, count: e.count, p50: pct(e.latencies, 50), p90: pct(e.latencies, 90) })),
 			pHist,
 			latencyP50: pct(latencies, 50),
 			latencyP90: pct(latencies, 90),
-			cost,
 			outcomes: Object.entries(outcomes).map(([label, count]) => ({ label, count })),
-			outcomesByTier: Object.entries(tierOutcomes)
-				.map(([tier, entry]) => ({ tier, ...entry, judged: entry.good + entry.bad, precision: entry.good + entry.bad > 0 ? entry.good / (entry.good + entry.bad) : null }))
-				.sort((a, b) => b.judged - a.judged),
+			outcomeCoverage: { judged: judgedTotal, total: all.length },
+			// Every tier appears, judged or not — the unjudged count is the honest
+			// denominator, and the reason this table moves as slowly as it does.
+			outcomesByTier: Object.keys(tiers)
+				.map((tier) => {
+					const entry = tierOutcomes[tier] ?? { good: 0, bad: 0, override: 0, other: 0 };
+					const judged = entry.good + entry.bad + entry.override + entry.other;
+					const negatives = entry.bad + entry.override;
+					return {
+						tier,
+						...entry,
+						total: tiers[tier].count,
+						judged,
+						unjudged: Math.max(0, tiers[tier].count - judged),
+						// Unclassified verdicts stay out of the ratio rather than scoring as wins or losses.
+						precision: entry.good + negatives > 0 ? entry.good / (entry.good + negatives) : null,
+					};
+				})
+				.sort((a, b) => b.total - a.total),
 		},
 	};
 }
