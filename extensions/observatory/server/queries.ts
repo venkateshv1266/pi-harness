@@ -632,6 +632,8 @@ export interface Finding {
 	title: string;
 	tone: "ok" | "warn" | "error" | "info";
 	summary: string;
+	/** The rule that fired, stated as a threshold, so the card explains itself. */
+	trigger: string;
 	evidence: string[];
 	action: string;
 	impact?: string;
@@ -690,6 +692,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Oversized tool outputs",
 			tone: oversizedRetained.length >= 20 ? "warn" : "info",
 			summary: `${oversized.length} tool results came in at ${compact(CAP)}+ chars (${compact(oversized.reduce((a, i) => a + i.chars, 0))} chars total); ${oversizedRetained.length} stayed in context in full.`,
+			trigger: "fires when 5+ tool results reach 25k chars; escalates to a warning when 20+ of them stay in context in full",
 			evidence: [...oversized]
 				.sort((a, b) => b.chars - a.chars)
 				.slice(0, 5)
@@ -718,6 +721,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Files re-read inside one session",
 			tone: repeats.length > 10 ? "warn" : "info",
 			summary: `${repeats.length} file/session pairs were read three or more times (worst: ${repeats[0].count}×).`,
+			trigger: "fires when one file is read 3+ times inside a single session; escalates past 10 such file/session pairs",
 			evidence: repeats.slice(0, 5).map((entry) => `${short(entry.path.split("/").slice(-2).join("/"))} · ${entry.count}× · ${compact(entry.chars)} chars`),
 			action: "Ask for line ranges or reuse the condensed extract (jev_recall) instead of re-reading whole files; a repeated read is paid for again on every later turn.",
 			links: [
@@ -741,6 +745,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Low prompt-cache reuse",
 			tone: "warn",
 			summary: `${lowCache.length} of ${churn.length} multi-call sessions reused under 50% of prompt tokens from cache — the rest was re-billed at full input rate.`,
+			trigger: "fires when a session with 10+ calls reuses under 50% of its prompt tokens from cache",
 			evidence: lowCache.slice(0, 5).map((row) => `${row.session_id.slice(0, 8)} · ${row.calls} calls · cache ${Math.round((row.cache_read / (row.cache_read + row.input)) * 100)}% · ${usd(row.cost)}`),
 			action: "Keep the prefix stable: don't switch models mid-session, and let context edits batch up rather than firing small ones that reset the cache.",
 			links: [{ label: "Sessions", hash: "#/sessions" }],
@@ -758,6 +763,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Mid-session model switches",
 			tone: "info",
 			summary: `${switches.length} sessions changed model mid-conversation (worst: ${switches[0].n} switches). Each switch re-bills the whole prefix uncached.`,
+			trigger: "fires when a session records 2+ model switches",
 			evidence: switches.slice(0, 5).map((row) => `${row.session_id.slice(0, 8)} · ${row.n} switches`),
 			action: "Decide the model for the whole session up front, or let the router own it — manual switches are the most expensive kind of change.",
 			links: [{ label: "Router", hash: "#/router" }],
@@ -775,6 +781,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Deep thinking on small turns",
 			tone: "info",
 			summary: `${think.n} calls ran at high/xhigh/max thinking while using under 20k tokens (${usd(think.cost)}, ${compact(think.tokens)} tokens).`,
+			trigger: "fires when 20+ calls ran at high/xhigh/max thinking on under 20k tokens",
 			evidence: [`worst-case reasoning cost is paid even when the answer is short`, `these calls averaged ${compact(think.tokens / think.n)} tokens each`],
 			action: "Reserve max thinking for hard problems; set a lower default and raise it per task (or let the router tier it).",
 			links: [{ label: "Models", hash: "#/models" }],
@@ -812,6 +819,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Rules that never fired",
 			tone: "info",
 			summary: `${dead.length} of ${ruleFiles.length} rules never fired or gate-checked in this range.`,
+			trigger: "fires when 3+ rules neither fired nor gate-checked in the range",
 			evidence: dead.slice(0, 6).map((name) => name),
 			action: "Prune or retune them — every armed rule is a standing invitation for the model to spend attention on it.",
 			links: [{ label: "Ledger", hash: "#/ledger?system=ttsr" }],
@@ -824,6 +832,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Rules that gate-check constantly but never land",
 			tone: "warn",
 			summary: `${noisy.length} rules were checked 50+ times with no recorded outcome — gate cost without visible effect.`,
+			trigger: "fires when a rule is gate-checked 50+ times with no recorded good/bad outcome",
 			evidence: noisy.slice(0, 5).map(([rule, value]) => `${rule} · ${value.suppressed} suppressions · 0 outcomes`),
 			action: "Tighten the trigger so the gate only runs when the rule can actually apply, or reword the rule so it produces an observable effect.",
 			links: [{ label: "Ledger", hash: "#/ledger?system=ttsr" }],
@@ -836,6 +845,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Rules with bad outcomes",
 			tone: "warn",
 			summary: `${badRules.length} rules were judged to have made things worse at least once.`,
+			trigger: "fires when a rule is judged to have made things worse at least once",
 			evidence: badRules.slice(0, 5).map(([rule, value]) => `${rule} · ${value.good} good / ${value.bad} bad`),
 			action: "Open the tagged cases and reword the rule's condition or its instruction — a bad outcome usually means the rule fired when it shouldn't have.",
 			links: [{ label: "Ledger", hash: "#/ledger?system=ttsr" }],
@@ -857,6 +867,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Models with an elevated error rate",
 			tone: "warn",
 			summary: `${badModels.length} models errored on 2%+ of calls (20+ calls).`,
+			trigger: "fires when a model errors on 2%+ of its calls, over 20+ calls",
 			evidence: badModels.slice(0, 5).map((row) => `${short(row.model.split("/").pop() ?? row.model)} · ${row.errors}/${row.calls} errors (${(errRate(row) * 100).toFixed(1)}%) · ${usd(row.cost)}`),
 			action: "Check the provider or add a fallback for these; failures are billed work that produced nothing.",
 			links: [{ label: "Models", hash: "#/models" }],
@@ -876,6 +887,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Sessions judged off track",
 			tone: "warn",
 			summary: `${offTrack.size} sessions drifted from their goal at least once.`,
+			trigger: "fires when course-check judges a session off track at least once",
 			evidence: [...offTrack.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([session, count]) => `${session.slice(0, 8)} · ${count} off-track verdict${count > 1 ? "s" : ""}`),
 			action: "Re-read the first prompt of each: off-track usually traces to an unclear goal or missing acceptance criteria — say what \"done\" looks like.",
 			links: [{ label: "Sessions", hash: "#/sessions" }],
@@ -895,6 +907,7 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Memory consolidation ran degraded",
 			tone: "error",
 			summary: `${degraded} consolidation runs fell back instead of completing normally.`,
+			trigger: "fires when a memory consolidation run falls back instead of completing",
 			evidence: ["degraded runs still consume their window but do not merge or retire entries"],
 			action: "Check the consolidation model availability/timeout (memory config) — a silent fallback means memory hygiene is paused.",
 			links: [{ label: "Health", hash: "#/health" }],
@@ -912,13 +925,15 @@ function computeFindings(db: Database, range: Range, adapters: Adapter[] = []): 
 			title: "Adapter logs not found",
 			tone: "error",
 			summary: `${unreadable.length} adapter(s) point at a log file that does not exist — those subsystems are invisible in every view here.`,
+			trigger: "fires when an adapter's log file is missing on disk",
 			evidence: unreadable.slice(0, 6).map((adapter) => `${adapter.id} → ${adapter.file}`),
 			action: "Fix the path in server/adapters/decisions.ts or move the log to where the adapter expects it. This is a blind spot in the dashboard itself, not a quiet subsystem.",
 			links: [{ label: "Extensions", hash: "#/extensions" }],
 		});
 	}
 
-	// ---- cheapest first
+	// ---- sharpest first: severity order, stable within a tone. The UI depends on
+	// this order (Overview shows the first three), so it is part of the contract.
 	const rank: Record<Finding["tone"], number> = { error: 0, warn: 1, info: 2, ok: 3 };
 	out.sort((a, b) => rank[a.tone] - rank[b.tone]);
 	return { findings: out, generatedAt: Date.now() };

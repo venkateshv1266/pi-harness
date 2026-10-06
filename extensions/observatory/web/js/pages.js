@@ -244,8 +244,8 @@ const HELP = {
 	},
 	findings: {
 		title: "Findings",
-		what: "Diagnostics computed from your logs: each one states the evidence, the size of the prize where it can be measured, and the specific lever that changes it.",
-		formula: "Rule-based detectors over model calls, curator ledger items, rule outcomes, course-check verdicts and memory events in the selected range.",
+		what: "Diagnostics computed from your logs: each one states the rule that fired, the evidence behind it, the size of the prize where it can be measured, and the specific lever that changes it.",
+		formula: "Twelve fixed detectors, each with a threshold: oversized outputs (5+ tool results at 25k+ chars), repeated reads (one file read 3+ times in a session), low cache (a 10+ call session under 50% cache reuse), model switches (2+ in one session), deep thinking on small turns (20+ high/xhigh/max calls under 20k tokens), dead rules (3+ rules that never fired or gate-checked), noisy rules (50+ gate checks with no recorded outcome), bad rules (judged to have made things worse at least once), model errors (2%+ of calls, over 20+ calls), off-track sessions (flagged by the goal loop), degraded memory consolidation, and missing adapter logs. Findings are ordered sharpest first — error, then warn, then info — and each is re-checked against the identical previous window, so a 'recurring' badge means the same detector fired in the previous window too.",
 		source: "All ingested pi data.",
 		action: "Work the list top-down — red first, then amber. Each card links to the page where you can see the underlying rows.",
 	},
@@ -682,6 +682,7 @@ async function impactPage(view, ctx) {
 						"div",
 						{ class: "cardbody" },
 						h("p", { class: "finding-summary" }, finding.summary),
+						finding.trigger ? h("p", { class: "finding-trigger" }, finding.trigger) : null,
 						finding.evidence?.length ? h("ul", { class: "evidence" }, ...finding.evidence.map((line) => h("li", {}, line))) : null,
 						h("div", { class: "finding-action" }, h("span", { class: "arrow" }, "→"), h("span", {}, finding.action)),
 						finding.links?.length ? h("div", { class: "chiprow", style: { marginTop: "10px" } }, ...finding.links.map((link) => h("a", { class: "chip", href: link.hash }, link.label))) : null,
