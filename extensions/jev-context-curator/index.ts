@@ -83,6 +83,7 @@ import {
 	serializeConversation,
 	type SessionBeforeCompactEvent,
 	type SessionBoundaryDraft,
+	type SessionCompactFailedEvent,
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ToolCallEvent,
@@ -95,6 +96,7 @@ import os from "node:os";
 import path from "node:path";
 import { logDecision as logTelemetryDecision, logEvent, logOutcome } from "../../utils/jev-outcomes.ts";
 import { curatorEnabled, resolveCuratorConfig } from "./settings.ts";
+import { autoCompactDecision, pushPctSample, resolveGates, type Gates } from "./tiering.ts";
 
 const GOAL_TYPE = "jev-curator-goal";
 const GOALSPEC_TYPE = "jev-curator-goalspec";
@@ -159,6 +161,9 @@ const CFG = {
 	minBatchSaved: CONFIG.minBatchSaved,
 	contextFloorPct: CONFIG.contextFloorPct,
 	criticalPct: CONFIG.criticalPct,
+	softFloorPct: CONFIG.softFloorPct,
+	autoCompactPct: CONFIG.autoCompactPct,
+	autoCompactRiseTurns: CONFIG.autoCompactRiseTurns,
 	maxHoldTurns: CONFIG.maxHoldTurns,
 	ingestCap: CONFIG.ingestCap,
 	capHead: CONFIG.capHead,
@@ -1535,7 +1540,7 @@ function emitEvidence(
 // Both make curation a loop keyed to the live goal instead of a one-shot
 // compression. Bounded per turn; already-condensed sources are not re-judged
 // (edits are one-way; recall covers restoration).
-function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate[]): ShadowCandidate[] {
+function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate[], pressure = 1): ShadowCandidate[] {
 	if (MODE !== "evidence" && MODE !== "quality") return [];
 	const out: ShadowCandidate[] = [];
 	const seen = new Set(newCands.map((c) => c.entryId));
@@ -1570,7 +1575,7 @@ function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate
 		const bumped = [...registry.values()]
 			.filter((r) => r.verdict === "retainFull" && r.specVersion < specRef.version && r.chars >= CFG.minChars && !seen.has(r.entryId))
 			.sort((a, b) => a.turn - b.turn)
-			.slice(0, CFG.reclassPerTurn);
+			.slice(0, CFG.reclassPerTurn * pressure);
 		for (const r of bumped) {
 			const text = fetchSourceText(ctx, r.entryId);
 			if (text === null) continue;
@@ -1591,14 +1596,15 @@ function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate
 
 // new candidates take the classification budget first; the overflow queue
 // drains into the remainder — nothing is silently dropped anymore
-function assembleShadowBatch(newCands: ShadowCandidate[], reclassCands: ShadowCandidate[]): ShadowCandidate[] {
-	const head = newCands.slice(0, SHADOW_MAX_PER_TURN);
+function assembleShadowBatch(newCands: ShadowCandidate[], reclassCands: ShadowCandidate[], pressure = 1): ShadowCandidate[] {
+	const budget = SHADOW_MAX_PER_TURN * pressure;
+	const head = newCands.slice(0, budget);
 	for (const c of newCands.slice(head.length)) overflowQueue.push(c);
 	while (overflowQueue.length > CFG.overflowCap) {
 		const dropped = overflowQueue.shift();
 		if (dropped) logShadowLine({ decision: "overflow-dropped", entryId: dropped.entryId, tool: dropped.toolName, chars: dropped.text.length, turn: dropped.turn });
 	}
-	const room = Math.max(0, SHADOW_MAX_PER_TURN - head.length);
+	const room = Math.max(0, budget - head.length);
 	if (room > 0) head.push(...overflowQueue.splice(0, room));
 	return [...head, ...reclassCands];
 }
@@ -1731,12 +1737,6 @@ const CRITERIA = {
 	truncate: "Output the model may still need parts of but not in full: large log/query/read results where only specific fragments (signatures, counts, ids, paths) will be referenced, or partially superseded investigation output. The head/tail excerpt keeps the gist in context.",
 	stub: "Output whose value was fully consumed in the turn it arrived: directory or tool listings, package.json/config dumps, exploratory greps or finds that were only used to locate something, verbose logs already triaged, boilerplate, or superseded duplicate reads. Re-fetchable exploration noise.",
 };
-
-interface Gates {
-	stub: number;
-	trunc: number;
-	floor: number;
-}
 
 function median(nums: number[]): number {
 	const s = [...nums].sort((a, b) => a - b);
@@ -1946,7 +1946,7 @@ async function v2DueAndEmit(
 	if (emitted.length === 0) return out;
 	costProbeTurn = event.turnIndex + 1;
 	curated.push(...emitted);
-	logBatch("emit", emitted.length, savedTotal, agedOut ? "aged" : pct >= CFG.criticalPct ? "critical" : "batch-floor");
+	logBatch("emit", emitted.length, savedTotal, agedOut ? "aged" : gates.tier === "critical" ? "critical" : gates.tier === "soft" ? "soft" : "batch-floor");
 	out.push({ type: "custom", customType: AUDIT_TYPE, data: { turn: event.turnIndex, emitted } });
 	return out;
 }
@@ -2142,6 +2142,41 @@ ${goalspecSummary()}` }],
 		);
 	}
 
+	// tiered auto-compact — concurrency contract lives in tiering.ts
+	const pctHistory: number[] = [];
+	const AUTO_COMPACT_COOLDOWN_TURNS = 3;
+	let autoCompactInFlight = false;
+	let autoCompactCooldownUntil = 0;
+	let lastBoundaryTurn = 0;
+
+	function maybeAutoCompact(ctx: ExtensionContext, event: TurnEndEvent, pct: number): void {
+		if (!Array.isArray(event.entries)) return;
+		lastBoundaryTurn = event.turnIndex;
+		if (pct <= 0) return;
+		if (CFG.autoCompactPct <= 0) return;
+		const history = pushPctSample(pctHistory, pct, CFG.autoCompactRiseTurns + 1);
+		pctHistory.length = 0;
+		pctHistory.push(...history);
+		const reason = autoCompactDecision(
+			pct,
+			pctHistory,
+			{ inFlight: autoCompactInFlight, cooldownUntilTurn: autoCompactCooldownUntil, turnIndex: event.turnIndex },
+			CFG,
+		);
+		if (!reason) return;
+		// raise the gate before the fire-and-forget call; session_compact and
+		// session_compact_failed lower it. A synchronous throw (compaction
+		// already running) must not latch the flag.
+		autoCompactInFlight = true;
+		logShadowLine({ decision: "autocompact-trigger", reason, pct, history: [...pctHistory], turn: event.turnIndex });
+		try {
+			ctx.compact();
+		} catch (error) {
+			autoCompactInFlight = false;
+			logShadowLine({ decision: "autocompact-error", error: String(error) });
+		}
+	}
+
 	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: SessionBoundaryDraft[] } | void> => {
 		// boundary entries compose by replacement: keep drafts from earlier handlers
 		// Agent-loop emissions (abort/error/lane paths) omit BoundaryState entirely
@@ -2183,15 +2218,7 @@ ${goalspecSummary()}` }],
 
 		const usage = ctx.getContextUsage();
 		const pct = usage?.percent ?? 0;
-		const gates: Gates = { stub: CFG.stubProb, trunc: CFG.truncProb, floor: CFG.minBatchSaved };
-		if (pct >= CFG.criticalPct) {
-			// critical: selective truncation beats a lossy full compaction
-			gates.stub = Math.min(gates.stub, 0.7);
-			gates.trunc = Math.min(gates.trunc, 0.5);
-			gates.floor = 0;
-		} else if (pct >= CFG.contextFloorPct) {
-			gates.trunc = Math.min(gates.trunc, 0.5);
-		}
+		const gates = resolveGates(pct, CFG);
 
 		// shadow candidates are collected before V2's cap pass so the same
 		// tool results feed both pipelines; classification runs after V2's
@@ -2288,8 +2315,11 @@ ${goalspecSummary()}` }],
 		// V3 pipeline: classify, propose, verify, log; evidence mode additionally
 		// activates the verifier-approved replacements for log/listing sources
 		if (V3 && spec) {
-			const reclassCands = buildReclassCandidates(ctx, shadowCands);
-			const batch = assembleShadowBatch(shadowCands, reclassCands);
+			// pressure doubles the classification/reclassification budgets so
+			// queued extracts and the overflow backlog drain faster
+			const pressure = pct >= CFG.softFloorPct ? 2 : 1;
+			const reclassCands = buildReclassCandidates(ctx, shadowCands, pressure);
+			const batch = assembleShadowBatch(shadowCands, reclassCands, pressure);
 			const results = await runShadow(ctx, event, batch, v2Outcome, pct);
 			const registered = registerResults(results, v2Outcome);
 			emitEvidence(event, results, v2Outcome, drafts);
@@ -2302,7 +2332,20 @@ ${goalspecSummary()}` }],
 			hydrateLedger(ctx);
 			hydrateRegistry(ctx);
 		}
+		maybeAutoCompact(ctx, event, pct);
 		return drafts.length > 0 ? { entries: drafts } : undefined;
+	});
+
+	// any in-flight compaction — pi threshold/overflow/manual or our own
+	// auto-trigger — must block a stacked auto-compact decision
+	pi.on("session_before_compact", () => {
+		autoCompactInFlight = true;
+	});
+	pi.on("session_compact_failed", (event: SessionCompactFailedEvent) => {
+		autoCompactInFlight = false;
+		// a persistently failing compaction must not be retried every turn
+		autoCompactCooldownUntil = lastBoundaryTurn + AUTO_COMPACT_COOLDOWN_TURNS + 1;
+		logShadowLine({ decision: "autocompact-failed", reason: event.reason, error: event.errorMessage, turn: lastBoundaryTurn });
 	});
 
 	// quality mode: compaction must never lose goal state or the evidence index.
@@ -2401,6 +2444,9 @@ ${goalspecSummary()}` }],
 		// shadow dedup is per-model-context lifetime; the GoalSpec itself is
 		// durable state and deliberately survives compaction in memory
 		shadowJudged.clear();
+		autoCompactInFlight = false;
+		autoCompactCooldownUntil = 0;
+		pctHistory.length = 0;
 	});
 
 	pi.registerToolRenderer((toolName, next) => (toolName === "jev_recall" ? { ...next(), ...recallToolRenderers } : next()));

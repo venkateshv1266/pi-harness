@@ -53,6 +53,9 @@ Kill switch: `JEVCURATOR=0` makes the curator fully inert; `/curator off` disabl
 | `JEVCURATOR_MAX_STUBS` | `150` | Stops new V2 verdicts once this many curated records exist. |
 | `JEVCURATOR_CONTEXT_FLOOR_PCT` | `70` | Context usage that lowers the truncate gate to 0.5. |
 | `JEVCURATOR_CRITICAL_PCT` | `85` | Context usage that lowers stub to 0.7, truncate to 0.5, and drops the batch floor to 0 (selective truncation beats a lossy full compaction). |
+| `JEVCURATOR_SOFT_FLOOR_PCT` | `50` | Context usage that starts proactive pruning: truncate gate drops to 0.5, the batch floor drops to a third of `MIN_BATCH_SAVED`, and shadow/reclassification budgets double so queued extracts and the overflow backlog drain faster. |
+| `JEVCURATOR_AUTO_COMPACT_PCT` | `90` | Context usage that auto-triggers compaction at a turn boundary (`0` disables). Quality mode still swaps in the frontier GoalSpec summary. |
+| `JEVCURATOR_AUTO_COMPACT_RISE_TURNS` | `3` | Slope trigger: compaction also fires when usage rises ≥0.5 pts/turn for this many consecutive turns while at or above `CRITICAL_PCT` (pruning cannot keep pace). A failed compaction cools down before retrying. |
 | `JEVCURATOR_TRUNC_HEAD` / `JEVCURATOR_TRUNC_TAIL` | `600` / `600` | Head/tail sizes used in the batch saved-mass estimate for truncate verdicts. |
 | `JEVCURATOR_JEV_TIMEOUT_MS` | `2500` | V2 judge Jev timeout. |
 | `JEVCURATOR_SHADOW_JEV_TIMEOUT_MS` | `8000` | V3 role classification and `curator_find` rerank timeout. |
@@ -91,6 +94,8 @@ Audit logs in `~/.pi/agent/jev-decisions/`: `jev-curator-v2.jsonl` (V2 verdicts,
 **Recovery contract:** nothing is deleted. Every condensed or capped source keeps its entry id as the `jev_recall` handle, and every classified or capped source is indexed in the source registry where `curator_find` can find it. If a fact the model remembers seeing is no longer visible in full, `curator_find` locates the source and `jev_recall` pages the raw back (by chars or lines).
 
 **Compaction** (quality mode only): when context nears the window limit, the frontier model generates the compaction summary instead of pi's default, and the prompt *requires* the complete GoalSpec verbatim, the full evidence ledger with entry ids, and a task-state summary — so goal state and recall handles survive every compaction. Any failure falls back to pi's default compaction unchanged.
+
+**Auto-trigger:** at ≥ `AUTO_COMPACT_PCT` usage, or when usage keeps climbing while in the critical tier (the ladder in `tiering.ts`: soft ≥50% prunes early, floor ≥70% lowers the truncate gate, critical ≥85% zeroes the batch floor), the extension triggers compaction itself at the turn boundary. An in-flight flag blocks stacked triggers, failures start a cooldown, and success resets the usage history the slope detector reads.
 
 **GoalSpec lifecycle:** seeded from the user's first prompt verbatim (that prompt is the immutable `userObjective`); `pin_goal` adds refinements, `amend_goalspec` adds criteria/constraints/plan/facts/questions, and only `/goal` with args replaces the objective. The curator is inert until a goal exists.
 

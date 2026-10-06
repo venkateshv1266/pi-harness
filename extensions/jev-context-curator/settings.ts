@@ -33,6 +33,9 @@ export interface CuratorConfig {
 	minBatchSaved: number;
 	contextFloorPct: number;
 	criticalPct: number;
+	softFloorPct: number;
+	autoCompactPct: number;
+	autoCompactRiseTurns: number;
 	maxHoldTurns: number;
 	ingestCap: number;
 	capHead: number;
@@ -139,6 +142,9 @@ const CURATOR_ENV_SPECS: CuratorEnvSpec[] = [
 	{ key: "minBatchSaved", env: "JEVCURATOR_MIN_BATCH_SAVED", defaultValue: 3000 },
 	{ key: "contextFloorPct", env: "JEVCURATOR_CONTEXT_FLOOR_PCT", defaultValue: 70 },
 	{ key: "criticalPct", env: "JEVCURATOR_CRITICAL_PCT", defaultValue: 85 },
+	{ key: "softFloorPct", env: "JEVCURATOR_SOFT_FLOOR_PCT", defaultValue: 50 },
+	{ key: "autoCompactPct", env: "JEVCURATOR_AUTO_COMPACT_PCT", defaultValue: 90 },
+	{ key: "autoCompactRiseTurns", env: "JEVCURATOR_AUTO_COMPACT_RISE_TURNS", defaultValue: 3 },
 	{ key: "maxHoldTurns", env: "JEVCURATOR_MAX_HOLD_TURNS", defaultValue: 10 },
 	{ key: "samples", env: "JEVCURATOR_SAMPLES", defaultValue: 3 },
 	{ key: "shadowMaxPerTurn", env: "JEVCURATOR_SHADOW_MAX_PER_TURN", defaultValue: 10 },
