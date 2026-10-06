@@ -51,9 +51,13 @@
  * compaction is replaced by a frontier-generated summary that MUST carry the
  * complete GoalSpec and the evidence ledger verbatim (so goal state and
  * condensed-source ids survive every compaction; default compaction is the
- * fallback), and V2's recency-based stub/truncate judge is RETIRED — the
- * frontier verifier owns every full→non-full transition. Cap-at-rest and
- * `jev_recall` remain the proven V2 foundation underneath.
+ * fallback), and V2's recency-based stub/truncate judge is RETIRED — every
+ * full→non-full transition goes through the verifier: by default the Jev
+ * fact-decomposed protocol (per-line coverage with repair-first) that
+ * escalates uncertain cases to the frontier model — JEVCURATOR_VERIFIER=
+ * hybrid (default) / jev (Jev-only, fail-safe retain) / frontier (the
+ * holistic pre-V4 gate). Cap-at-rest and `jev_recall` remain the proven V2
+ * foundation underneath.
  *
  * Explicit modes: `JEVCURATOR_MODE=v2` restores the pre-V3 micro-optimizer
  * (benchmark comparison arm), `shadow-quality` adds V3 without edits,
@@ -92,6 +96,7 @@ const GOAL_TYPE = "jev-curator-goal";
 const GOALSPEC_TYPE = "jev-curator-goalspec";
 const LEDGER_TYPE = "jev-curator-ledger";
 const AUDIT_TYPE = "jev-curator-stubs";
+const REGISTRY_TYPE = "jev-curator-registry";
 
 // v3 pipeline modes. quality is the default end state; the others are
 // explicit opt-outs (v2 = pre-V3 benchmark arm; shadow-quality = review
@@ -131,6 +136,10 @@ const extractBudget = (chars: number): number => Math.min(12000, Math.max(2500, 
 // `jev_recall` results are exempt or the curator would re-curate the very
 // content the model just explicitly asked back into context (churn loop).
 const NEVER_PRUNE = new Set(["edit", "write", "todo", "jev_recall"]);
+// role-based curation never touches NEVER_PRUNE — but cap-at-rest still
+// applies to huge results (a full-raw recall must not permanently re-inject
+// what curation removed); write-shaped tools never reach that size
+const CAP_EXEMPT = new Set(["edit", "write", "todo"]);
 // Jev's own outputs are never candidates: the curator would churn them —
 // judging Jev answers with Jev, and condensing typed answers buys nothing.
 const JEV_OWN_OUTPUT_RE = /^(mcp__jev|ask_jev|triage_log|pick_first_file)/;
@@ -153,6 +162,17 @@ const CFG = {
 	truncHead: CONFIG.truncHead,
 	truncTail: CONFIG.truncTail,
 	samples: Math.max(1, CONFIG.samples),
+	verifierMode: CONFIG.verifierMode === "jev" || CONFIG.verifierMode === "frontier" ? CONFIG.verifierMode : "hybrid",
+	covMin: CONFIG.covMin,
+	cardBgProb: CONFIG.cardBgProb,
+	verifyMaxLines: CONFIG.verifyMaxLines,
+	repairSlack: CONFIG.repairSlack,
+	verifierShadowPct: CONFIG.verifierShadowPct,
+	jevBreaker: CONFIG.jevBreaker,
+	reclassPerTurn: CONFIG.reclassPerTurn,
+	supersedeMax: CONFIG.supersedeMax,
+	registryCap: CONFIG.registryCap,
+	overflowCap: CONFIG.overflowCap,
 };
 
 const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
@@ -232,7 +252,7 @@ let spec: GoalSpec | null = null;
 let specDirty = false;
 const shadowJudged = new Set<string>();
 
-const shadowStats = { classified: 0, roles: { active: 0, evidence: 0, background: 0, irrelevant: 0 }, retainFull: 0, useExtract: 0, indexOnly: 0, degraded: 0 };
+const shadowStats = { classified: 0, roles: { active: 0, evidence: 0, background: 0, irrelevant: 0 }, retainFull: 0, useExtract: 0, indexOnly: 0, repaired: 0, escalated: 0, shadowAb: 0, degraded: 0 };
 
 function trimList<T>(list: T[], cap: number): T[] {
 	return list.length > cap ? list.slice(list.length - cap) : list;
@@ -417,6 +437,148 @@ const RECENT_CAP = 10;
 // the turn right after a batch emission, for cache-reset cost accounting
 let costProbeTurn: number | null = null;
 
+// ─── V4 state: source registry, overflow queue, Jev breaker ──────────
+
+type RegistryVerdict = "retainFull" | "useExtract" | "indexOnly" | "cap";
+
+interface RegistryItem {
+	entryId: string;
+	toolName: string;
+	sourceType: SourceType;
+	role: ShadowRole;
+	links: string[];
+	verdict: RegistryVerdict;
+	chars: number;
+	inputShape: string;
+	turn: number;
+	specVersion: number;
+	path?: string;
+}
+
+// every classified or capped source — the exhaustive search index
+const registry = new Map<string, RegistryItem>();
+let registryHydrated = false;
+
+function trimRegistry() {
+	while (registry.size > CFG.registryCap) {
+		const oldest = registry.keys().next().value;
+		if (oldest === undefined) break;
+		registry.delete(oldest);
+	}
+}
+
+// candidates beyond the per-turn classification budget, drained on later
+// boundaries — never dropped silently
+const overflowQueue: ShadowCandidate[] = [];
+
+// once Jev fails N consecutive times, stop paying serial timeouts: the rest
+// of the boundary fails open; each boundary gets one fresh probe
+let jevFailStreak = 0;
+let jevBreakerOpen = false;
+
+// per-proposal-method quality: approved/proposed
+const methodStats = new Map<string, { proposed: number; approved: number }>();
+
+// recalls of condensed sources this session — regret ground truth that
+// feeds the verifier's conservatism note
+let condensedRecalls = 0;
+
+function regretNote(): string {
+	return condensedRecalls > 0
+		? `\nNOTE: ${condensedRecalls} condensed source(s) were recalled this session — earlier replacements lost needed facts; be conservative.\n`
+		: "";
+}
+
+function pathOf(shape: string): string | undefined {
+	const m = /"(?:path|file)"\s*:\s*"([^"]+)"/.exec(shape);
+	return m ? m[1] : undefined;
+}
+
+interface RawRegistryItem {
+	entryId: string;
+	toolName?: unknown;
+	sourceType?: unknown;
+	role?: unknown;
+	links?: unknown;
+	verdict?: unknown;
+	chars?: unknown;
+	inputShape?: unknown;
+	turn?: unknown;
+	specVersion?: unknown;
+	path?: unknown;
+}
+
+function isRegistryItem(r: Record<string, unknown>): r is RawRegistryItem & Record<string, unknown> {
+	return (
+		typeof r.entryId === "string" &&
+		typeof r.toolName === "string" &&
+		(r.verdict === "retainFull" || r.verdict === "useExtract" || r.verdict === "indexOnly" || r.verdict === "cap") &&
+		typeof r.turn === "number" &&
+		typeof r.chars === "number" &&
+		typeof r.specVersion === "number"
+	);
+}
+
+function hydrateRegistry(ctx: ExtensionContext) {
+	if (registryHydrated) return;
+	let entries: readonly SessionEntry[];
+	try {
+		entries = ctx.sessionManager.getEntries();
+	} catch {
+		return; // unreadable session: retry on the next boundary
+	}
+	registryHydrated = true;
+	for (const e of entries) {
+		if (e.type !== "custom" || e.customType !== REGISTRY_TYPE) continue;
+		const items = (e.data as { items?: unknown } | undefined)?.items;
+		if (!Array.isArray(items)) continue;
+		for (const it of items) {
+			if (typeof it !== "object" || it === null) continue;
+			const r = it as Record<string, unknown>;
+			if (!isRegistryItem(r)) continue;
+			registry.set(r.entryId, {
+				entryId: r.entryId,
+				toolName: typeof r.toolName === "string" ? r.toolName : "(tool)",
+				sourceType: (typeof r.sourceType === "string" ? r.sourceType : "other") as SourceType,
+				role: (typeof r.role === "string" ? r.role : "background") as ShadowRole,
+				links: Array.isArray(r.links) ? r.links.filter((l): l is string => typeof l === "string") : [],
+				verdict: r.verdict as RegistryVerdict,
+				chars: typeof r.chars === "number" ? r.chars : 0,
+				inputShape: typeof r.inputShape === "string" ? r.inputShape : "",
+				turn: typeof r.turn === "number" ? r.turn : 0,
+				specVersion: typeof r.specVersion === "number" ? r.specVersion : 0,
+				path: typeof r.path === "string" ? r.path : undefined,
+			});
+		}
+	}
+	trimRegistry();
+}
+
+// raw text for a previously classified source (reclassification): rawStore
+// first, session entry as the durable fallback — same sources jev_recall uses
+function fetchSourceText(ctx: ExtensionContext, entryId: string): string | null {
+	const raw = rawStore.get(entryId);
+	if (raw !== undefined) return raw;
+	try {
+		const entry = ctx.sessionManager.getEntry(entryId);
+		if (entry && messageEntry(entry) && isRoleMessage(entry.message)) {
+			const text = messageText(entry.message);
+			if (text) {
+				// re-cache so emission (rawStore-gated) and recall stay fast
+				rawStore.set(entryId, text);
+				if (rawStore.size > RAW_STORE_CAP) {
+					const oldest = rawStore.keys().next().value;
+					if (oldest !== undefined) rawStore.delete(oldest);
+				}
+				return text;
+			}
+		}
+	} catch {
+		// entry pruned (e.g. post-compaction): not reclassifiable
+	}
+	return null;
+}
+
 function messageText(msg: RoleMessage): string {
 	if (typeof msg.content === "string") return msg.content;
 	if (!Array.isArray(msg.content)) return "";
@@ -452,6 +614,7 @@ interface ShadowCandidate {
 	inputShape: string;
 	turn: number;
 	text: string;
+	hint?: string;
 }
 
 interface RoleVerdict {
@@ -467,6 +630,14 @@ interface RoleVerdict {
 interface Proposal {
 	text: string;
 	method: string;
+	keptNums?: number[];
+	// goal-relevant lines that did NOT make it into the extract — the
+	// coverage check interrogates exactly these
+	droppedRelevant?: { n: number; score: number; text: string }[];
+	// re-render with the given lines forced in as deterministic keepers
+	// (repair); null = they do not fit even within the slack budget
+	repair?: (addNums: number[]) => string | null;
+	scoringDegraded?: boolean;
 }
 
 const ROLE_QUESTION =
@@ -500,7 +671,8 @@ function shadowState(c: ShadowCandidate): string {
 	return scrubSecrets(
 		`SESSION GOAL (GoalSpec):\n${goalspecSummary()}\n\nTOOL CALL: ${c.inputShape}\n\n` +
 			`RECENT ACTIVITY (oldest→newest): ${recentTools.join(" → ")}\n\n` +
-			`OUTPUT EXCERPT (${c.text.length} chars total):\n${excerpt(c.text)}`,
+			`OUTPUT EXCERPT (${c.text.length} chars total):\n${excerpt(c.text)}` +
+			(c.hint ? `\n\nNOTE: ${c.hint}` : ""),
 	);
 }
 
@@ -519,8 +691,6 @@ function linkCriteria(): Record<string, string> | null {
 async function shadowClassify(c: ShadowCandidate): Promise<RoleVerdict> {
 	const state = shadowState(c);
 	const roleQ = { type: "choice", instructions: ROLE_QUESTION, criteria: ROLE_CRITERIA };
-	const roleQuestions: Record<string, unknown> = {};
-	for (let i = 0; i < CFG.samples; i++) roleQuestions[`role${i}`] = roleQ;
 	const shapeQuestions: Record<string, unknown> = {
 		sourceType: { type: "choice", instructions: "What kind of source is this tool output?", criteria: SOURCE_TYPE_CRITERIA },
 	};
@@ -532,10 +702,12 @@ async function shadowClassify(c: ShadowCandidate): Promise<RoleVerdict> {
 			criteria: links,
 		};
 	}
-	const [roleAnswers, shapeAnswers] = await Promise.all([
-		jevAsk(state, roleQuestions, SHADOW_JEV_TIMEOUT_MS),
-		jevAsk(state, shapeQuestions, SHADOW_JEV_TIMEOUT_MS),
-	]);
+	// one multi-question call (the native systemone shape): role samples +
+	// shape/links together halve the per-candidate HTTP round-trips
+	const questions: Record<string, unknown> = { ...shapeQuestions };
+	for (let i = 0; i < CFG.samples; i++) questions[`role${i}`] = roleQ;
+	const roleAnswers = await jevAsk(state, questions, SHADOW_JEV_TIMEOUT_MS);
+	const shapeAnswers = roleAnswers;
 
 	const samples: { choice: string; prob: number; conf: number }[] = [];
 	for (let i = 0; i < CFG.samples; i++) {
@@ -583,8 +755,10 @@ interface ScoredLine {
 }
 
 // The proven jev_triage_log pattern: chunk lines, one noul relevance question
-// per line against the goal, keep top-k above the cutoff.
-async function scoreLines(text: string, lineQuestion: string): Promise<ScoredLine[]> {
+// per line against the goal. Returns every line scoring ≥ SCORE_MIN sorted by
+// score (callers slice top-k); null = Jev degraded — an extract built on
+// partial scoring has no coverage evidence, so nothing is approvable.
+async function scoreLines(text: string, lineQuestion: string): Promise<ScoredLine[] | null> {
 	const lines = text
 		.split(/\r?\n/)
 		.slice(0, SCORE_MAX_LINES)
@@ -613,7 +787,7 @@ async function scoreLines(text: string, lineQuestion: string): Promise<ScoredLin
 			const questions: Record<string, unknown> = {};
 			for (const l of chunk) questions[`L${l.n}`] = { type: "noul", instructions: `${lineQuestion} (line ${l.n})` };
 			const answers = await jevAsk(state, questions, SCORE_JEV_TIMEOUT_MS);
-			if (!answers) return [];
+			if (!answers) return null;
 			const out: ScoredLine[] = [];
 			for (const l of chunk) {
 				const val = answers[`L${l.n}`]?.noul;
@@ -622,9 +796,10 @@ async function scoreLines(text: string, lineQuestion: string): Promise<ScoredLin
 			return out;
 		}),
 	);
-	const flat = perChunk.flat().filter((l) => l.score >= SCORE_MIN);
+	if (perChunk.some((r) => r === null)) return null;
+	const flat = perChunk.flat().filter((l): l is ScoredLine => l !== null && l.score >= SCORE_MIN);
 	flat.sort((a, b) => b.score - a.score || a.n - b.n);
-	return flat.slice(0, SCORE_TOP_K).sort((a, b) => a.n - b.n);
+	return flat;
 }
 
 function renderLineNums(text: string, nums: number[]): string {
@@ -643,12 +818,14 @@ function countLines(text: string): number {
 
 // Fit a scored-line extract to the char budget by dropping the LOWEST-scored
 // lines first — a hard cut always loses the tail, where summary/count lines
-// live. Deterministic (ERROR) lines are never dropped.
+// live. Deterministic (ERROR) lines are never dropped. Reports what survived
+// (keptNums feeds the coverage check) and whether a hard cut was needed (a
+// hard-cut extract cannot claim coverage of the lines it truncated).
 function fitToBudget(
 	items: { n: number; score: number; det: boolean }[],
 	render: (ns: number[]) => string,
 	budget: number,
-): string {
+): { text: string; keptNums: number[]; hardCut: boolean } {
 	const cur = [...items];
 	let out = render(cur.map((p) => p.n));
 	while (out.length > budget) {
@@ -657,12 +834,12 @@ function fitToBudget(
 			if (!cur[i].det && (worst === -1 || cur[i].score < cur[worst].score)) worst = i;
 		}
 		if (worst === -1 || cur.length <= 1) {
-			return `${out.slice(0, budget)}\n  [... extract cut at budget; full raw via jev_recall]`;
+			return { text: `${out.slice(0, budget)}\n  [... extract cut at budget; full raw via jev_recall]`, keptNums: cur.map((p) => p.n), hardCut: true };
 		}
 		cur.splice(worst, 1);
 		out = render(cur.map((p) => p.n));
 	}
-	return out;
+	return { text: out, keptNums: cur.map((p) => p.n), hardCut: false };
 }
 
 function pathFromInput(shape: string): string {
@@ -701,7 +878,17 @@ async function buildProposal(c: ShadowCandidate, role: RoleVerdict): Promise<Pro
 	}
 	const supports = role.links.length ? `Supports: ${role.links.join(", ")}` : "Supports: session goal";
 	const src = role.sourceType === "code" || role.sourceType === "doc" ? pathFromInput(c.inputShape) : c.inputShape.slice(0, 120);
-	const picked = await scoreLines(c.text, LINE_QUESTIONS[role.sourceType]);
+	const budget = extractBudget(c.text.length);
+	const scoredAll = await scoreLines(c.text, LINE_QUESTIONS[role.sourceType]);
+	if (scoredAll === null) {
+		// scoring degraded: no coverage evidence exists — not Jev-approvable
+		return {
+			text: `[Source: ${c.toolName} — ${role.sourceType}, ${c.text.length} chars; ${supports}; raw via jev_recall "${c.entryId}"]\n${excerpt(c.text, 1200, 600)}`,
+			method: "headtail-fallback",
+			scoringDegraded: true,
+		};
+	}
+	const picked = scoredAll.slice(0, SCORE_TOP_K).sort((a, b) => a.n - b.n);
 	if (picked.length === 0) {
 		// generic head/tail is the fallback only when line scoring found nothing
 		return {
@@ -709,6 +896,27 @@ async function buildProposal(c: ShadowCandidate, role: RoleVerdict): Promise<Pro
 			method: "headtail-fallback",
 		};
 	}
+	// shared finisher: budget-fit, then expose the dropped goal-relevant
+	// lines for the coverage check, plus a repair path that re-renders with
+	// lost lines forced in as deterministic keepers within a slack budget
+	const finishExtract = (method: string, items: { n: number; score: number; det: boolean }[], render: (ns: number[]) => string): Proposal => {
+		const fit = fitToBudget(items, render, budget);
+		const kept = new Set(fit.keptNums);
+		const droppedRelevant = scoredAll.filter((l) => !kept.has(l.n)).slice(0, CFG.verifyMaxLines);
+		return {
+			text: fit.text,
+			method,
+			keptNums: fit.keptNums,
+			droppedRelevant,
+			repair: (addNums: number[]): string | null => {
+				if (addNums.length === 0) return fit.text;
+				const merged = new Map(items.map((i) => [i.n, i]));
+				for (const n of addNums) merged.set(n, { n, score: 0, det: true });
+				const repaired = fitToBudget([...merged.values()].sort((a, b) => a.n - b.n), render, Math.round(budget * CFG.repairSlack));
+				return repaired.hardCut ? null : repaired.text;
+			},
+		};
+	};
 	if (role.sourceType === "log") {
 		// deterministic passthrough: error lines always survive the filter —
 		// Jev narrows, it does not conclude (jev_triage_log semantics)
@@ -741,22 +949,14 @@ async function buildProposal(c: ShadowCandidate, role: RoleVerdict): Promise<Pro
 			}
 			return `${header}\n${renderLineNums(c.text, [...withNb].sort((a, b) => a - b))}`;
 		};
-		return { text: fitToBudget(items, render, extractBudget(c.text.length)), method: "log-lines" };
+		return finishExtract("log-lines", items, render);
 	}
 	if (role.sourceType === "listing") {
 		const header = `[Source: listing/search — ${src}; ${countLines(c.text)} result lines; ${supports}; plan-relevant matches below (L# = original line numbers); raw via jev_recall "${c.entryId}"]`;
 		const render = (ns: number[]): string => `${header}\n${renderLineNums(c.text, ns)}`;
-		return {
-			text: fitToBudget(
-				picked.map((l) => ({ n: l.n, score: l.score, det: false })),
-				render,
-				extractBudget(c.text.length),
-			),
-			method: "listing-matches",
-		};
+		return finishExtract("listing-matches", picked.map((l) => ({ n: l.n, score: l.score, det: false })), render);
 	}
 	// code/doc: merge picked lines into contiguous ranges (gap ≤ 3)
-	picked.sort((a, b) => a.n - b.n);
 	const render = (ns: number[]): string => {
 		const ranges: { start: number; end: number }[] = [];
 		for (const n of ns) {
@@ -769,14 +969,11 @@ async function buildProposal(c: ShadowCandidate, role: RoleVerdict): Promise<Pro
 		for (const r of ranges) for (let n = r.start; n <= r.end; n++) nums.push(n);
 		return `[Source: ${role.sourceType} read — ${src}; ${countLines(c.text)} lines; ${supports}; ranges for current plan: ${rangeStr}; raw via jev_recall "${c.entryId}"]\n${renderLineNums(c.text, nums)}`;
 	};
-	return {
-		text: fitToBudget(
-			picked.map((l) => ({ n: l.n, score: l.score, det: false })),
-			render,
-			extractBudget(c.text.length),
-		),
-		method: role.sourceType === "code" ? "code-ranges" : "doc-ranges",
-	};
+	return finishExtract(
+		role.sourceType === "code" ? "code-ranges" : "doc-ranges",
+		picked.map((l) => ({ n: l.n, score: l.score, det: false })),
+		render,
+	);
 }
 
 interface VerifyItem {
@@ -872,7 +1069,7 @@ function completeVerifier(
 	return ctx.modelRegistry.complete(ref.model, context, { ...options, cacheRetention: "none" });
 }
 
-function verifierPrompt(batch: VerifyItem[]): string {
+function verifierPrompt(batch: VerifyItem[], note?: string): string {
 	const blocks = batch
 		.map((b) => {
 			const st = b.role.sourceType;
@@ -891,7 +1088,7 @@ function verifierPrompt(batch: VerifyItem[]): string {
 		.join("\n\n");
 	return (
 		`You are the quality gate of a context-curation system for a coding session. The raw sources below always remain recoverable via a recall tool, so nothing is lost — but only what stays in working context can be used without an explicit recall call.\n\n` +
-		`SESSION GOAL STATE:\n${goalspecSummary()}\n\n` +
+		`SESSION GOAL STATE:\n${goalspecSummary()}\n${note ?? ""}\n` +
 		`For each candidate a fast classifier proposed replacing the full output with the shown replacement. Decide per candidate:\n` +
 		`- "retainFull": replacing the full source could plausibly remove information needed to satisfy a success criterion, constraint, active plan step, or open question; or the proposed replacement misses any goal-relevant claim from the raw source; or you are uncertain.\n` +
 		`- "useExtract": the proposed replacement preserves every goal-relevant fact (exact ids, numbers, errors, decisions, code) from the raw source; the full raw adds nothing plausibly needed.\n` +
@@ -909,13 +1106,15 @@ interface VerifyResult {
 	error: string;
 	durationMs: number;
 	usage?: { input?: number; output?: number; cacheRead?: number };
+	escalated?: number;
+	shadowChecked?: number;
 }
 
 // Keep this gate on the frontier model: an A/B with Jev as verifier (59 paired
 // decisions, 2026-09-28) agreed 78% but approved 0/10 extracts the frontier
 // approved (over-retains) and its 3 approvals were low-confidence frontier
 // vetoes — no threshold yields useful + safe approvals.
-async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promise<VerifyResult> {
+async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[], note?: string): Promise<VerifyResult> {
 	const ref = verifierModelRef(ctx);
 	const modelLabel = verifierModelLabel(ref);
 	const started = Date.now();
@@ -940,7 +1139,7 @@ async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promi
 					messages: [
 						{
 							role: "user",
-							content: [{ type: "text", text: verifierPrompt(batch) }],
+							content: [{ type: "text", text: verifierPrompt(batch, note) }],
 							timestamp: Date.now(),
 						},
 					],
@@ -963,6 +1162,169 @@ async function frontierVerify(ctx: ExtensionContext, batch: VerifyItem[]): Promi
 	}
 }
 
+// ─── Jev fact-decomposed verification (V4) ─────────────────────
+
+interface ItemCoverage {
+	verdict: "retainFull" | "useExtract" | "indexOnly";
+	reason: string;
+	repaired: boolean;
+	lostLines: number[];
+	covs: { n: number; cov: number }[];
+	escalate: boolean;
+	degraded: boolean;
+}
+
+// The old A/B asked Jev the frontier's holistic verify question — the one
+// thing System One is worst at. Here every question is narrow and
+// evidence-in-context: per dropped goal-relevant line, "is this line's
+// information preserved in the replacement shown?" Lost lines are repaired
+// back in before any verdict; unrepairable losses escalate to the frontier
+// (hybrid) or retain full (jev-only). Uncertainty always preserves evidence.
+async function jevVerifyItem(item: VerifyItem): Promise<ItemCoverage> {
+	const { role, proposal } = item;
+	const degrade = (reason: string): ItemCoverage => ({
+		verdict: "retainFull",
+		reason,
+		repaired: false,
+		lostLines: [],
+		covs: [],
+		escalate: true,
+		degraded: true,
+	});
+	if (proposal.method === "card" || proposal.method === "card-omit") {
+		if (role.role === "irrelevant") {
+			return { verdict: "indexOnly", reason: "irrelevant at p≥0.95; card keeps provenance + recall handle", repaired: false, lostLines: [], covs: [], escalate: false, degraded: false };
+		}
+		if (role.role === "background" && role.prob >= CFG.cardBgProb && role.conf >= CFG.minConf) {
+			return { verdict: "useExtract", reason: `background card at p=${role.prob.toFixed(2)}`, repaired: false, lostLines: [], covs: [], escalate: false, degraded: false };
+		}
+		return { verdict: "retainFull", reason: `background p=${role.prob.toFixed(2)} below card gate — uncertain`, repaired: false, lostLines: [], covs: [], escalate: true, degraded: false };
+	}
+	// no line-scoring evidence to verify against — the frontier must judge
+	if (proposal.scoringDegraded || proposal.method === "headtail-fallback") {
+		return degrade(proposal.scoringDegraded ? "line scoring degraded — coverage unprovable" : "no goal-relevant lines scored — head/tail not checkable");
+	}
+	const dropped = proposal.droppedRelevant ?? [];
+	if (dropped.length === 0) {
+		return { verdict: "useExtract", reason: "every goal-relevant line is in the extract", repaired: false, lostLines: [], covs: [], escalate: false, degraded: false };
+	}
+	const state = scrubSecrets(
+		`SESSION GOAL (GoalSpec):\n${goalspecSummary()}\n${regretNote()}\n\n` +
+			`PROPOSED REPLACEMENT (what stays in context):\n${proposal.text}\n\n` +
+			`DROPPED LINES FROM THE RAW SOURCE (numbered as in the source):\n${dropped.map((l) => `L${l.n}| ${l.text}`).join("\n")}`,
+	);
+	const questions: Record<string, unknown> = {};
+	dropped.forEach((l, i) => {
+		questions[`C${i}`] = { type: "noul", instructions: `Is the goal-relevant information of L${l.n} preserved in the replacement above? (1 = fully preserved, 0 = lost)` };
+	});
+	const answers = await jevAsk(state, questions, SHADOW_JEV_TIMEOUT_MS);
+	if (!answers) return degrade("coverage check degraded — fail-safe");
+	const covs: { n: number; cov: number }[] = [];
+	const lostLines: number[] = [];
+	dropped.forEach((l, i) => {
+		const cov = Number(answers[`C${i}`]?.noul ?? 0);
+		covs.push({ n: l.n, cov });
+		if (cov < CFG.covMin) lostLines.push(l.n);
+	});
+	if (lostLines.length === 0) {
+		return { verdict: "useExtract", reason: `coverage: ${dropped.length}/${dropped.length} dropped lines preserved`, repaired: false, lostLines, covs, escalate: false, degraded: false };
+	}
+	if (proposal.repair) {
+		const text = proposal.repair(lostLines);
+		if (text !== null) {
+			proposal.text = text;
+			proposal.method = `${proposal.method}+repair`;
+			return { verdict: "useExtract", reason: `repaired: lines ${lostLines.slice(0, 8).join(", ")} added back`, repaired: true, lostLines, covs, escalate: false, degraded: false };
+		}
+	}
+	return { verdict: "retainFull", reason: `lines ${lostLines.slice(0, 8).join(", ")} lost and not fittable`, repaired: false, lostLines, covs, escalate: true, degraded: false };
+}
+
+// Verifier dispatch: frontier passthrough, Jev protocol, or hybrid (Jev
+// first, frontier only for uncertain cases + a shadow sample of Jev
+// approvals so agreement stays measured instead of assumed).
+async function verifyBatch(ctx: ExtensionContext, batch: VerifyItem[]): Promise<VerifyResult> {
+	const started = Date.now();
+	if (CFG.verifierMode === "frontier") return frontierVerify(ctx, batch, regretNote());
+	const verdicts = new Map<string, VerifierDecision>();
+	const escalate: VerifyItem[] = [];
+	const approved: VerifyItem[] = [];
+	const coverages = await Promise.all(batch.map(async (b) => ({ b, cov: await jevVerifyItem(b) })));
+	for (const { b, cov } of coverages) {
+		logShadowLine({
+			decision: "jev-verify",
+			entryId: b.cand.entryId,
+			method: b.proposal.method,
+			role: b.role.role,
+			links: b.role.links.length ? b.role.links : undefined,
+			droppedChecked: cov.covs.length,
+			lostLines: cov.lostLines.length ? cov.lostLines.slice(0, 12) : undefined,
+			covs: cov.covs.length ? cov.covs.map((x) => `${x.n}:${x.cov.toFixed(2)}`).slice(0, 12) : undefined,
+			repaired: cov.repaired || undefined,
+			verdict: cov.verdict,
+			reason: cov.reason,
+			degraded: cov.degraded || undefined,
+			verifierMode: CFG.verifierMode,
+		});
+		if (cov.repaired) shadowStats.repaired++;
+		if (cov.escalate) {
+			escalate.push(b);
+		} else {
+			verdicts.set(b.cand.entryId, { id: b.cand.entryId, verdict: cov.verdict, reason: cov.reason });
+			approved.push(b);
+		}
+	}
+	if (CFG.verifierMode === "jev") {
+		// Jev-only: uncertain stays loss-free; no frontier calls at all
+		for (const b of escalate) {
+			verdicts.set(b.cand.entryId, { id: b.cand.entryId, verdict: "retainFull", reason: "uncertain under the Jev protocol — fail-safe retainFull" });
+		}
+		shadowStats.escalated += escalate.length;
+		return { verdicts, model: "jev", ok: true, error: "", durationMs: Date.now() - started, escalated: escalate.length };
+	}
+	// hybrid: escalate uncertain cases; shadow-check a sample of Jev approvals
+	const shadowSample = approved.filter(() => Math.random() < CFG.verifierShadowPct).slice(0, 2);
+	const frontierBatch = [...escalate, ...shadowSample];
+	if (frontierBatch.length === 0) {
+		return { verdicts, model: "jev", ok: true, error: "", durationMs: Date.now() - started, escalated: 0, shadowChecked: 0 };
+	}
+	const fr = await frontierVerify(ctx, frontierBatch, regretNote());
+	for (const b of escalate) {
+		const d = fr.verdicts.get(b.cand.entryId);
+		verdicts.set(
+			b.cand.entryId,
+			d ?? { id: b.cand.entryId, verdict: "retainFull", reason: fr.ok ? "frontier omitted escalated candidate — fail-safe retainFull" : `frontier escalation failed (${fr.error}) — fail-safe retainFull` },
+		);
+	}
+	for (const b of shadowSample) {
+		const d = fr.verdicts.get(b.cand.entryId);
+		const j = verdicts.get(b.cand.entryId);
+		if (d && j) {
+			shadowStats.shadowAb++;
+			logShadowLine({
+				decision: "verifier-ab",
+				entryId: b.cand.entryId,
+				jev: j.verdict,
+				frontier: d.verdict,
+				agree: j.verdict === d.verdict,
+				jevReason: j.reason,
+				frontierReason: d.reason,
+			});
+		}
+	}
+	shadowStats.escalated += escalate.length;
+	return {
+		verdicts,
+		model: `jev+frontier(${frontierBatch.length})`,
+		ok: true,
+		error: fr.error || "",
+		durationMs: Date.now() - started,
+		usage: fr.usage,
+		escalated: escalate.length,
+		shadowChecked: shadowSample.length,
+	};
+}
+
 
 function logShadowLine(obj: Record<string, unknown>) {
 	try {
@@ -983,18 +1345,16 @@ interface ShadowResult {
 }
 
 async function runShadow(
-	_ctx: ExtensionContext,
+	ctx: ExtensionContext,
 	_event: TurnEndEvent,
 	cands: ShadowCandidate[],
 	v2Outcome: Map<string, string>,
 	pct: number,
 ): Promise<ShadowResult[]> {
 	if (cands.length === 0) return [];
-	const over = cands.slice(SHADOW_MAX_PER_TURN);
-	for (const c of over) {
-		logShadowLine({ decision: "skipped-over-limit", entryId: c.entryId, tool: c.toolName, chars: c.text.length, turn: c.turn });
-	}
-	const batch = cands.slice(0, SHADOW_MAX_PER_TURN);
+	// turn_end assembles the batch (new candidates, overflow drain,
+	// reclassification); the per-turn budget is enforced there, not here
+	const batch = cands;
 	const classified = await Promise.all(
 		batch.map(async (c) => {
 			const role = await shadowClassify(c);
@@ -1008,8 +1368,8 @@ async function runShadow(
 	);
 	let verify: VerifyResult | null = null;
 	if (needVerify.length > 0) {
-		verify = await frontierVerify(
-			_ctx,
+		verify = await verifyBatch(
+			ctx,
 			needVerify.map((x) => ({ cand: x.c, role: x.role, proposal: x.proposal })),
 		);
 		logShadowLine({
@@ -1020,6 +1380,9 @@ async function runShadow(
 			durationMs: verify.durationMs,
 			error: verify.error || undefined,
 			usage: verify.usage,
+			verifierMode: CFG.verifierMode,
+			escalated: verify.escalated,
+			shadowChecked: verify.shadowChecked,
 		});
 	}
 	const results: ShadowResult[] = [];
@@ -1044,6 +1407,12 @@ async function runShadow(
 		if (verdict === "retainFull") shadowStats.retainFull++;
 		if (verdict === "useExtract") shadowStats.useExtract++;
 		if (verdict === "indexOnly") shadowStats.indexOnly++;
+		if (proposal) {
+			const ms = methodStats.get(proposal.method) ?? { proposed: 0, approved: 0 };
+			ms.proposed++;
+			if (verdict !== "retainFull") ms.approved++;
+			methodStats.set(proposal.method, ms);
+		}
 		if (verifierDegraded || role.degraded) shadowStats.degraded++;
 		logShadowLine({
 			decision: "shadow",
@@ -1081,7 +1450,7 @@ function emitEvidence(
 	event: TurnEndEvent,
 	results: ShadowResult[],
 	v2Outcome: Map<string, string>,
-	drafts: (ContextEditEntryDraft | CustomEntryDraft)[],
+	drafts: SessionBoundaryDraft[],
 ): void {
 	// "evidence" = log/listing scope; "quality" extends to code/doc
 	if (MODE !== "evidence" && MODE !== "quality") return;
@@ -1155,6 +1524,108 @@ function emitEvidence(
 	}
 }
 
+// ─── V4 pipeline assembly ───────────────────────────────────────
+
+// stale-verdict re-judging: (a) same-path older reads superseded by this
+// turn's newer read; (b) retained sources judged against an older GoalSpec.
+// Both make curation a loop keyed to the live goal instead of a one-shot
+// compression. Bounded per turn; already-condensed sources are not re-judged
+// (edits are one-way; recall covers restoration).
+function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate[]): ShadowCandidate[] {
+	if (MODE !== "evidence" && MODE !== "quality") return [];
+	const out: ShadowCandidate[] = [];
+	const seen = new Set(newCands.map((c) => c.entryId));
+	if (spec) {
+		const specRef = spec;
+		const newPaths = new Map<string, { turn: number; entryId: string }>();
+		for (const c of newCands) {
+			const p = pathOf(c.inputShape);
+			if (p) newPaths.set(p, { turn: c.turn, entryId: c.entryId });
+		}
+		if (newPaths.size > 0) {
+			const stale = [...registry.values()]
+				.filter((r) => r.verdict === "retainFull" && r.path !== undefined && newPaths.has(r.path) && r.turn < (newPaths.get(r.path)?.turn ?? 0) && !seen.has(r.entryId))
+				.sort((a, b) => a.turn - b.turn)
+				.slice(0, CFG.supersedeMax);
+			for (const r of stale) {
+				const newer = newPaths.get(r.path as string);
+				const text = fetchSourceText(ctx, r.entryId);
+				if (newer === undefined || text === null) continue;
+				seen.add(r.entryId);
+				out.push({
+					entryId: r.entryId,
+					toolName: r.toolName,
+					toolCallId: "",
+					inputShape: r.inputShape,
+					turn: r.turn,
+					text,
+					hint: `a newer read of the same path is now in context (turn ${newer.turn}, entry ${newer.entryId}) — judge this older read in that light`,
+				});
+			}
+		}
+		const bumped = [...registry.values()]
+			.filter((r) => r.verdict === "retainFull" && r.specVersion < specRef.version && r.chars >= CFG.minChars && !seen.has(r.entryId))
+			.sort((a, b) => a.turn - b.turn)
+			.slice(0, CFG.reclassPerTurn);
+		for (const r of bumped) {
+			const text = fetchSourceText(ctx, r.entryId);
+			if (text === null) continue;
+			seen.add(r.entryId);
+			out.push({
+				entryId: r.entryId,
+				toolName: r.toolName,
+				toolCallId: "",
+				inputShape: r.inputShape,
+				turn: r.turn,
+				text,
+				hint: `the GoalSpec advanced (v${r.specVersion} → v${specRef.version}) — re-judge this source against the current goal`,
+			});
+		}
+	}
+	return out;
+}
+
+// new candidates take the classification budget first; the overflow queue
+// drains into the remainder — nothing is silently dropped anymore
+function assembleShadowBatch(newCands: ShadowCandidate[], reclassCands: ShadowCandidate[]): ShadowCandidate[] {
+	const head = newCands.slice(0, SHADOW_MAX_PER_TURN);
+	for (const c of newCands.slice(head.length)) overflowQueue.push(c);
+	while (overflowQueue.length > CFG.overflowCap) {
+		const dropped = overflowQueue.shift();
+		if (dropped) logShadowLine({ decision: "overflow-dropped", entryId: dropped.entryId, tool: dropped.toolName, chars: dropped.text.length, turn: dropped.turn });
+	}
+	const room = Math.max(0, SHADOW_MAX_PER_TURN - head.length);
+	if (room > 0) head.push(...overflowQueue.splice(0, room));
+	return [...head, ...reclassCands];
+}
+
+// every classified source lands in the registry — the exhaustive search index
+function registerResults(results: ShadowResult[], v2Outcome: Map<string, string>): RegistryItem[] {
+	const registered: RegistryItem[] = [];
+	for (const r of results) {
+		// V2 owns the representation when it already emitted this turn
+		const v2 = v2Outcome.get(r.cand.entryId);
+		if (v2?.startsWith("emitted-")) continue;
+		const item: RegistryItem = {
+			entryId: r.cand.entryId,
+			toolName: r.cand.toolName,
+			sourceType: r.role.sourceType,
+			role: r.role.role,
+			links: r.role.links,
+			verdict: r.verdict,
+			chars: r.cand.text.length,
+			inputShape: r.cand.inputShape,
+			turn: r.cand.turn,
+			specVersion: spec?.version ?? 0,
+			path: pathOf(r.cand.inputShape),
+		};
+		registry.set(item.entryId, item);
+		registered.push(item);
+	}
+	trimRegistry();
+	return registered;
+}
+
 // ─── Jev client (same shape as ttsr / jev-mcp) ──────────────────────
 
 let jevKeyCache: string | null | undefined;
@@ -1195,8 +1666,20 @@ async function jevAsk(
 	questions: Record<string, unknown>,
 	timeoutMs: number = JEV_TIMEOUT_MS,
 ): Promise<Record<string, JevChoiceAnswer> | null> {
+	if (jevBreakerOpen) return null;
 	const key = jevKey();
 	if (!key) return null;
+	// a failed call counts toward the breaker: once Jev is down, the rest of
+	// the boundary fails open instead of paying serial timeouts; each
+	// boundary gets one fresh probe
+	const fail = (): null => {
+		jevFailStreak++;
+		if (!jevBreakerOpen && jevFailStreak >= CFG.jevBreaker) {
+			jevBreakerOpen = true;
+			logShadowLine({ decision: "jev-breaker-open", failStreak: jevFailStreak });
+		}
+		return null;
+	};
 	// one retry with backoff: a transient 429/5xx should not silently degrade a verdict
 	for (let attempt = 0; attempt < 2; attempt++) {
 		let res: Response;
@@ -1216,17 +1699,18 @@ async function jevAsk(
 				await new Promise((r) => setTimeout(r, 600));
 				continue;
 			}
-			return null;
+			return fail();
 		}
 		try {
 			const j = (await res.json()) as JevResponse;
-			return j.answers ?? null;
+			if (j.answers) jevFailStreak = 0;
+			return j.answers ?? fail();
 		} catch {
 			// non-JSON body only happens on provider-side faults; fail open
-			return null;
+			return fail();
 		}
 	}
-	return null;
+	return fail();
 }
 
 // ─── Verdict ─────────────────────────────────────────────────────────
@@ -1333,13 +1817,41 @@ function ensureGoal(ctx: ExtensionContext) {
 // ─── Replacement text builders ─────────────────────────────────────────
 
 function recallHint(entryId: string): string {
-	return `call jev_recall with entry_id "${entryId}" (optional offset/limit) to read any part verbatim`;
+	return `call jev_recall with entry_id "${entryId}" (optional offset/limit, or lines "120-180") to read any part verbatim`;
+}
+
+// line-range paging in the coordinate system extracts already cite (L#);
+// segments are sliced from the split array — char-offset arithmetic would
+// drift on CRLF sources (a \r\n separator costs two chars, not one), and
+// extract L# numbers come from this same split, so coordinates match exactly
+function lineSlice(raw: string, spec: string): string | null {
+	const lines = raw.split(/\r?\n/);
+	const parts = spec.split(",").map((s) => s.trim()).filter(Boolean);
+	const segs: string[] = [];
+	for (const part of parts) {
+		const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+		if (!m) return null;
+		let a = Number(m[1]);
+		let b = m[2] !== undefined ? Number(m[2]) : a;
+		if (a > b) [a, b] = [b, a];
+		if (a < 1 || b > lines.length) return null;
+		segs.push(`[lines ${a}-${b} of ${lines.length}]\n${lines.slice(a - 1, b).join("\n")}`);
+	}
+	return segs.join("\n\n");
 }
 
 function capText(toolName: string, entryId: string, chars: number): string {
 	return (
 		`[curated by jev] ${toolName} output (${chars} chars) exceeded the single-output cap (${CFG.ingestCap}) — ` +
 		`first ${CFG.capHead} and last ${CFG.capTail} chars kept; the full output is intact in session history — ` +
+		`${recallHint(entryId)}.`
+	);
+}
+
+function recallCapText(entryId: string, chars: number): string {
+	return (
+		`[curated by jev] recall of ${chars} chars exceeded the single-output cap (${CFG.ingestCap}) — ` +
+		`the full raw is intact in session history; page a smaller slice — ` +
 		`${recallHint(entryId)}.`
 	);
 }
@@ -1595,6 +2107,10 @@ ${goalspecSummary()}` }],
 		ensureGoal(ctx);
 		if (!goal) return { entries: drafts }; // inert without a goal, but keep composed entries
 
+		// one fresh Jev probe per boundary; the breaker re-opens on failure
+		jevBreakerOpen = false;
+		jevFailStreak = 0;
+
 		// cache-reset cost accounting: the request right after an emit reveals
 		// whether the prefix was re-billed (input spike, cacheRead collapse)
 		if (costProbeTurn === event.turnIndex) {
@@ -1649,6 +2165,9 @@ ${goalspecSummary()}` }],
 			}
 		}
 
+		// registry items for this turn's caps, persisted in the V3 block below
+		const registeredCaps: RegistryItem[] = [];
+
 		for (const entryId of event.toolResultEntryIds) {
 			let entry: SessionEntry | undefined;
 			try {
@@ -1659,15 +2178,17 @@ ${goalspecSummary()}` }],
 			if (!entry || !messageEntry(entry)) continue;
 			const msg = entry.message;
 			if (!isRoleMessage(msg) || msg.role !== "toolResult" || msg.isError) continue;
-			if (NEVER_PRUNE.has(msg.toolName) || JEV_OWN_OUTPUT_RE.test(msg.toolName)) continue;
 			if (judged.has(entryId)) continue;
 			const text = messageText(msg);
 
 			// cap-at-rest: excerpt extreme outputs before first exposure. The
 			// full bulk is never billed and no cache reset is ever paid; the
 			// entry is marked judged so a later verdict cannot re-count it.
-			if (text.length > CFG.ingestCap) {
-				const replacement = capText(msg.toolName, entryId, text.length);
+			// Recall results are cap-eligible too — a full-raw recall must not
+			// permanently re-inject what curation removed — but role-based
+			// curation below still never touches them (churn loop)
+			if (text.length > CFG.ingestCap && !CAP_EXEMPT.has(msg.toolName)) {
+				const replacement = msg.toolName === "jev_recall" ? recallCapText(entryId, text.length) : capText(msg.toolName, entryId, text.length);
 				rawStore.set(entryId, text);
 				if (rawStore.size > RAW_STORE_CAP) {
 					const oldest = rawStore.keys().next().value;
@@ -1679,8 +2200,15 @@ ${goalspecSummary()}` }],
 				const rec: CurRecord = { entryId, toolName: msg.toolName, turn: event.turnIndex, chars: text.length, prob: 1, conf: 1, kind: "cap", replacementLen: replacement.length };
 				curated.push(rec);
 				logDecision(rec, "cap");
+				// every cap is a searchable source
+				const capShape = toolInputs.get(msg.toolCallId) ?? "";
+				const capItem: RegistryItem = { entryId, toolName: msg.toolName, sourceType: "other", role: "background", links: [], verdict: "cap", chars: text.length, inputShape: capShape, turn: event.turnIndex, specVersion: spec?.version ?? 0, path: pathOf(capShape) };
+				registry.set(entryId, capItem);
+				registeredCaps.push(capItem);
+				trimRegistry();
 				continue;
 			}
+			if (NEVER_PRUNE.has(msg.toolName) || JEV_OWN_OUTPUT_RE.test(msg.toolName)) continue;
 			if (text.length < CFG.minChars) continue;
 			// quality mode retires the V2 recency judge: the frontier verifier
 			// owns every full→non-full transition, so candidates are never queued
@@ -1699,11 +2227,21 @@ ${goalspecSummary()}` }],
 
 		// V3 pipeline: classify, propose, verify, log; evidence mode additionally
 		// activates the verifier-approved replacements for log/listing sources
-		if (V3 && spec && shadowCands.length > 0) {
-			const results = await runShadow(ctx, event, shadowCands, v2Outcome, pct);
+		if (V3 && spec) {
+			const reclassCands = buildReclassCandidates(ctx, shadowCands);
+			const batch = assembleShadowBatch(shadowCands, reclassCands);
+			const results = await runShadow(ctx, event, batch, v2Outcome, pct);
+			const registered = registerResults(results, v2Outcome);
 			emitEvidence(event, results, v2Outcome, drafts);
+			registered.push(...registeredCaps);
+			if (registered.length > 0) {
+				drafts.push({ type: "custom", customType: REGISTRY_TYPE, data: { turn: event.turnIndex, items: registered } });
+			}
 		}
-		if (V3) hydrateLedger(ctx);
+		if (V3) {
+			hydrateLedger(ctx);
+			hydrateRegistry(ctx);
+		}
 		return drafts.length > 0 ? { entries: drafts } : undefined;
 	});
 
@@ -1714,6 +2252,7 @@ ${goalspecSummary()}` }],
 		pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
 			ensureGoalSpec(ctx);
 			hydrateLedger(ctx);
+			hydrateRegistry(ctx);
 			const { preparation, signal } = event;
 			const ref = verifierModelRef(ctx);
 			if (!ref) return;
@@ -1727,6 +2266,14 @@ ${goalspecSummary()}` }],
 							`- ${l.entryId} · ${l.toolName} · ${l.sourceType}/${l.role} · ${l.chars} chars condensed (${l.verdict}) · raw via jev_recall "${l.entryId}" (offset/limit)\n  extract head: ${l.extract.slice(0, 400).replace(/\n/g, " | ")}`,
 					)
 					.join("\n") || "(no sources condensed yet)";
+			const sourceIndex =
+				[...registry.values()]
+					.filter((r) => !ledger.has(r.entryId))
+					.map(
+						(r) =>
+							`- ${r.entryId} · ${r.toolName} · ${r.path ?? r.inputShape.slice(0, 100)} · ${r.verdict === "cap" ? "capped (head/tail only)" : r.verdict} · ${r.chars} chars · raw via jev_recall "${r.entryId}" (offset/limit or lines)`,
+					)
+					.join("\n") || "(no further curated sources)";
 			const previous = preparation.previousSummary
 				? `\nPrevious session summary (merge it; keep every still-relevant part):\n${preparation.previousSummary}\n`
 				: "";
@@ -1735,6 +2282,7 @@ ${goalspecSummary()}` }],
 				`MANDATORY sections, in order:\n` +
 				`## SESSION GOAL (GoalSpec)\nReproduce the structured goal state below COMPLETELY, field by field — the user objective is authoritative and must never be dropped or paraphrased into loss:\n${goalspecSummary()}\n\n` +
 				`## EVIDENCE LEDGER\nThese sources were condensed out of working context this session. The assistant pages raw content back with the jev_recall tool by entry id, so the ids must survive verbatim:\n${ledgerIndex}\n\n` +
+				`## SOURCE INDEX\nCapped or retained-full sources NOT in the ledger above — one line each; raw content is paged back with jev_recall by entry id:\n${sourceIndex}\n\n` +
 				`## SUMMARY\nFrom the conversation below: goals discussed, decisions and their rationale, code changes and technical details, current state of ongoing work, blockers/open questions, planned next steps. Include every fact, id, file path, error signature, and constraint later turns could need.${previous}\n\n` +
 				`<conversation>\n${serializeConversation(convertToLlm(allMessages))}\n</conversation>`;
 			try {
@@ -1789,6 +2337,7 @@ ${goalspecSummary()}` }],
 		ready.clear();
 		judged.clear();
 		rawStore.clear();
+		overflowQueue.length = 0;
 		// shadow dedup is per-model-context lifetime; the GoalSpec itself is
 		// durable state and deliberately survives compaction in memory
 		shadowJudged.clear();
@@ -1804,6 +2353,7 @@ ${goalspecSummary()}` }],
 				entry_id: Type.Optional(Type.String({ description: "Entry id of the curated output (from its notice or the listing)" })),
 				offset: Type.Optional(Type.Number({ description: "Start reading the raw content at this character offset" })),
 				limit: Type.Optional(Type.Number({ description: "Read at most this many characters from the offset" })),
+				lines: Type.Optional(Type.String({ description: 'Line range(s) to read, e.g. "120-180", "42", or "12,40-44" (the coordinate system extracts cite)' })),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				if (!params.entry_id) {
@@ -1838,6 +2388,12 @@ ${goalspecSummary()}` }],
 				if (raw === undefined || raw === "") {
 					throw new Error(`No raw content found for entry ${params.entry_id}`);
 				}
+				// recall of a condensed source is regret ground truth — it feeds
+				// the verifier's conservatism note
+				hydrateLedger(ctx);
+				if (ledger.has(params.entry_id) || curated.some((s) => s.entryId === params.entry_id && s.kind !== "cap")) {
+					condensedRecalls++;
+				}
 				logOutcome("curator", CURATOR_LOG_FILE, params.entry_id, "recalled", {
 					verdict: "good",
 					detail: {
@@ -1846,14 +2402,25 @@ ${goalspecSummary()}` }],
 						session: ctx.sessionManager.getSessionId(),
 						offset: params.offset ?? 0,
 						limit: params.limit ?? null,
+						lines: params.lines ?? null,
 						chars: raw.length,
 					},
 				});
 				let out = raw;
-				if (params.offset !== undefined || params.limit !== undefined) {
+				if (params.lines !== undefined) {
+					const sliced = lineSlice(raw, params.lines);
+					if (sliced === null) throw new Error(`Invalid lines spec "${params.lines}" — use "120-180", "42", or "12,40-44"`);
+					out = sliced;
+				} else if (params.offset !== undefined || params.limit !== undefined) {
 					const start = Math.max(0, params.offset ?? 0);
 					const end = params.limit !== undefined ? Math.min(start + params.limit, raw.length) : raw.length;
 					out = `[recall slice: chars ${start}..${end} of ${raw.length}]\n${raw.slice(start, end)}`;
+				} else if (raw.length > CFG.ingestCap) {
+					// a full-raw recall must not permanently re-inject what curation
+					// removed; explicit paging (offset/limit/lines) is never capped
+					out =
+						`[full recall of ${raw.length} chars exceeds the single-output cap (${CFG.ingestCap}) — first ${CFG.capHead} and last ${CFG.capTail} chars shown; page any part with offset/limit or lines "120-180"]\n\n${raw.slice(0, CFG.capHead)}` +
+						`\n[... ${raw.length - CFG.capHead - CFG.capTail} chars omitted — jev_recall "${params.entry_id}" offset/limit ...]\n${raw.slice(-CFG.capTail)}`;
 				}
 				return { content: [{ type: "text", text: out }], details: undefined };
 			},
@@ -1866,67 +2433,88 @@ ${goalspecSummary()}` }],
 				name: "curator_find",
 				label: "Search curated evidence",
 				description:
-					"Search the context curator's evidence ledger for a condensed source relevant to a question — e.g. 'where did we see the kafka broker timeouts' or 'which log showed the 429 rate limits'. Returns matching source cards with their goal-relevant extracts and the raw entry ids; page the raw content with jev_recall. Use when you need a fact you remember seeing earlier but which is no longer visible in full.",
+					"Search the context curator's source index for anything relevant to a question — condensed sources (extract shown), capped, or retained-full sources — e.g. 'where did we see the kafka broker timeouts' or 'which log showed the 429 rate limits'. Returns matching source cards with their extracts and the raw entry ids; page the raw content with jev_recall. Use when you need a fact you remember seeing earlier but which is no longer visible in full.",
 				parameters: Type.Object({
 					query: Type.String({ description: "What you are looking for, in natural language" }),
 				limit: Type.Optional(Type.Number({ description: "Max sources to return (default 5)" })),
 				}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				hydrateLedger(ctx);
-				if (ledger.size === 0) {
-					return { content: [{ type: "text", text: "Evidence ledger is empty (nothing extracted yet)." }], details: undefined };
+				hydrateRegistry(ctx);
+				// the searchable pool is the whole registry: condensed ledger sources
+				// (extract shown) plus capped/retained sources (cards)
+				const ledgerItems = [...ledger.values()];
+				const cardItems = [...registry.values()].filter((r) => !ledger.has(r.entryId));
+				if (ledgerItems.length === 0 && cardItems.length === 0) {
+					return { content: [{ type: "text", text: "No curated or classified sources in this session yet." }], details: undefined };
 				}
 				const limit = Math.max(1, Math.min(20, params.limit ?? 5));
 				const query = params.query.trim();
-				// lexical prefilter/sort key: token overlap over extract + tool + input
 				const tokens = query.toLowerCase().split(/\W+/).filter((t) => t.length > 2);
-				const scoreLexical = (l: LedgerItem): number => {
-					const hay = `${l.extract}\n${l.toolName}\n${l.inputShape}\n${l.links.join(" ")}`.toLowerCase();
+				const hayOf = (hays: string[]): number => {
+					const hay = hays.join("\n").toLowerCase();
 					return tokens.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
 				};
-				const items = [...ledger.values()];
-				// Jev rerank against the GoalSpec; lexical order is the fail-open fallback
+				type PoolEntry = { kind: "ledger"; item: LedgerItem } | { kind: "card"; item: RegistryItem };
+				const pool: PoolEntry[] = [
+					...ledgerItems.map((l): PoolEntry => ({ kind: "ledger", item: l })),
+					...cardItems.map((r): PoolEntry => ({ kind: "card", item: r })),
+				];
+				const scoreLexical = (p: PoolEntry): number =>
+					p.kind === "ledger"
+						? hayOf([p.item.extract, p.item.toolName, p.item.inputShape, p.item.links.join(" ")])
+						: hayOf([p.item.toolName, p.item.inputShape, p.item.path ?? "", p.item.links.join(" ")]);
+				// lexical prefilter bounds the Jev rerank state; lexical order is the fail-open fallback
+				const candidates = pool.slice().sort((a, b) => scoreLexical(b) - scoreLexical(a)).slice(0, 40);
+				const renderPool = (p: PoolEntry, i: number): string =>
+					p.kind === "ledger"
+						? `C${i + 1} [condensed ${p.item.sourceType}/${p.item.role}, turn ${p.item.turn}, ${p.item.chars} chars → ${p.item.extract.length}-char extract, tool ${p.item.toolName}]\n${p.item.extract.slice(0, 600)}`
+						: `C${i + 1} [${p.item.verdict === "cap" ? "capped" : "in context in full"} · ${p.item.role}, turn ${p.item.turn}, ${p.item.chars} chars, tool ${p.item.toolName}, ${p.item.path ?? p.item.inputShape.slice(0, 100)}]`;
 				const state = scrubSecrets(
-					`SESSION GOAL (GoalSpec):\n${goalspecSummary()}\n\nSEARCH QUERY: ${query}\n\nEVIDENCE LEDGER SOURCES:\n${items
-						.map((l, i) => `C${i + 1} [${l.sourceType}/${l.role}, turn ${l.turn}, ${l.chars} chars, tool ${l.toolName}]\n${l.extract.slice(0, 600)}`)
-						.join("\n\n")}`,
+					`SESSION GOAL (GoalSpec):\n${goalspecSummary()}\n\nSEARCH QUERY: ${query}\n\nSOURCES:\n${candidates.map(renderPool).join("\n\n")}`,
 				);
 				const questions: Record<string, unknown> = {};
-				items.forEach((_, i) => {
+				candidates.forEach((_, i) => {
 					questions[`C${i + 1}`] = {
 						type: "noul",
-					instructions: `Does ledger source C${i + 1} answer the search query? (1 = directly, 0 = not at all)`,
+						instructions: `Does source C${i + 1} answer the search query? (1 = directly, 0 = not at all)`,
 					};
 				});
-				let ranked: LedgerItem[];
+				let ranked: PoolEntry[];
 				const answers = await jevAsk(state, questions, SHADOW_JEV_TIMEOUT_MS);
 				if (answers) {
-						const scored = items.map((l, i) => ({ l, s: Number((answers[`C${i + 1}`] as { noul?: unknown } | undefined)?.noul ?? -1) }));
-						ranked = scored
-							.filter((x) => x.s >= 0.4)
-							.sort((a, b) => b.s - a.s || scoreLexical(b.l) - scoreLexical(a.l))
-							.map((x) => x.l);
-						if (ranked.length === 0) ranked = items.slice().sort((a, b) => scoreLexical(b) - scoreLexical(a));
+					const scored = candidates.map((p, i) => ({ p, s: Number((answers[`C${i + 1}`] as { noul?: unknown } | undefined)?.noul ?? -1) }));
+					ranked = scored
+						.filter((x) => x.s >= 0.4)
+						.sort((a, b) => b.s - a.s || scoreLexical(b.p) - scoreLexical(a.p))
+						.map((x) => x.p);
+					if (ranked.length === 0) ranked = candidates.slice().sort((a, b) => scoreLexical(b) - scoreLexical(a));
 				} else {
-						// Jev unavailable: pure lexical order
-					ranked = items.slice().sort((a, b) => scoreLexical(b) - scoreLexical(a));
+					// Jev unavailable: pure lexical order over the prefiltered pool
+					ranked = candidates.slice().sort((a, b) => scoreLexical(b) - scoreLexical(a));
 				}
-				const out = ranked.slice(0, limit).map((l, i) => {
-					const head = l.extract.length > 900 ? `${l.extract.slice(0, 900)}\n  [... extract continues — jev_recall "${l.entryId}" for raw ...]` : l.extract;
-					return `#${i + 1} [${l.sourceType} · ${l.role} · turn ${l.turn} · ${l.chars} chars condensed to ${l.extract.length}]\n${head}\nRaw paging: jev_recall entry_id "${l.entryId}" with offset/limit`;
+				const out = ranked.slice(0, limit).map((p, i) => {
+					if (p.kind === "ledger") {
+						const l = p.item;
+						const head = l.extract.length > 900 ? `${l.extract.slice(0, 900)}\n  [... extract continues — jev_recall "${l.entryId}" for raw ...]` : l.extract;
+						return `#${i + 1} [${l.sourceType} · ${l.role} · turn ${l.turn} · ${l.chars} chars condensed to ${l.extract.length}]\n${head}\nRaw paging: jev_recall entry_id "${l.entryId}" with offset/limit or lines "120-180"`;
+					}
+					const r = p.item;
+					const status = r.verdict === "cap" ? "capped: only head/tail in context" : "in context in full";
+					return `#${i + 1} [${r.verdict} · ${r.role} · turn ${r.turn} · ${r.chars} chars · ${r.toolName} · ${r.path ?? r.inputShape.slice(0, 100)}]\n${status} — raw paging: jev_recall entry_id "${r.entryId}" with offset/limit or lines "120-180"`;
 				});
 				logEvent("curator", CURATOR_LOG_FILE, {
 					action: "find",
 					query,
 					session: ctx.sessionManager.getSessionId(),
-					returned: ranked.slice(0, limit).map((l) => l.entryId),
+					returned: ranked.slice(0, limit).map((p) => p.item.entryId),
 					total: ranked.length,
 				});
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Evidence ledger search for "${query}" (${ranked.length} match${ranked.length === 1 ? "" : "es"}, showing ${Math.min(limit, out.length)}):\n\n${out.join("\n\n")}`,
+							text: `Curated-source search for "${query}" (${ranked.length} match${ranked.length === 1 ? "" : "es"}, showing ${Math.min(limit, out.length)}):\n\n${out.join("\n\n")}`,
 						},
 					],
 					details: undefined,
@@ -1977,13 +2565,18 @@ ${goalspecSummary()}` }],
 			const savedChars = curated.reduce((n, s) => n + Math.max(s.chars - s.replacementLen, 0), 0);
 			const byKind = { stub: 0, truncate: 0, cap: 0 };
 			for (const s of curated) byKind[s.kind]++;
+			const methods = [...methodStats.entries()]
+				.sort((a, b) => b[1].proposed - a[1].proposed)
+				.slice(0, 4)
+				.map(([m, s]) => `${m} ${s.approved}/${s.proposed}`)
+				.join(", ");
 			const shadow =
 				V3
-					? ` · shadow: classified=${shadowStats.classified} roles(a/e/b/i)=${shadowStats.roles.active}/${shadowStats.roles.evidence}/${
+					? ` · verifier=${CFG.verifierMode} · shadow: classified=${shadowStats.classified} roles(a/e/b/i)=${shadowStats.roles.active}/${shadowStats.roles.evidence}/${
 							shadowStats.roles.background
-						}/${shadowStats.roles.irrelevant} verdicts(R/U/X)=${shadowStats.retainFull}/${shadowStats.useExtract}/${shadowStats.indexOnly} degraded=${shadowStats.degraded} goalspec=v${
+						}/${shadowStats.roles.irrelevant} verdicts(R/U/X)=${shadowStats.retainFull}/${shadowStats.useExtract}/${shadowStats.indexOnly} repaired=${shadowStats.repaired} escalated=${shadowStats.escalated} ab-checked=${shadowStats.shadowAb} degraded=${shadowStats.degraded} regret=${condensedRecalls} goalspec=v${
 						spec?.version ?? 0
-					}`
+					}` + (methods ? ` · methods(approved/proposed): ${methods}` : "") + ` · registry=${registry.size} overflow=${overflowQueue.length}`
 				: "";
 			ctx.ui.notify(
 				`curator: ${CFG.on ? "on" : "off"} · mode=${MODE} · caps=${byKind.cap} truncs=${byKind.truncate} stubs=${byKind.stub} · ` +
