@@ -44,6 +44,7 @@ type StagedMeta = {
 	session: string;
 	stagedAt: string;
 	trigger: string;
+	tier?: "ready" | "near-miss";
 };
 
 type SessionEntry = {
@@ -115,7 +116,7 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"Propose AT MOST 2 edits. Prefer 0 or 1. Return {\"proposals\": []} if nothing clears this bar — single one-off events do NOT qualify.",
 		"",
 		"Each proposal has kind:",
-		'- "rule": a stream-triggered TTSR rule (format below). Choose ONLY when the anti-pattern has a precise trigger signature in agent output.',
+		'- "rule": a stream-triggered TTSR rule (format below). Choose ONLY when the anti-pattern has a precise trigger signature in agent output AND the trajectory shows the failure recurring 2+ times. Prefer astCondition (tool scope, mechanical patterns) over text regex — intent-level behavior has no reliable stream signature and belongs in a note.',
 		'- "note": a passive markdown note for observations with NO stream-matchable signature (environment facts, workflows, preferences). Content is plain markdown.',
 		"",
 		'For "rule", content MUST be the complete file including frontmatter. For "note", content is the markdown body.',
@@ -133,7 +134,8 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"</memory-lessons>",
 		"",
 		`Existing refine coverage (do NOT duplicate): rules: [${coverage.rules.join(", ") || "none"}]; notes: [${coverage.notes.join(", ") || "none"}]`,
-		"Reminder bodies of the existing rules/notes (overlap check — do NOT re-propose what these already enforce or record):",
+		"Existing notes are passive records, not enforcement. If the trajectory shows one of those lessons being violated AGAIN, propose its rule version — promotion is expected, not duplication (the rule still needs a precise trigger).",
+		"Reminder bodies of the existing rules/notes (overlap check — never re-propose what an existing RULE already enforces; note bodies double as promotion candidates):",
 		bodies
 			? [...bodies.rules.map((r) => `- rule ${r.name}: ${r.body}`), ...bodies.notes.map((n) => `- note ${n.name}: ${n.body}`)].join("\n") || "(none)"
 			: "(none)",
@@ -381,8 +383,11 @@ const clamp01 = (raw: string | undefined, fallback: number): number => {
 	const n = Number(raw ?? fallback);
 	return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
 };
-const AUTO_RULE_THRESHOLD = clamp01(process.env.REFINE_AUTO_RULE_THRESHOLD, 0.8);
 const AUTO_NOTE_THRESHOLD = clamp01(process.env.REFINE_AUTO_NOTE_THRESHOLD, 0.6);
+const AUTO_RULE_EVIDENCE_FLOOR = clamp01(process.env.REFINE_AUTO_RULE_EVIDENCE_FLOOR, 0.6);
+const AUTO_RULE_NOVELTY_FLOOR = clamp01(process.env.REFINE_AUTO_RULE_NOVELTY_FLOOR, 0.6);
+const AUTO_RULE_TRIGGER_FLOOR = clamp01(process.env.REFINE_AUTO_RULE_TRIGGER_FLOOR, 0.5);
+const AUTO_NEAR_MISS_FLOOR = clamp01(process.env.REFINE_AUTO_NEAR_MISS_FLOOR, 0.4);
 
 // Free pre-filter before the planner: user corrections and repeated identical
 // tool failures are the only signals worth spending a planning call on.
@@ -497,7 +502,7 @@ const buildJevQuestions = (proposals: Proposal[]): Record<string, unknown> => {
 	return questions;
 };
 
-// Weakest-link score: one weak answer blocks the proposal entirely.
+// Weakest-link score is recorded for the audit/calibration trail; rule gating is per-part floors.
 const scoreProposal = (p: Proposal, answers: JevAnswers | null, i: number): { score: number; parts: JevParts } | null => {
 	if (!answers) return null;
 	const evidence = answerNoul(answers, `p${i}_evidence`);
@@ -505,6 +510,14 @@ const scoreProposal = (p: Proposal, answers: JevAnswers | null, i: number): { sc
 	const redundant = answerNoul(answers, `p${i}_redundant`);
 	if (evidence === null || trigger === null || redundant === null) return null;
 	return { score: Math.min(evidence, trigger, 1 - redundant), parts: { evidence, trigger, novelty: 1 - redundant } };
+};
+
+// Two-band rule gate: trigger parts empirically cap below a 0.8 weakest-link bar, so
+// per-part floors stage "ready" drafts and a lower band stages near-misses for review.
+export const ruleTier = (parts: JevParts): "ready" | "near-miss" | null => {
+	if (parts.evidence >= AUTO_RULE_EVIDENCE_FLOOR && parts.novelty >= AUTO_RULE_NOVELTY_FLOOR && parts.trigger >= AUTO_RULE_TRIGGER_FLOOR) return "ready";
+	if (Math.min(parts.evidence, parts.novelty) >= AUTO_NEAR_MISS_FLOOR) return "near-miss";
+	return null;
 };
 
 const auditAuto = (entry: Record<string, unknown>): void => {
@@ -516,7 +529,7 @@ const auditAuto = (entry: Record<string, unknown>): void => {
 	}
 };
 
-const stageRule = (p: Proposal, v: { score: number; parts: JevParts }, session: string, trigger: string): boolean => {
+const stageRule = (p: Proposal, v: { score: number; parts: JevParts }, session: string, trigger: string, tier: "ready" | "near-miss"): boolean => {
 	mkdirSync(STAGING_DIR, { recursive: true });
 	const target = join(STAGING_DIR, `${p.name}.md`);
 	if (existsSync(target)) return false;
@@ -530,6 +543,7 @@ const stageRule = (p: Proposal, v: { score: number; parts: JevParts }, session: 
 		session,
 		stagedAt: new Date().toISOString(),
 		trigger,
+		tier,
 	};
 	writeFileSync(join(STAGING_DIR, `${p.name}.meta.json`), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
 	return true;
@@ -600,10 +614,11 @@ export default function (pi: ExtensionAPI) {
 				auditAuto({ session: sessionId, stage: "jev", kind: p.kind, name: p.name, decision: "suppressed", mode: "degraded", err: answers ? "malformed-answer" : "call-failed", latencyMs: latencyJev, trigger });
 				continue;
 			}
-			if (p.kind === "rule" && v.score >= AUTO_RULE_THRESHOLD) {
-				if (stageRule(p, v, sessionId, trigger)) {
-					applied.push(`rule "${p.name}" staged`);
-					auditAuto({ session: sessionId, stage: "apply", kind: "rule", name: p.name, score: v.score, parts: v.parts, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger });
+			const tier = p.kind === "rule" ? ruleTier(v.parts) : null;
+			if (p.kind === "rule" && tier) {
+				if (stageRule(p, v, sessionId, trigger, tier)) {
+					applied.push(`rule "${p.name}" staged (${tier})`);
+					auditAuto({ session: sessionId, stage: "apply", kind: "rule", name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger });
 				} else {
 					auditAuto({ session: sessionId, stage: "apply", kind: "rule", name: p.name, decision: "duplicate", trigger });
 				}
@@ -784,18 +799,19 @@ export default function (pi: ExtensionAPI) {
 				const proposal: Proposal = {
 					kind: "rule",
 					name,
-					title: meta?.title ?? name,
+					title: `${meta?.tier === "near-miss" ? "[near-miss] " : ""}${meta?.title ?? name}`,
 					evidence: meta?.evidence ?? "(staged by background auto-refine)",
 					content: (await readFile(stagedPath, "utf8")).trim(),
 				};
 				const apply = await showProposalUi(proposal, ctx);
 				if (!apply) {
-					auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "kept-staged", score: meta?.score ?? null, parts: meta?.parts ?? null });
+					auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "kept-staged", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
 					continue;
 				}
 				const target = join(RULES_DIR, `${name}.md`);
 				if (existsSync(target)) {
 					ctx.ui.notify(`Skipped "${name}" — ${target} already exists`, "warning");
+					auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "duplicate" });
 					continue;
 				}
 				mkdirSync(RULES_DIR, { recursive: true });
@@ -810,7 +826,7 @@ export default function (pi: ExtensionAPI) {
 					evidence: proposal.evidence,
 					source: "auto",
 				});
-				auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "armed", score: meta?.score ?? null, parts: meta?.parts ?? null });
+				auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "armed", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
 				ctx.ui.notify(`Armed "${name}" → ${target} — run /ttsr-reload to activate`, "info");
 			}
 		},
