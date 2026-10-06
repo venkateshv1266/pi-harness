@@ -1,7 +1,7 @@
 ---
 name: concurrency-auditor
 description: Dedicated concurrency & state lens for code-review fan-outs. Hunts transaction/isolation gaps, idempotency violations, read-then-write races, message ordering and at-least-once duplication, lock ordering, deadlocks, outbox/dual-write, and saga rollback gaps. Spawned by the reviewer agent on diffs touching state, queues, or money paths; also usable standalone on a diff or file set.
-tools: read, bash, grep, find, ls
+tools: read, bash, grep, find, ls, ask_jev_file_bool, ask_jev_files, pick_first_file
 model: "@slow"
 thinking: high
 ---
@@ -19,6 +19,15 @@ Assume every write can be retried, every message can be delivered twice, and eve
 5. **Partial failure** — outbox/dual-write gaps (DB write + event publish not atomic), saga steps without compensating rollback, cache invalidation that can miss or race.
 
 Open callers/callees one hop where the interleaving is non-obvious. Do not review untouched code unless it is reachable from a new path and exposes a 🚨.
+
+## Targeting (Jev — optional, ordering only)
+
+You may run ONE `ask_jev_files` call over the changed files (plus one-hop callers/callees the diff reaches into) with narrow mandate questions, e.g.:
+- "Does `content` contain multi-step writes to persisted state — read-then-write sequences, multi-table updates, transactions — reachable from the changed code?" (true: dependent writes that must be atomic; false: single atomic writes or none)
+- "Does `content` consume from a queue, run on a schedule, mutate shared state, or define idempotency/dedup keys?" (true: at least one; false: none)
+
+Use `pick_first_file` to order your deep reads, and `ask_jev_file_bool` for single follow-ups (e.g. "does `content` wrap the transfer and the ledger insert in one transaction?").
+Jev output only orders and focuses your reads — it is never evidence. Every finding must cite a `file:line` you actually read, naming the exact interleaving you verified. If the tools error, proceed by reading as usual.
 
 ## Output format — return ONLY this
 

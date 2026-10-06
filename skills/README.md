@@ -21,7 +21,7 @@ A project-scope directory for skills is not documented in this repo's docs (proj
 | `add-agent/` | `SKILL.md` | Creates a new pi-native subagent definition — an `.md` file in `~/.pi/agent/agents/` (user scope) or `.pi/agents/` (project scope) — with valid frontmatter and a task-appropriate model role, thinking level, and tool allowlist. | Asked to add, create, or define a new agent, subagent, or specialist. |
 | `add-mcp-server/` | `SKILL.md` | Adds an MCP server to pi by editing `~/.pi/agent/mcp.json` — local `stdio` or remote `http` endpoints, OAuth sign-in, exposure settings, cookie-gate auth-hook prefixes, verification. | Asked to add/configure/register a new MCP server in pi. |
 | `add-rule/` | `SKILL.md`, `scripts/validate-rule.js` | Authors a TTSR rule end to end: failure analysis, bucket decision tree, quality gates, trigger crafting, verify-gate adjudication, rule template, validation, rules-engine reload. | "Add a rule for X", "make a rule that the agent shouldn't do Y", "whenever I do Z, remind the agent to W". |
-| `code-review/` | `SKILL.md` | Reviews a PR, branch, or working diff by spawning one read-only `reviewer` subagent (persistent, resumable on failure) and relaying its consolidated review verbatim. | Asked to review a PR or diff. |
+| `code-review/` | `SKILL.md` | Reviews a PR, branch, or working diff by spawning one read-only `reviewer` subagent (persistent, resumable on failure; Jev-based triage of the changed files inside the reviewer) and relaying its consolidated review verbatim. | Asked to review a PR or diff. |
 
 ### add-agent
 
@@ -48,8 +48,8 @@ A project-scope directory for skills is not documented in this repo's docs (proj
 ### code-review
 
 - The only skill whose frontmatter also carries `version`, `created`, and `updated` fields.
-- Procedure: resolve the target (PR number/URL, branch, or the staged/unstaged working diff), spawn the `reviewer` as a **persistent** subagent (`delegate` single form, `mode: "persistent"`, named handle `reviewer`, `cwd` set to the repo, tools `read, bash, grep, find, ls, subagent`), collect via `subagent_wait`, then relay the review verbatim — no re-summarizing, re-ranking, or added findings.
-- Failure and retry contract: failures resume the retained `reviewer` session (`subagent_wait` auto-resumes an aborted run; `subagent_send` retries only a failed nested lens/validator in-session). Re-running the full review flow via a fresh spawn is the forbidden outcome — a fresh spawn is a last resort after 2 failed resume/steer attempts, and never a duplicate while a handle is live.
+- Procedure: resolve the target (PR number/URL, branch, or the staged/unstaged working diff), spawn the `reviewer` as a **persistent** subagent (`delegate` single form, `mode: "persistent"`, named handle `reviewer`, `cwd` set to the repo, tools matching the reviewer's frontmatter: `read, bash, grep, find, ls, subagent, ask_jev_files, ask_jev_file_bool, ask_jev_file_score, pick_first_file, triage_log` — a stale override strips the Jev tools and silently disables triage), collect via `subagent_wait`, then relay the review verbatim — no re-summarizing, re-ranking, or added findings.
+- Failure and retry contract: failures resume the retained `reviewer` session (`subagent_wait` auto-resumes an aborted run; `subagent_send` retries only a failed nested lens/validator in-session). Re-running the full review flow via a fresh spawn is the forbidden outcome — a fresh spawn is a last resort after 2 failed resume/steer attempts, and never a duplicate while a handle is live. Jev being unavailable (ask-jev tool errors) is not a failure — the reviewer degrades to heuristic routing per its own instructions and notes it in the opener.
 - Fixes go to a writer/task agent, never the reviewer (read-only by design). Not for stack-specific review workflows.
 
 ## Shipped files
