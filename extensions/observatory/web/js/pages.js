@@ -182,9 +182,9 @@ const HELP = {
 	routerOutcomes: {
 		title: "Outcome quality by tier",
 		what: "Verdicts tagged to routing decisions, grouped by the tier that was chosen. Volume per tier says nothing about value; this is the other half.",
-		formula: "good = verdict good or outcome tests_passed; bad = verdict bad or outcome user_corrected; precision = good ÷ (good + bad). Cases with no verdict are 'other'.",
+		formula: "good = verdict good or outcome tests_passed; bad = verdict bad, tests_failed or user_corrected; overridden = the routed model was replaced (model_override), which model-router itself classes as bad and which counts in precision's denominator; precision = good ÷ (good + bad + overridden). Unjudged decisions carry no verdict record at all; unclassified is a verdict this dashboard does not map.",
 		source: "~/.pi/agent/jev-decisions/model-router.jsonl outcome records, which carry the tier they judged.",
-		action: "A tier with bad verdicts is escalating when it should not — move the threshold. A tier that is all 'other' is unproven rather than proven good.",
+		action: "A tier with bad or overridden verdicts is escalating when it should not — move the threshold. Read precision as a sample, not a score: most decisions never get a verdict, so one correction moves it by several points.",
 	},
 	modelsUnit: {
 		title: "Model unit economics",
@@ -1226,11 +1226,10 @@ async function routerPage(view, ctx) {
 
 	const kpis = gridRegion((d) => [
 		kpi({ label: "Decisions", value: fmtInt(d.stats.total), sub: "keep / mid / deep / fast" }),
-		kpi({ label: "Router cost", value: fmtCost(d.stats.cost), sub: "logged per-call cost" }),
 		kpi({ label: "Latency p50", value: fmtMs(d.stats.latencyP50), sub: `p90 ${fmtMs(d.stats.latencyP90)}` }),
 		kpi({ label: "Outcomes logged", value: fmtInt(d.stats.outcomes.reduce((a, o) => a + o.count, 0)), sub: d.stats.outcomes.map((o) => `${o.label} ${o.count}`).join(" · ") || "—" }),
 	]);
-	const tiers = nodeRegion((d) => bars(d.stats.byTier.map((row) => ({ label: row.tier, value: row.count, tip: `${row.tier}: ${fmtInt(row.count)} · ${fmtCost(row.cost)} · p50 ${fmtMs(row.p50)}` })), { valueFmt: fmtInt }));
+	const tiers = nodeRegion((d) => bars(d.stats.byTier.map((row) => ({ label: row.tier, value: row.count, tip: `${row.tier}: ${fmtInt(row.count)} decisions · p50 ${fmtMs(row.p50)} · p90 ${fmtMs(row.p90)}` })), { valueFmt: fmtInt }));
 	const pHist = htmlRegion((d) => histogram({ bins: d.stats.pHist, height: 132 }));
 	const decisions = table({
 		columns: [
@@ -1249,23 +1248,27 @@ async function routerPage(view, ctx) {
 	});
 
 	const tierOutcomes = nodeRegion((d) => {
-		const rows = (d.stats.outcomesByTier ?? []).filter((row) => row.judged > 0 || row.other > 0);
-		if (!rows.length) return emptyState("No outcome verdicts tagged in this range — these tiers are unproven, not proven good.");
+		const rows = d.stats.outcomesByTier ?? [];
+		if (!rows.length) return emptyState("No routing decisions in this range.");
 		return table({
 			columns: [
 				{ label: "Tier", render: (row) => pill(row.tier, row.tier === "deep" ? "accent" : "neutral") },
 				{ label: "Good", right: true, render: (row) => countPill(row.good, "ok") },
 				{ label: "Bad", right: true, render: (row) => countPill(row.bad, "error") },
-				{ label: "Other", right: true, render: (row) => fmtInt(row.other) },
+				{ label: "Overridden", right: true, render: (row) => countPill(row.override, "warn") },
+				{ label: "Unjudged", right: true, render: (row) => countPill(row.unjudged, "neutral") },
+				{ label: "Unclassified", right: true, render: (row) => countPill(row.other, "neutral") },
 				{ label: "Precision", right: true, render: (row) => (row.precision == null ? h("span", { class: "faint" }, "no verdicts") : pill(`${Math.round(row.precision * 100)}%`, qualityTone(row.precision))) },
 			],
 			rows: rows.map((row) => ({ ...row, key: row.tier })),
 		});
 	});
+	const outcomesCard = card({ title: "Outcome quality by tier", sub: "verdicts tagged to decisions", body: tierOutcomes.node, help: HELP.routerOutcomes });
+	const outcomesSub = outcomesCard.querySelector(".cardhead .sub");
 	view.append(
 		kpis.node,
 		h("div", { class: "split" }, card({ title: "Tier mix", sub: "which tier each decision picked", body: tiers.node }), card({ title: "Route probability", sub: "p distribution (decides tier escalation)", body: pHist.node })),
-		card({ title: "Outcome quality by tier", sub: "verdicts tagged to decisions — volume per tier says nothing about value", body: tierOutcomes.node, help: HELP.routerOutcomes }),
+		outcomesCard,
 		card({ title: "Decisions", sub: "newest first · click for the raw record", flush: true, body: decisions }),
 	);
 	const render = (d) => {
@@ -1273,6 +1276,10 @@ async function routerPage(view, ctx) {
 		tiers.render(d);
 		pHist.render(d);
 		tierOutcomes.render(d);
+		const coverage = d.stats.outcomeCoverage;
+		if (coverage) {
+			outcomesSub.textContent = `verdicts tagged to decisions — ${fmtInt(coverage.judged)} of ${fmtInt(coverage.total)} judged (${Math.round((coverage.judged / Math.max(1, coverage.total)) * 100)}%)`;
+		}
 		decisions.patch(d.decisions);
 		ctx.setStatus(`${RANGE_LABEL[state.range]} · ${fmtInt(d.stats.total)} router decisions`);
 	};
