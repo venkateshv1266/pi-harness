@@ -21,7 +21,7 @@ Nothing in the auto loop writes ungated: rules are never armed automatically, ev
 | `/refine-review [discard]` | Reviews rules staged by the auto loop. Each staged rule is shown in the same overlay: Enter arms it (moves it into the live rules directory), Esc keeps it staged. With the `discard` argument, a selected staged rule and its metadata are deleted instead. |
 | `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (`rule` \| `note`), `name` (kebab-case slug), `title`, `evidence`, `content`. Rule content must be a complete TTSR rule file including frontmatter with a `condition` or `astCondition`; note content is plain markdown. The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
 
-Manual applies land rules in `~/.pi/agent/rules/<name>.md` and notes in `~/.pi/agent/refine/notes/<name>.md`. An existing file is never overwritten — a duplicate name is skipped with a warning.
+Manual applies land rules in `~/.pi/agent/rules/<name>.md` and notes in `~/.pi/agent/jev-decisions/refine/notes/<name>.md`. An existing file is never overwritten — a duplicate name is skipped with a warning.
 
 ## Configuration
 
@@ -42,10 +42,10 @@ All environment variables, with defaults read from code:
 
 ## State
 
-- `~/.pi/agent/refine/notes/` — applied notes (passive markdown).
-- `~/.pi/agent/refine/rules-staging/` — auto-proposed rules awaiting review: `<name>.md` plus `<name>.meta.json` (title, evidence, score, score parts, session id, staged timestamp, trigger).
-- `~/.pi/agent/refine/history.jsonl` — every apply/arm: id, timestamp, kind, name, path, evidence, source (`manual`/`auto`), optional `focus`, and `rolledBack` after a rollback.
-- `~/.pi/agent/refine/auto-refine.jsonl` — audit log of every auto-loop decision: stage (`plan`/`jev`/`apply`/`review`), decision (`skipped`/`degraded`/`no-proposals`/`suppressed`/`staged`/`applied`/`duplicate`/`kept-staged`/`armed`/`discarded`/`error`), score and parts, latency, trigger, and error text.
+- `~/.pi/agent/jev-decisions/refine/notes/` — applied notes (passive markdown).
+- `~/.pi/agent/jev-decisions/refine/rules-staging/` — auto-proposed rules awaiting review: `<name>.md` plus `<name>.meta.json` (title, evidence, score, score parts, session id, staged timestamp, trigger).
+- `~/.pi/agent/jev-decisions/refine/history.jsonl` — every apply/arm: id, timestamp, kind, name, path, evidence, source (`manual`/`auto`), optional `focus`, and `rolledBack` after a rollback.
+- `~/.pi/agent/jev-decisions/refine/auto-refine.jsonl` — audit log of every auto-loop decision: stage (`plan`/`jev`/`apply`/`review`), decision (`skipped`/`degraded`/`no-proposals`/`suppressed`/`staged`/`applied`/`duplicate`/`kept-staged`/`armed`/`discarded`/`error`), score and parts, latency, trigger, and error text.
 - Live rules live in `~/.pi/agent/rules/` (owned by [ttsr](../ttsr/README.md)); refine only adds files there via manual approval or an armed staged rule.
 
 ## How it works
