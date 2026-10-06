@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pi Harness Observatory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%236c6cf0' stroke-width='4'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%236c6cf0'/%3E%3C/svg%3E" />
+<script>
+	// Set the theme before first paint to avoid a flash.
+	try {
+		const saved = localStorage.getItem("observatory-theme");
+		const system = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+		document.documentElement.dataset.theme = saved || system;
+	} catch (err) {
+		document.documentElement.dataset.theme = "dark";
+	}
+</script>
+<link rel="stylesheet" href="/style.css?v=28" />
+</head>
+<body>
+<aside id="nav" class="nav" aria-label="Sections"></aside>
+<div class="shell">
+	<header id="topbar" class="topbar"></header>
+	<main id="view" class="view"><div class="skeleton"><div class="skel-row" style="width:38%"></div><div class="skel-row" style="width:64%"></div><div class="skel-row" style="width:52%"></div><div class="skel-row" style="width:70%"></div></div></main>
+</div>
+<div id="tooltip" class="tooltip" hidden></div>
+<div id="overlay" class="overlay" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="/js/app.js?v=28"></script>
+</body>
+</html>
