@@ -49,6 +49,14 @@ agent actually read. A low-confidence or failed Jev answer defaults to the
 more careful path; on ask-jev tool errors the reviewer degrades to heuristic
 routing and says so in the opener.
 
+## Fan-out failure handling
+
+Lens failures follow a strict retry contract: only the failed or missing lenses
+are re-spawned (same mandate), a leaf that fails twice is run by the reviewer
+itself, and a failed validator is retried alone with the same findings list.
+Completed lens results are never re-run; a deliberate second pass (e.g. over a
+force-pushed head) starts fresh by design.
+
 Project-local agents live in `.pi/agents/<name>.md` and override same-named
 user agents when the tool is invoked with `agentScope: "both"` (or `"project"`).
 Default scope is `"user"`.
