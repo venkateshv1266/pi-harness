@@ -3,7 +3,7 @@
 // regions whose data changed — no page rebuilds, no scroll jumps.
 import { api, post, h, clear, fmtCompact, fmtCost, fmtInt, fmtPct, fmtMs, fmtClock, fmtDateTime, timeAgo, toneForSeverity, toneForVerdict, openDrawer, toast, seriesColor, debounce } from "./util.js";
 import { areaChart, spark, histogram, sankey } from "./charts.js";
-import { card, kpi, meter, pill, chip, qualityTone, table, bars, banner, emptyState, lanes, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
+import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, banner, emptyState, lanes, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
 
 export const state = {
 	range: localStorage.getItem("observatory-range") || "7d",
@@ -277,6 +277,54 @@ const LEVERS = [
 
 // ------------------------------------------------------------------ small helpers
 
+/**
+ * A finding, rendered identically wherever it appears: one row in a single
+ * column, so a long list keeps one left edge to scan down. Severity is a left
+ * stripe and a dot rather than a tinted box, the impact figure sits right-aligned
+ * instead of competing with the title, and the evidence is folded into a
+ * disclosure because it is the noisiest part of a finding and the least
+ * actionable. Rows without a field simply skip it, which lets the Session view
+ * reuse this for its short improvement hints.
+ */
+function findingItem(finding) {
+	const tone = finding.tone === "error" ? "error" : finding.tone === "warn" ? "warn" : finding.tone === "ok" ? "ok" : "info";
+	return h(
+		"article",
+		{ class: `finding ${tone}`, key: String(finding.id ?? finding.label ?? finding.title) },
+		h(
+			"header",
+			{ class: "finding-top" },
+			h("span", { class: `dot ${tone}` }),
+			h("h3", {}, finding.title ?? finding.label),
+			finding.isNew === true
+				? h("span", { class: "finding-flag is-new", "data-tip": "did not fire in the previous window" }, "new")
+				: finding.persistent === true
+					? h("span", { class: "finding-flag is-recurring", "data-tip": "also fired in the previous window" }, "recurring")
+					: null,
+			finding.impact ? h("span", { class: "finding-impact", "data-tip": "the size of the prize, where it can be measured" }, finding.impact) : null,
+		),
+		finding.trigger ? h("p", { class: "finding-rule" }, finding.trigger) : null,
+		finding.summary || finding.detail ? h("p", { class: "finding-why" }, finding.summary ?? finding.detail) : null,
+		finding.evidence?.length
+			? h(
+					"details",
+					{ class: "finding-evidence" },
+					h("summary", {}, `evidence · ${finding.evidence.length}`),
+					h("ul", { class: "evidence" }, ...finding.evidence.map((line) => h("li", {}, line))),
+				)
+			: null,
+		finding.action || finding.links?.length
+			? h(
+					"p",
+					{ class: "finding-fix" },
+					finding.action ? h("span", { class: "arrow" }, "→") : null,
+					finding.action ? h("span", {}, finding.action) : null,
+					...(finding.links ?? []).map((link) => h("a", { class: "finding-link", href: link.hash }, link.label)),
+				)
+			: null,
+	);
+}
+
 function shortModel(model) {
 	if (!model) return "—";
 	const parts = String(model).split("/");
@@ -401,25 +449,7 @@ async function overview(view, ctx) {
 	const topFindings = nodeRegion((d) => {
 		const list = (d.findings ?? []).slice(0, 3);
 		if (!list.length) return emptyState("No findings in this range — nothing to fix.");
-		return h(
-			"div",
-			{ class: "grid" },
-			...list.map((finding) =>
-				h(
-					"div",
-					{ class: `card finding ${finding.tone}`, key: finding.id },
-					h(
-						"div",
-						{ class: "finding-head" },
-						h("span", { class: `dot ${finding.tone}` }),
-						h("h3", {}, finding.title),
-						finding.impact ? h("span", { class: "pill accent" }, finding.impact) : null,
-						finding.isNew === true ? h("span", { class: "pill info" }, "new") : finding.persistent === true ? h("span", { class: "pill neutral" }, "recurring") : null,
-					),
-					h("div", { class: "cardbody" }, h("p", { class: "finding-summary" }, finding.summary), h("div", { class: "finding-action" }, h("span", { class: "arrow" }, "→"), h("span", {}, finding.action))),
-				),
-			),
-		);
+		return h("div", { class: "findings" }, ...list.map((finding) => findingItem(finding)));
 	});
 
 	const kpis = gridRegion((d) => {
@@ -659,44 +689,9 @@ async function impactPage(view, ctx) {
 	const findingsRegion = nodeRegion((d) => {
 		const list = d.findings ?? [];
 		if (!list.length) {
-			return h(
-				"div",
-				{ class: "grid cols-2" },
-				h(
-					"div",
-					{ class: "card finding ok" },
-					h("div", { class: "finding-head" }, h("span", { class: "dot ok" }), h("h3", {}, "No issues detected")),
-					h("div", { class: "cardbody" }, h("p", { class: "finding-summary" }, "Nothing in this range crossed a diagnostic threshold. These checks re-run on every refresh.")),
-				),
-			);
+			return card({ flush: true, body: h("p", { class: "findings-empty" }, "Nothing in this range crossed a diagnostic threshold. These checks re-run on every refresh.") });
 		}
-		return h(
-			"div",
-			{ class: "grid cols-2" },
-			...list.map((finding) =>
-				h(
-					"div",
-					{ class: `card finding ${finding.tone}` },
-					h(
-						"div",
-						{ class: "finding-head" },
-						h("span", { class: `dot ${finding.tone === "ok" ? "ok" : finding.tone === "error" ? "error" : finding.tone === "warn" ? "warn" : "info"}` }),
-						h("h3", {}, finding.title),
-						finding.impact ? h("span", { class: "pill accent" }, finding.impact) : null,
-						finding.isNew === true ? h("span", { class: "pill info" }, "new") : finding.persistent === true ? h("span", { class: "pill neutral" }, "recurring") : null,
-					),
-					h(
-						"div",
-						{ class: "cardbody" },
-						h("p", { class: "finding-summary" }, finding.summary),
-						finding.trigger ? h("p", { class: "finding-trigger" }, finding.trigger) : null,
-						finding.evidence?.length ? h("ul", { class: "evidence" }, ...finding.evidence.map((line) => h("li", {}, line))) : null,
-						h("div", { class: "finding-action" }, h("span", { class: "arrow" }, "→"), h("span", {}, finding.action)),
-						finding.links?.length ? h("div", { class: "chiprow", style: { marginTop: "10px" } }, ...finding.links.map((link) => h("a", { class: "chip", href: link.hash }, link.label))) : null,
-					),
-				),
-			),
-		);
+		return h("div", { class: "findings" }, ...list.map((finding) => findingItem(finding)));
 	});
 	const leversTable = table({
 		columns: [
@@ -852,8 +847,8 @@ async function impactPage(view, ctx) {
 		columns: [
 			{ label: "Rule", render: (row) => h("span", { class: "rowtitle" }, row.rule) },
 			{ label: "Fired", right: true, render: (row) => fmtInt(row.fired) },
-			{ label: "Good", right: true, render: (row) => (row.good ? pill(String(row.good), "ok") : "0") },
-			{ label: "Bad", right: true, render: (row) => (row.bad ? pill(String(row.bad), "error") : "0") },
+			{ label: "Good", right: true, render: (row) => countPill(row.good, "ok") },
+			{ label: "Bad", right: true, render: (row) => countPill(row.bad, "error") },
 			{
 				label: "Precision",
 				right: true,
@@ -938,7 +933,7 @@ async function impactPage(view, ctx) {
 			kv([
 				["Memory admissions", fmtInt(d.memory.admissions)],
 				["Memory rejected", fmtInt(d.memory.rejected)],
-				["Memory degraded", d.memory.degraded ? pill(String(d.memory.degraded), "warn") : "0"],
+				["Memory degraded", countPill(d.memory.degraded, "warn")],
 				["Consolidations", fmtInt(d.memory.consolidations)],
 				["Blended input rate", d.rates.blendedInputPerToken != null ? `${fmtCost(d.rates.blendedInputPerToken * 1_000_000)}/M` : "—"],
 				["Priced coverage", d.rates.pricedCoverage != null ? fmtPct(d.rates.pricedCoverage, 1) : "—"],
@@ -1185,7 +1180,7 @@ async function models(view, ctx) {
 				width: "96px",
 				render: (row) => h("div", { style: { width: "84px" }, "data-tip": `daily cost across ${(row.trend ?? []).length} day(s)` }, h("span", { html: (row.trend ?? []).length ? spark(row.trend, { height: 20 }) : "" })),
 			},
-			{ label: "Errors", right: true, width: "62px", render: (row) => (row.errors ? pill(String(row.errors), "warn") : "0") },
+			{ label: "Errors", right: true, width: "62px", render: (row) => countPill(row.errors, "warn") },
 			{ label: "Cost", right: true, width: "72px", render: (row) => fmtCost(row.cost) },
 			{ label: "Last used", right: true, width: "78px", render: (row) => timeAgo(row.lastTs) },
 		],
@@ -1259,8 +1254,8 @@ async function routerPage(view, ctx) {
 		return table({
 			columns: [
 				{ label: "Tier", render: (row) => pill(row.tier, row.tier === "deep" ? "accent" : "neutral") },
-				{ label: "Good", right: true, render: (row) => (row.good ? pill(String(row.good), "ok") : "0") },
-				{ label: "Bad", right: true, render: (row) => (row.bad ? pill(String(row.bad), "error") : "0") },
+				{ label: "Good", right: true, render: (row) => countPill(row.good, "ok") },
+				{ label: "Bad", right: true, render: (row) => countPill(row.bad, "error") },
 				{ label: "Other", right: true, render: (row) => fmtInt(row.other) },
 				{ label: "Precision", right: true, render: (row) => (row.precision == null ? h("span", { class: "faint" }, "no verdicts") : pill(`${Math.round(row.precision * 100)}%`, qualityTone(row.precision))) },
 			],
@@ -1425,8 +1420,8 @@ async function ledgerPage(view, ctx) {
 						{ label: "Rule", render: (row) => h("span", { class: "rowtitle" }, row.rule) },
 						{ label: "Fired", right: true, render: (row) => fmtInt(row.fired) },
 						{ label: "Suppressed", right: true, render: (row) => fmtInt(row.suppressed) },
-						{ label: "Good", right: true, render: (row) => (row.good ? pill(String(row.good), "ok") : "0") },
-						{ label: "Bad", right: true, render: (row) => (row.bad ? pill(String(row.bad), "error") : "0") },
+						{ label: "Good", right: true, render: (row) => countPill(row.good, "ok") },
+						{ label: "Bad", right: true, render: (row) => countPill(row.bad, "error") },
 						{ label: "Blocks", right: true, render: (row) => fmtInt(row.blocked) },
 					],
 					rows: latestStats.ttsrRules,
@@ -1808,20 +1803,7 @@ async function sessionPage(view, ctx) {
 			meter({ label: "Off-track verdicts", value: null, display: fmtInt(q.offTrack), tone: q.offTrack === 0 ? "ok" : "warn", detail: "goal drift the loop caught" }),
 		);
 	});
-	const impactFindings = nodeRegion((si) =>
-		h(
-			"div",
-			{ class: "grid cols-2" },
-			...(si.findings ?? []).map((finding, index) =>
-				h(
-					"div",
-					{ class: `card finding ${finding.tone}`, key: `${index}|${finding.label}` },
-					h("div", { class: "finding-head" }, h("span", { class: `dot ${finding.tone}` }), h("h3", {}, finding.label)),
-					h("div", { class: "cardbody" }, h("p", { class: "finding-summary" }, finding.detail)),
-				),
-			),
-		),
-	);
+	const impactFindings = nodeRegion((si) => h("div", { class: "findings" }, ...(si.findings ?? []).map((finding) => findingItem(finding))));
 	const impactItems = table({
 		columns: [
 			{ label: "Tool", render: (row) => h("span", { class: "mono" }, row.tool) },
@@ -2004,7 +1986,17 @@ async function extensionsPage(view, ctx) {
 		columns: [
 			{ label: "Adapter", render: (row) => h("span", { class: "rowtitle" }, row.title) },
 			{ label: "Id", render: (row) => h("span", { class: "mono" }, row.id) },
-			{ label: "Log", render: (row) => h("span", { class: "mono faint" }, row.file ?? "—") },
+			{
+				label: "Log",
+				render: (row) => {
+					// Show the resolved path, not the declared name: `refine/auto-refine.jsonl`
+					// alone reads like the pre-move location it is not.
+					const shown = row.resolved ?? row.file;
+					if (!shown) return h("span", { class: "mono faint" }, "—");
+					if (!row.file || row.file === shown) return h("span", { class: "mono faint" }, shown);
+					return h("span", { class: "mono faint", "data-tip": `declared as ${row.file} — resolved against ~/.pi/agent/jev-decisions` }, shown);
+				},
+			},
 			{ label: "Status", render: (row) => (row.exists ? pill("reading", "ok") : pill("missing", "warn")) },
 			{ label: "Panels", render: (row) => h("span", { class: "small muted" }, (row.panels ?? []).map((p) => p.kind).join(", ")) },
 		],
@@ -2063,8 +2055,8 @@ async function healthPage(view, ctx) {
 		columns: [
 			{ label: "System", render: (row) => h("span", { class: "rowtitle" }, row.system) },
 			{ label: "Events", right: true, render: (row) => fmtInt(row.count) },
-			{ label: "Warn", right: true, render: (row) => (row.warn ? pill(String(row.warn), "warn") : "0") },
-			{ label: "Error", right: true, render: (row) => (row.error ? pill(String(row.error), "error") : "0") },
+			{ label: "Warn", right: true, render: (row) => countPill(row.warn, "warn") },
+			{ label: "Error", right: true, render: (row) => countPill(row.error, "error") },
 			{ label: "Last", right: true, render: (row) => timeAgo(row.lastTs) },
 		],
 		rows: data.bySystem,
@@ -2361,7 +2353,6 @@ async function tunerPage(view, ctx) {
 		kpi({ label: "Open", value: fmtInt(d.statusCounts.open ?? 0), sub: "awaiting your review", valueClass: (d.statusCounts.open ?? 0) > 0 ? "bad" : "good" }),
 		kpi({ label: "Dismissed", value: fmtInt(d.statusCounts.dismissed ?? 0), sub: "reviewed and rejected" }),
 	]);
-	const rulePath = (target) => `~/.pi/agent/rules/${target}.md`;
 	const proposals = table({
 		columns: [
 			{ label: "Kind", render: (row) => pill(row.kind, row.kind === "prune" ? "warn" : "info") },
@@ -2373,12 +2364,35 @@ async function tunerPage(view, ctx) {
 			{
 				label: "",
 				width: "78px",
-				render: (row) =>
-					h(
-						"button",
-						{ class: "btn", onclick: () => void openFileDrawer(row.file ?? rulePath(row.target), row.target) },
-						"View",
-					),
+				render: (row) => {
+					// Never offer a click that can 404: an unresolvable proposal says why.
+					if (!row.file || row.fileExists === false) {
+						const missing = row.file ? String(row.file).split("/").pop() : null;
+						return h(
+							"span",
+							{
+								class: "small faint nowrap",
+								"data-tip": missing
+									? `recorded at ${missing} — not on disk`
+									: row.kind === "config"
+										? "a config proposal changes a setting and records no target file"
+										: "no file recorded for this proposal",
+							},
+							"no file",
+						);
+					}
+					// A pruned rule is renamed out of the way rather than deleted, so say which
+					// copy is being opened instead of pretending it is the original.
+					const variant =
+						row.fileKind === "record"
+							? { label: "Log", title: `${row.target} — proposal record`, tip: "opens the proposal log this is recorded in" }
+							: row.fileKind === "disabled"
+								? { label: "View", title: `${row.target} — disabled copy`, tip: "the rule was pruned; opens the renamed .disabled file" }
+								: row.fileKind === "dismissed"
+									? { label: "View", title: `${row.target} — dismissed copy`, tip: "opens the renamed .dismissed copy" }
+									: { label: "View", title: row.target, tip: "opens the target file" };
+					return h("button", { class: "btn", "data-tip": variant.tip, onclick: () => void openFileDrawer(row.file, variant.title) }, variant.label);
+				},
 			},
 		],
 		rows: [],

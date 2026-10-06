@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { agentDir, extensionsDir, refineDir, rulesDir, tunerDir } from "./config";
+import { resolveProposalFile } from "./proposal-file";
 import { loadAdapters, type Adapter } from "./adapters/registry";
 import { adapterFilePath } from "./adapters/define";
 import { log } from "./log";
@@ -623,6 +624,13 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 		},
 		rates: { blendedInputPerToken: blendedInputRate, blendedCachePerToken: blendedCacheRate, cacheHitRate, effectivePerToken: effectiveRate, pricedCoverage: totalInputTokens > 0 ? pricedInputTokens / totalInputTokens : null },
 	};
+}
+
+/** Display form for a resolved log path: absolute, with the home dir shortened. */
+function displayPath(file: string | null): string | null {
+	if (file == null) return null;
+	const home = homedir();
+	return file.startsWith(home) ? `~${file.slice(home.length)}` : file;
 }
 
 // ------------------------------------------------------------------ findings
@@ -2094,6 +2102,7 @@ export async function extensionsInventory(db: Database): Promise<{ extensions: E
 			title: adapter.title,
 			description: adapter.description,
 			file: adapter.file,
+			resolved: displayPath(adapterFilePath(adapter)),
 			panels: adapter.panels,
 			exists: adapterFilePath(adapter) ? existsSync(adapterFilePath(adapter) as string) : true,
 		})),
@@ -2261,6 +2270,7 @@ export async function status(db: Database, runtime: { port: number; host: string
 			id: adapter.id,
 			title: adapter.title,
 			file: adapter.file,
+			resolved: displayPath(adapterFilePath(adapter)),
 			exists: adapterFilePath(adapter) ? existsSync(adapterFilePath(adapter) as string) : true,
 		})),
 	};
@@ -3078,11 +3088,14 @@ export function tunerOverview(db: Database, range: Range) {
 				target: typeof data.target === "string" ? data.target : null,
 			};
 		});
+	const proposalLog = path.join(tunerDir(), "proposals.jsonl");
 	const proposalRows = db
 		.query<{ ts: string; data: string }, [number, number]>("SELECT ts, data FROM events WHERE system = 'tuner-proposals' AND ts_ms BETWEEN ? AND ? ORDER BY ts_ms DESC LIMIT 200")
 		.all(range.from, range.to)
 		.map((row) => {
 			const data = parseData(row);
+			const recordedFile = typeof data.file === "string" ? data.file : null;
+			const where = resolveProposalFile(recordedFile, typeof data.kind === "string" ? data.kind : null, proposalLog);
 			return {
 				id: typeof data.id === "string" ? data.id : row.ts,
 				ts: row.ts,
@@ -3093,7 +3106,9 @@ export function tunerOverview(db: Database, range: Range) {
 				status: typeof data.status === "string" ? data.status : "open",
 				createdAt: typeof data.createdAt === "string" ? data.createdAt : null,
 				decidedAt: typeof data.decidedAt === "string" ? data.decidedAt : null,
-				file: typeof data.file === "string" ? data.file : null,
+				file: where.file,
+				fileKind: where.fileKind,
+				fileExists: where.fileExists,
 			};
 		});
 	const statusCounts: Record<string, number> = {};
