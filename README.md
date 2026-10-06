@@ -1,7 +1,7 @@
 # pi-harness
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup:
-30 extensions, 9 subagent definitions, 21 generic TTSR rules, 4 skills, and
+32 extensions, 9 subagent definitions, 21 generic TTSR rules, 4 skills, and
 3 themes. Clone this repo and run `./install.sh` to get the same setup.
 
 This README is the index. Each component documents itself next to its code —
@@ -37,12 +37,12 @@ To uninstall an extension, delete its file (or directory) from
 
 | Path | What it is | Docs |
 |---|---|---|
-| `extensions/` | 30 pi extensions — delegation, models, context/memory, supervision, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
+| `extensions/` | 32 pi extensions — delegation, models, judgment/guardrails, context/memory, supervision, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
 | `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
 | `rules/` | 21 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
 | `skills/` | 4 skills: add-rule, add-agent, add-mcp-server, code-review | [`skills/README.md`](skills/README.md) |
 | `themes/` | 3 custom pi themes | [`themes/README.md`](themes/README.md) |
-| `utils/` | Shared helpers (decision contract, role resolution, Jev ask) + the omp-stats dashboard | [`utils/README.md`](utils/README.md) |
+| `utils/` | Shared helpers (decision contract, role resolution, Jev client + ask CLI) + the omp-stats dashboard | [`utils/README.md`](utils/README.md) |
 | `scripts/` + `bin/` | YubiKey Git notification wrappers + installer, settings migration | [`scripts/README.md`](scripts/README.md) |
 | `docs/` | Extension README template and postmortems | [`docs/README.md`](docs/README.md) |
 
@@ -53,6 +53,9 @@ Common entry points:
 - **Delegation** — [delegate](extensions/delegate/README.md) with the
   [one-shot engine](extensions/subagent/README.md) and
   [persistent engine](extensions/persistent-subagent/README.md)
+- **Judgment and guardrails** — [ask-jev](extensions/ask-jev/README.md) (Jev
+  tools: cheap file judgments, log triage, assumption validation),
+  [jev-guard](extensions/jev-guard/README.md) (bash command gate + injection screen)
 - **Memory and context** — [jev-memory](extensions/jev-memory/README.md),
   [jev-context-curator](extensions/jev-context-curator/README.md),
   [ttsr](extensions/ttsr/README.md), [recite](extensions/recite/README.md),

@@ -9,4 +9,4 @@ repeat: once
 
 # Prefilter large kubectl logs with Jev
 
-For an unbounded log dump, keep the existing Kubernetes pre-flight, save the raw output to a temporary file, then call `mcp__jev__jev_triage_log` with that file and a focused investigation question before reading the evidence. Jev only narrows and classifies the log; inspect its returned evidence and do the root-cause analysis yourself. A bounded `--tail` or file-redirection command should proceed without this interruption.
+For an unbounded log dump, keep the existing Kubernetes pre-flight, save the raw output to a temporary file, then call the `triage_log` tool (ask-jev extension) with that file and a focused investigation question before reading the evidence. Jev only narrows and classifies the log; inspect its returned evidence and do the root-cause analysis yourself. A bounded `--tail` or file-redirection command should proceed without this interruption.
