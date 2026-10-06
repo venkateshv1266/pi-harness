@@ -11,7 +11,7 @@ markdown file named `<name>.md`.
 ├── research.md             # thorough investigation, returns a structured briefing (@smol)
 ├── writer.md               # code execution layer (@smol)
 ├── verifier.md             # quality gate verification (@slow)
-├── reviewer.md             # backend code review orchestrator (@slow) — fans out to lens agents below
+├── reviewer.md             # backend code review orchestrator (@slow) — Jev-triages the diff, fans out to lens agents below
 ├── security-auditor.md     # dedicated security lens for reviewer fan-outs (@slow, high)
 ├── concurrency-auditor.md  # dedicated concurrency/state lens for reviewer fan-outs (@slow, high)
 ├── review-validator.md     # fact-checker for review findings — CONFIRM/DOWNGRADE/REFUTE (@slow, xhigh)
@@ -21,6 +21,33 @@ markdown file named `<name>.md`.
 The three dedicated lens/validator agents are read-only (no `subagent` tool)
 and are spawned by `reviewer` as depth-2 leaves; they also work standalone for
 a single-lens pass on a diff.
+
+## Jev in the review stack
+
+The review agents use the ask-jev tools (`ask_jev_files`, `ask_jev_file_bool`,
+`pick_first_file`, `triage_log` — see
+[`../extensions/ask-jev/README.md`](../extensions/ask-jev/README.md)) as a cheap
+routing layer between diff gathering and the expensive lens/validator passes:
+
+- `reviewer` runs one `ask_jev_files` triage over the changed files — entry
+  points, state writes, authz surface, irreversible external effects, per-file
+  risk score — and uses the risk map to pick lenses, build each lens's
+  deep-read priority list, name hot spots in the opener, and order the
+  validator's findings list. Failing CI logs go through `triage_log` first.
+- `security-auditor` and `concurrency-auditor` may run one targeting call to
+  rank which changed files (and one-hop callers) deserve their deep reads
+  first.
+- `review-validator` may ask one-hop behavioral questions (e.g. "does the
+  caller validate this before passing it in?") to decide how much surrounding
+  code to read before ruling; pure existence checks stay grep-based.
+
+The invariant that makes this safe (from a 59-verdict A/B test of Jev as a
+sole verifier): **Jev answers only add scrutiny.** They order reads and
+trigger lenses; they never skip a lens, never produce a verdict, and never
+back a finding. Every finding and every verdict must cite a `file:line` the
+agent actually read. A low-confidence or failed Jev answer defaults to the
+more careful path; on ask-jev tool errors the reviewer degrades to heuristic
+routing and says so in the opener.
 
 Project-local agents live in `.pi/agents/<name>.md` and override same-named
 user agents when the tool is invoked with `agentScope: "both"` (or `"project"`).
