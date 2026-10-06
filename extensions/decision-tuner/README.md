@@ -39,7 +39,7 @@ no outcome records; the analysis separates those **legacy** records from
 | `extensions/decision-tuner/` | Weekly tuner, `/decision-tuner` command, `/setup` contributor (`setup.ts`) |
 | `~/.pi/agent/jev-decisions/*.jsonl` | One decision log per system (auto-discovered) |
 | `~/.pi/agent/jev-decisions/reports/` | Generated markdown reports |
-| `~/.pi/agent/decision-tuner/` | Tuner state, proposals, run audit, config |
+| `~/.pi/agent/jev-decisions/decision-tuner/` | Tuner state, proposals, run audit, config |
 
 ## The telemetry contract
 

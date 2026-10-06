@@ -63,7 +63,7 @@ type ContentBlock = {
 
 type Coverage = { rules: string[]; notes: string[] };
 
-const REFINE_DIR = join(homedir(), ".pi", "agent", "refine");
+const REFINE_DIR = join(homedir(), ".pi", "agent", "jev-decisions", "refine");
 const NOTES_DIR = join(REFINE_DIR, "notes");
 const HISTORY_FILE = join(REFINE_DIR, "history.jsonl");
 const RULES_DIR = join(homedir(), ".pi", "agent", "rules");

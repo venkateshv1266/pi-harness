@@ -23,7 +23,7 @@ import { collectReport, type Report } from "../../utils/decision-analysis.ts";
 import { newId } from "../../utils/jev-outcomes.ts";
 import { renderMarkdown, renderSummary, writeReportFile } from "../decisions-report.ts";
 
-const TUNER_DIR = join(homedir(), ".pi", "agent", "decision-tuner");
+const TUNER_DIR = join(homedir(), ".pi", "agent", "jev-decisions", "decision-tuner");
 const STATE_FILE = join(TUNER_DIR, "state.json");
 const PROPOSALS_FILE = join(TUNER_DIR, "proposals.jsonl");
 const AUDIT_FILE = join(TUNER_DIR, "tuner.jsonl");
