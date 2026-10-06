@@ -27,6 +27,7 @@ New docs follow
 | `decision-tuner` | [README](decision-tuner/README.md) | Weekly auto-run of the decision report plus prune/reword proposals, surfaced in `/setup → Decisions`. |
 | `setup` | [README](setup/README.md) | `/setup` — full-screen settings window plus a command/rule/MCP cheat sheet; extensible via `setup.ts`. |
 | `refine` | [README](refine/README.md) | `/refine` plus a background self-improvement loop: proposes rules/notes, stages rules for one-glance arming. |
+| `observatory` | [README](observatory/README.md) | Local web dashboard for the harness itself: every jev decision and outcome, curator per-session flow, model/cost analytics, session traces and extension inventory — adapter-first, so a new subsystem appears by adding one adapter file. |
 
 ## Single-file extensions
 

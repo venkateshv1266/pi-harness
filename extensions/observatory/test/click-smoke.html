@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>click smoke test</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<aside id="nav" class="nav"></aside>
+<div class="shell">
+	<header id="topbar" class="topbar"></header>
+	<main id="view" class="view"></main>
+</div>
+<div id="tooltip" class="tooltip" hidden></div>
+<div id="overlay" class="overlay" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script type="module">
+import { PAGES, state } from "/js/pages.js";
+
+const report = { pages: {}, errors: [] };
+window.addEventListener("error", (event) => report.errors.push(String(event.message)));
+// Async failures inside click handlers reject promises rather than throwing into
+// window.onerror — this is how the what-if selection bug slipped through before.
+window.addEventListener("unhandledrejection", (event) => report.errors.push(`unhandledrejection: ${String(event.reason && event.reason.message ? event.reason.message : event.reason)}`));
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const overlay = document.getElementById("overlay");
+const reset = () => {
+	overlay.hidden = true;
+	overlay.replaceChildren();
+};
+const ctx = { setStatus: () => {}, onAutoRefresh: () => {}, reRender: () => {} };
+const click = (node) => node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+try {
+	const sessions = await (await fetch("/api/sessions?limit=1")).json();
+	state.sessionId = sessions.sessions?.[0]?.sessionId ?? null;
+
+	for (const [id, page] of Object.entries(PAGES)) {
+		const host = document.createElement("div");
+		document.body.appendChild(host);
+		const entry = { clickables: 0, clicked: null, drawer: null, hashAfter: null };
+		try {
+			await page(host, ctx);
+			const rowTargets = host.querySelectorAll('tr[role="button"], .item[role="button"]');
+			const chips = host.querySelectorAll(".chip");
+			const tabs = host.querySelectorAll(".seg button");
+			entry.clickables = rowTargets.length + chips.length + tabs.length;
+
+			if (rowTargets.length) {
+				reset();
+				const hashBefore = location.hash;
+				const textBefore = (host.textContent || "").length;
+				click(rowTargets[0]);
+				await wait(900);
+				entry.clicked = "row";
+				entry.drawer = overlay.hidden ? null : { children: overlay.childElementCount, text: (overlay.textContent || "").replace(/\s+/g, " ").trim().length };
+				entry.inPlaceChanged = (host.textContent || "").length !== textBefore;
+				entry.hashAfter = location.hash !== hashBefore ? "changed" : "same";
+			}
+			if (chips.length) {
+				const firstRow = () => (host.querySelector(".tablewrap tbody tr")?.textContent || "").slice(0, 80);
+				const rowsBefore = host.querySelectorAll(".tablewrap tbody tr").length;
+				const firstBefore = firstRow();
+				click(chips[Math.min(1, chips.length - 1)]);
+				await wait(900);
+				entry.chipClicked = true;
+				entry.chipFiltered = firstRow() !== firstBefore || host.querySelectorAll(".tablewrap tbody tr").length !== rowsBefore;
+			}
+			const older = [...host.querySelectorAll("button.btn")].find((b) => b.textContent.includes("Older"));
+			if (older) {
+				const firstRow = () => (host.querySelector(".tablewrap tbody tr")?.textContent || "").slice(0, 80);
+				const firstBefore = firstRow();
+				click(older);
+				await wait(900);
+				entry.pagerClicked = true;
+				entry.pagerChanged = firstRow() !== firstBefore;
+			}
+			if (tabs.length > 1) {
+				const panelTextBefore = (host.textContent || "").length;
+				click(tabs[1]);
+				await wait(300);
+				entry.tabClicked = true;
+				entry.panelChanged = (host.textContent || "").length !== panelTextBefore;
+			}
+			// Impact: exercise the model scope picker (a filter over real data).
+			if (id === "impact") {
+				const picker = host.querySelector(".picker");
+				picker?.querySelector(".picker-button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+				await wait(400);
+				const options = picker ? [...picker.querySelectorAll(".picker-item")] : [];
+				entry.scopeOptions = options.length;
+				if (options[1]) {
+					options[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+					await wait(1500);
+					entry.scopeSelected = host.querySelector(".picker-value")?.textContent ?? null;
+					entry.scopeNote = host.querySelector(".page-toolbar .small.muted:last-child")?.textContent?.slice(0, 60) ?? null;
+				}
+			}
+			entry.ok = true;
+		} catch (err) {
+			entry.ok = false;
+			entry.error = String(err && err.stack ? err.stack : err).slice(0, 240);
+		}
+		report.pages[id] = entry;
+		host.remove();
+		reset();
+	}
+	report.ok = report.errors.length === 0;
+} catch (err) {
+	report.ok = false;
+	report.fatal = String(err && err.stack ? err.stack : err).slice(0, 400);
+}
+
+const pre = document.createElement("pre");
+pre.id = "test-result";
+pre.textContent = JSON.stringify(report);
+document.body.appendChild(pre);
+</script>
+</body>
+</html>

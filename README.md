@@ -1,7 +1,7 @@
 # pi-harness
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup:
-32 extensions, 9 subagent definitions, 21 generic TTSR rules, 4 skills, and
+33 extensions, 9 subagent definitions, 21 generic TTSR rules, 4 skills, and
 3 themes. Clone this repo and run `./install.sh` to get the same setup.
 
 This README is the index. Each component documents itself next to its code —
@@ -37,7 +37,7 @@ To uninstall an extension, delete its file (or directory) from
 
 | Path | What it is | Docs |
 |---|---|---|
-| `extensions/` | 32 pi extensions — delegation, models, judgment/guardrails, context/memory, supervision, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
+| `extensions/` | 33 pi extensions — delegation, models, judgment/guardrails, context/memory, supervision, observability, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
 | `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
 | `rules/` | 21 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
 | `skills/` | 4 skills: add-rule, add-agent, add-mcp-server, code-review | [`skills/README.md`](skills/README.md) |
