@@ -131,6 +131,9 @@ const extractBudget = (chars: number): number => Math.min(12000, Math.max(2500, 
 // `jev_recall` results are exempt or the curator would re-curate the very
 // content the model just explicitly asked back into context (churn loop).
 const NEVER_PRUNE = new Set(["edit", "write", "todo", "jev_recall"]);
+// Jev's own outputs are never candidates: the curator would churn them —
+// judging Jev answers with Jev, and condensing typed answers buys nothing.
+const JEV_OWN_OUTPUT_RE = /^(mcp__jev|ask_jev|triage_log|pick_first_file)/;
 
 const CFG = {
 	on: curatorEnabled(CONFIG),
@@ -1630,7 +1633,7 @@ ${goalspecSummary()}` }],
 				if (!entry || !messageEntry(entry)) continue;
 				const msg = entry.message;
 				if (!isRoleMessage(msg) || msg.role !== "toolResult" || msg.isError) continue;
-				if (NEVER_PRUNE.has(msg.toolName) || msg.toolName.startsWith("mcp__jev")) continue;
+				if (NEVER_PRUNE.has(msg.toolName) || JEV_OWN_OUTPUT_RE.test(msg.toolName)) continue;
 				if (shadowJudged.has(entryId)) continue;
 				const text = messageText(msg);
 				if (text.length < CFG.minChars) continue;
@@ -1656,7 +1659,7 @@ ${goalspecSummary()}` }],
 			if (!entry || !messageEntry(entry)) continue;
 			const msg = entry.message;
 			if (!isRoleMessage(msg) || msg.role !== "toolResult" || msg.isError) continue;
-			if (NEVER_PRUNE.has(msg.toolName) || msg.toolName.startsWith("mcp__jev")) continue;
+			if (NEVER_PRUNE.has(msg.toolName) || JEV_OWN_OUTPUT_RE.test(msg.toolName)) continue;
 			if (judged.has(entryId)) continue;
 			const text = messageText(msg);
 

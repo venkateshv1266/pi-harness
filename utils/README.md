@@ -50,6 +50,19 @@ Prompts are scrubbed of common secret patterns before sending. Used by the
 [add-rule](../skills/add-rule/SKILL.md) skill to decide whether a new rule
 needs an opt-in `verify:` gate; generic enough for any one-off adjudication.
 
+## jev-client.ts
+
+Shared System One (Jev) client imported by the `ask-jev` and `jev-guard`
+extensions: one `jevCall(state, questions, opts?)` POST to
+`{JEV_BASE_URL}/v1/systemone` with typed `noul` / `choice` / `score` questions,
+secret scrubbing on every state, one retry on 429/5xx/network, a bounded
+parallel `mapPool`, and typed answer accessors. Auth resolves `JEV_API_KEY` →
+`OPENROUTER_API_KEY` → `openrouter.key` in `~/.pi/agent/auth.json`; `JEV_MODEL`
+(default `jev-latest`), `JEV_TIMEOUT_MS` (default 10000), `JEV_CONCURRENCY`
+(default 6) override behavior. Also exports `READONLY_BASH_PREFIXES` /
+`isReadonlyCommand()` — the read-only command allowlist shared by `ask_jev`'s
+`command` parameter and `jev-guard`'s fast path.
+
 ## model-role.ts
 
 Model-role resolution shared by the subagent engines, `summarize`, and the

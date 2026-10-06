@@ -19,6 +19,8 @@ New docs follow
 | `persistent-subagent` | [README](persistent-subagent/README.md) | Persistent engine behind `delegate`: named, steerable, resumable children with on-disk sessions; idle-unload and transparent resume. |
 | `jev-context-curator` | [README](jev-context-curator/README.md) | GoalSpec-first context curation: Jev classification, verifier-approved evidence ledger, `curator_find` + `jev_recall`, GoalSpec-carrying compaction. |
 | `jev-memory` | [README](jev-memory/README.md) | Persistent memory, session search, and skills with Jev-gated admission, review, correction adjudication, and search rerank. |
+| `ask-jev` | [README](ask-jev/README.md) | Jev as agent tools: `ask_jev_file_bool/choice/score`, `ask_jev_files`, `pick_first_file`, `ask_jev`, `triage_log` — typed judgments about files and logs without reading them into context. |
+| `jev-guard` | [README](jev-guard/README.md) | Invisible Jev guardrails: confidence-gated bash command gate (readonly/reversible/irreversible + destructive intent) and a prompt-injection screen on read/bash/web_fetch results. |
 | `recite` | [README](recite/README.md) | Tail recitation — keeps a compact goal/todo block at the model's most-attended position, exactly one live copy. |
 | `ttsr` | [README](ttsr/README.md) | Time-Traveling Stream Rules with zero idle token cost, plus the context registry (`/ttsr`, `/contexts`, `context_list`). |
 | `course-check` | [README](course-check/README.md) | Periodic Jev supervision — every N turns, judge the trajectory against the session goal; off-track verdicts inject a rethink nudge. |
@@ -338,7 +340,7 @@ State: `~/.pi/agent/plugins.json` — `{version: 1, marketplaces: [{name, path}]
 |---|---|
 | `/decisions-report [days]` | Analysis window, default 7 (clamped 1–365); writes the report and notifies with its path |
 
-**Configuration** — Reads the record contract from `utils/jev-outcomes.ts`: `decision` (carries `id`), `outcome` (resolves a decision via `ref`, carries a domain `outcome` and the universal `verdict`: good/bad/mixed/unknown), and `event`; reserved keys `kind`, `system`, `id`, `ref`, `outcome`, `verdict`, `ts`. A decision with no outcome after 24 h counts as stale; `joined` = outcomes minus orphans. Known logs: `ttsr-jev.jsonl`, `model-router.jsonl`, `jev-curator.jsonl`, `jev-memory.jsonl` — any new `*.jsonl` in the directory is picked up automatically.
+**Configuration** — Reads the record contract from `utils/jev-outcomes.ts`: `decision` (carries `id`), `outcome` (resolves a decision via `ref`, carries a domain `outcome` and the universal `verdict`: good/bad/mixed/unknown), and `event`; reserved keys `kind`, `system`, `id`, `ref`, `outcome`, `verdict`, `ts`. A decision with no outcome after 24 h counts as stale; `joined` = outcomes minus orphans. Known logs: `ttsr-jev.jsonl`, `model-router.jsonl`, `jev-curator.jsonl`, `jev-memory.jsonl`, `ask-jev.jsonl`, `jev-guard.jsonl` — any new `*.jsonl` in the directory is picked up automatically.
 
 **How it works** — The report lands at `~/.pi/agent/jev-decisions/reports/decisions-<date>.md` (UTC date, overwritten same day). Flags: TTSR rules with ≥20 evaluations and zero delivered fires as prune candidates (plus adverse wording when ≥3 resolved and ≥50% adverse); router routes followed by `tests_failed`; curator extracts emitted >3 days that were never recalled. Legacy (pre-telemetry) rows are reported separately from telemetry-era counts.
 

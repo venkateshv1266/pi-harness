@@ -40,7 +40,7 @@ cap-at-rest and `jev_recall` remain the V2 foundation underneath.
      │      pin_goal → "jev-curator-goal"; amend_goalspec → GoalSpec (v+1)
      │
      ├─ ❷ COLLECT candidates: this turn's tool results
-     │      skip: <1500 chars · errors · edit/write/todo/jev_recall/mcp__jev*
+     │      skip: <1500 chars · errors · edit/write/todo/jev_recall/mcp__jev*/ask_jev*/triage_log/pick_first_file
      │
      ├─ ❸ CAP-AT-REST (V2, always on): >25k chars → head 15k + tail 5k
      │      runs BEFORE first model exposure next turn → never billed in full,
