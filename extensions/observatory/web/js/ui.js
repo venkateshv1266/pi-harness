@@ -75,6 +75,15 @@ export function pill(text, tone = "neutral", tip = null) {
 	return node;
 }
 
+/**
+ * A count badge that keeps its shape at zero. A bare `0` next to a column of
+ * pills reads as mis-aligned, because the pill's padding pushes its digit
+ * inboard while the bare digit sits flush against the cell edge.
+ */
+export function countPill(value, tone) {
+	return value ? pill(String(value), tone) : pill("0", "neutral");
+}
+
 export function chip(text, count, { active = false, onClick = null, tip = null } = {}) {
 	const node = h("button", { class: `chip${active ? " active" : ""}`, onclick: onClick }, text, count !== null && count !== undefined ? h("span", { class: "n" }, fmtCompact(count)) : null);
 	if (tip) node.dataset.tip = tip;

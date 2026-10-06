@@ -113,7 +113,11 @@ export function histogram({ bins, height = 120, color = "var(--s5)" }) {
 export function sankey({ columns, nodes, links, height = 280 }) {
 	const colCount = columns.length;
 	if (!colCount) return '<div class="empty">No data</div>';
-	const padX = 130;
+	// Node labels sit outside their node and are right-anchored on the first
+	// column, so both edges need the same room reserved. Placing column 0 at a
+	// hardcoded left offset while sizing columns from `padX` pushes the outer
+	// labels past the viewBox — and with `.chart` overflow visible, past the card.
+	const padX = 150;
 	const padY = 8;
 	const gap = 8;
 	const nodeW = 12;
@@ -132,7 +136,7 @@ export function sankey({ columns, nodes, links, height = 280 }) {
 		let cursor = padY;
 		const placed = items.map((item) => {
 			const h = Math.max(4, (item.count / total) * usable);
-			const box = { ...item, y: cursor, h, x: ci === 0 ? 40 : 40 + ci * colW };
+			const box = { ...item, y: cursor, h, x: padX + ci * colW };
 			cursor += h + gap;
 			return box;
 		});
@@ -182,5 +186,5 @@ export function sankey({ columns, nodes, links, height = 280 }) {
 		)
 		.join("");
 
-	return `<svg class="chart" viewBox="0 0 ${VIEW_W} ${height}" style="width:100%;height:auto">${ribbons}${boxes}</svg>`;
+	return `<svg class="chart sankey" viewBox="0 0 ${VIEW_W} ${height}" style="width:100%;height:auto">${ribbons}${boxes}</svg>`;
 }

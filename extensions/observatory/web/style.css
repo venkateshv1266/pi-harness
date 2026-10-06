@@ -206,8 +206,8 @@ input.input:focus, select.select:focus { outline: 2px solid var(--accent-soft); 
 
 /* ---------------- pills / chips ---------------- */
 .pill {
-	display: inline-flex; align-items: center; gap: 5px;
-	padding: 2px 8px; border-radius: 999px;
+	display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+	padding: 2px 8px; border-radius: 999px; min-width: 22px;
 	font-size: 10.5px; font-weight: 680; letter-spacing: 0.15px;
 	border: 1px solid transparent; white-space: nowrap;
 }
@@ -276,6 +276,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; table-lay
 
 /* ---------------- charts ---------------- */
 .chart { width: 100%; display: block; overflow: visible; }
+/* The sankey lays its node labels out inside its own viewBox, so nothing should
+ * paint outside it — clipped rather than spilling over the card if a label grows. */
+.chart.sankey { overflow: hidden; }
 .chart text { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .chart .gridline { stroke: var(--grid); stroke-width: 1; }
 .chart .axisline { stroke: var(--border); stroke-width: 1; }
@@ -415,14 +418,38 @@ pre.json { background: var(--panel-2); border: 1px solid var(--border); border-r
 .finding.warn { border-left-color: var(--warn); }
 .finding.info { border-left-color: var(--accent); }
 .finding.ok { border-left-color: var(--ok); }
-.finding-head { display: flex; align-items: center; gap: 9px; padding: 11px 14px 2px; }
-.finding-head h3 { margin: 0; font-size: 13px; font-weight: 670; flex: 1; }
-.finding-summary { margin: 0 0 8px; font-size: 12.5px; line-height: 1.55; }
-.finding-trigger { margin: 0 0 10px; font-size: 11.5px; line-height: 1.5; color: var(--muted); font-style: italic; }
-.evidence { margin: 0 0 10px; padding-left: 18px; color: var(--muted); font-size: 11.5px; line-height: 1.65; }
-.evidence li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.finding-action { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.5; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; }
-.finding-action .arrow { color: var(--accent); font-weight: 700; flex: none; }
+/* Findings — cards in a responsive grid, so a row uses both sides of the view
+ * instead of trailing off into empty space. Inside each card: severity as a
+ * stripe and a dot, the impact figure right-aligned rather than fighting the
+ * title, the evidence folded away until asked for, and the fix pinned to the
+ * bottom so the action lines line up across a row. */
+.findings { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 12px; align-items: stretch; }
+.finding { display: flex; flex-direction: column; gap: 6px; padding: 13px 15px 14px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 12px; background: var(--panel); }
+.finding.ok { border-left-color: var(--ok); }
+.finding.info { border-left-color: var(--accent); }
+.finding.warn { border-left-color: var(--warn); }
+.finding.error { border-left-color: var(--err); }
+.finding-top { display: flex; align-items: center; gap: 8px; }
+.finding-top .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.finding-top h3 { margin: 0; min-width: 0; flex: 1; font-size: 13.5px; font-weight: 650; line-height: 1.35; }
+/* `new` and `recurring` are different facts, so they read differently: the new
+ * one is a chip you notice, a recurring one a quiet reminder. */
+.finding-flag { flex: none; font-size: 10.5px; font-weight: 620; letter-spacing: 0.04em; text-transform: uppercase; }
+.finding-flag.is-new { color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 6px; }
+.finding-flag.is-recurring { color: var(--muted); }
+.finding-impact { flex: none; margin-left: auto; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.finding-rule { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); font-style: italic; }
+.finding-why { margin: 0; font-size: 12.5px; line-height: 1.55; }
+.finding-evidence { margin: 1px 0 0; }
+.finding-evidence > summary { width: fit-content; cursor: pointer; font-size: 11.5px; color: var(--muted); }
+.finding-evidence > summary:hover { color: var(--text); }
+.finding-evidence .evidence { margin: 6px 0 2px; padding-left: 15px; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+.finding-evidence .evidence li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.finding-fix { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: auto 0 0; padding-top: 8px; border-top: 1px solid var(--grid); font-size: 12.5px; line-height: 1.5; }
+.finding-fix .arrow { flex: none; color: var(--accent); font-weight: 700; }
+.finding-link { flex: none; font-size: 11.5px; color: var(--accent); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+.finding-link:hover { border-color: var(--accent); }
+.findings-empty { margin: 0; padding: 16px; font-size: 12.5px; color: var(--muted); }
 .loading { padding: 30px; color: var(--muted); font-size: 12.5px; }
 
 /* ---------------- motion / states ---------------- */
