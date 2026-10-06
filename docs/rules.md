@@ -99,6 +99,6 @@ bucket choice, trigger crafting, Jev gate decision, and the validator
 A malformed `verify:` block is silently dropped by the engine, so validate
 before shipping.
 
-This README intentionally has no YAML frontmatter: the TTSR loader parses every
-`.md` under a rules directory and skips files without a frontmatter block, so
-this file is never treated as a rule.
+This page lives in `docs/`, not `rules/`: the sync allowlist expects every file
+under `rules/` to have a live counterpart in `~/.pi/agent/rules/`, and this
+guide is repo documentation, not a rule file.
