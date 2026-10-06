@@ -63,6 +63,13 @@ Spawn lens agents in parallel via the `subagent` tool in a **single message with
 
 > **Optional specialists** (spawn only if triggered): Migration/Schema (files under `migrations/`, `.sql`, DDL); API Contract (`openapi*`, `*.proto`, route registrations, event schemas).
 
+**Leaf failure & retry contract:**
+- **One live claim per lens, per pass.** Never spawn a duplicate of a lens that is in flight or whose result is already in your context. A settled batch reports each leaf `completed` or `failed (reason)`; if the call was aborted and returned nothing, treat the split as unknown and re-issue only the leaves whose results you do not hold.
+- **Retry only the missing/failed leaves**, reusing the same mandate and prompt template. Never re-run a completed lens, never restart the whole fan-out because one leaf failed, and never abort the review over one failed leaf.
+- **Double failure → self-run.** A leaf that fails twice: run that lens yourself with focused reads and say in the opener that it was self-run.
+- **On resume** (after an abort or `subagent_wait`): trust the leaf results already in your context; re-issue only the spawns whose results you do not hold.
+- **A new pass is not a retry.** Re-reviewing a force-pushed head or a second review request deliberately re-runs leaves — treat prior-pass results as historical evidence, not reusable output.
+
 ### 4. Sub-agent prompt template (self-contained — they have no memory)
 
 For each leaf, send exactly:
@@ -77,6 +84,8 @@ For each leaf, send exactly:
 ### 5. Validation pass — spawn one `review-validator` agent (mandatory, never skip)
 
 After the lens agents return and **before** synthesis, spawn **one `review-validator` agent** (dedicated, `@slow`, xhigh thinking — the strongest model in the cascade, because verdict reliability is the single highest-leverage check). Feed it: (a) the full deduped findings list, each tagged with its origin lens, hot-spot findings first; (b) the same diff context; (c) the per-file risk map, so it knows which findings sit on state/auth/money paths. Its classification contract — CONFIRMED / DOWNGRADE / REFUTED / UNVERIFIABLE, no new findings, verdict lines with the `file:line` it actually read — is baked into its definition. If it reports an out-of-band observation, re-spawn the missing lens rather than acting on the observation yourself.
+
+**Validator failure:** retry the Validator alone with the same findings list — never re-run the lens fan-out to compensate. If it fails twice, verify the disputed findings yourself with focused reads and mark those verdicts `self-verified`.
 
 ### 6. Synthesis — your job after the Validator returns
 1. **Apply Validator verdicts:** drop REFUTED silently; move DOWNGRADE to the new severity; keep UNVERIFIABLE only if original was ≥⚠️, label "(needs human confirmation)"; pass CONFIRMED through.
@@ -159,6 +168,8 @@ What's covered, what's missing, what new test would catch the top finding. Do bu
 - **Spawning `reviewer`** as a leaf — recurses unboundedly. Leaves are `research` or the dedicated lens agents, all of which lack `subagent`.
 - **Letting the Validator generate new findings** — it's a fact-checker. New findings from it mean your fan-out was incomplete; re-spawn the missing lens instead.
 - **Sequential sub-agent spawns** — defeats the purpose; always parallel via one multi-call message.
+- **Re-running the fan-out when one leaf fails** — retry only the failed/missing leaves; completed leaf results stay, and one failed leaf never aborts the review.
+- **Spawning a duplicate of an in-flight or completed lens** — one live claim per lens, per pass.
 - **Generic leaf prompts** ("review for issues") — return slop. Each leaf gets a narrow mandate.
 - **Inlining raw leaf output** — synthesize, don't concatenate. No "Security agent says…" sections.
 - **Trusting leaf severity verbatim** — Validator adjusts, you re-rank, both required.
