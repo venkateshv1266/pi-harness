@@ -14,7 +14,11 @@
  * Every decision logs to jev-decisions/jev-guard.jsonl. Kill switch: JEV_GUARD=0.
  */
 
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { AgentEndEvent, BeforeAgentStartEvent, ExtensionAPI, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { choiceOf, isReadonlyCommand, jevCall, noulOf, scrubSecrets, type Question } from "../../utils/jev-client.ts";
 import { logEvent } from "../../utils/jev-outcomes.ts";
@@ -27,6 +31,7 @@ const SCREEN_MIN_CHARS = 1500;
 const SCREEN_PROBE_CHARS = 6000;
 const SCREEN_CAP = 100;
 const CACHE_CAP = 500;
+const SOUND_FALLBACK = "/System/Library/Sounds/Sosumi.aiff";
 
 const GATE_QUESTIONS: Record<string, Question> = {
 	effect: {
@@ -91,6 +96,27 @@ function classifyCommand(command: string): Promise<Classification | null> {
 			};
 		})
 		.catch(() => null);
+}
+
+function spawnDetached(command: string, args: string[]): void {
+	try {
+		spawn(command, args, { detached: true, stdio: "ignore", cwd: homedir() }).on("error", () => {}).unref();
+	} catch {
+		// alert failures must never affect the gate
+	}
+}
+
+// Same alert pattern as bin/git-*-yubikey-notify: notify + flash + sound, in cmux only.
+function notifyApproval(command: string, why: string): void {
+	if (!process.env.CMUX_SOCKET_PATH && !process.env.CMUX_SOCKET) return;
+	const cmux = process.env.CMUX_PI_CMUX_BIN || "cmux";
+	const sound =
+		process.env.PI_JEV_GUARD_NOTIFICATION_SOUND ??
+		process.env.PI_YUBIKEY_NOTIFICATION_SOUND ??
+		join(homedir(), ".pi", "agent", "sounds", "yubikey-alert-2-beep.wav");
+	spawnDetached(cmux, ["notify", "--title", "jev-guard: approval needed", "--body", `${scrubSecrets(command).slice(0, 160)}\n${why}`]);
+	spawnDetached(cmux, ["trigger-flash"]);
+	spawnDetached("afplay", [existsSync(sound) ? sound : SOUND_FALLBACK]);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -187,6 +213,7 @@ export default function (pi: ExtensionAPI) {
 				c.effectConfidence < 0.5 ||
 				c.destructiveConfidence < 0.5;
 			if (grayZone && ctx.hasUI) {
+				notifyApproval(command, why);
 				const allowedByUser = await ctx.ui.confirm("jev-guard: allow this command?", `${command}\n\n${why}. Allow?`);
 				if (!allowedByUser) {
 					totals.blocked++;
