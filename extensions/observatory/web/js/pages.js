@@ -216,10 +216,10 @@ const HELP = {
 	},
 	refine: {
 		title: "Refine — the self-improvement loop",
-		what: "Every run of the background refinement loop: what it proposed, what it suppressed because the evidence was weak, what it wrote as a rule or a note, and what is staged waiting for you to arm it.",
-		formula: "Counts come from the loop's own audit log (refine/auto-refine.jsonl); artifacts come from its apply log (refine/history.jsonl); staging and notes are read from disk; 'live in rulebook' means a rule with that name currently exists in ~/.pi/agent/rules/.",
+		what: "Every run of the background refinement loop: what it proposed, what it suppressed because the evidence was weak, what it wrote as a rule or a note, and what is staged waiting for you to arm it. Rules and notes are segregated because only rules have a lifecycle.",
+		formula: "Counts come from the loop's own audit log (refine/auto-refine.jsonl); artifacts come from its apply log (refine/history.jsonl); staging and notes are read from disk. A rule's state is derived: armed when a rule of that name exists in ~/.pi/agent/rules/, staged when it sits in the staging directory, rolled back when the apply log says so, otherwise proposed. Notes are written records.",
 		source: "~/.pi/agent/jev-decisions/refine/{auto-refine,history}.jsonl, ~/.pi/agent/jev-decisions/refine/{rules-staging,notes}/, ~/.pi/agent/rules/.",
-		action: "This is where new rules and notes are born. Read a staged rule before arming it, and check the suppressed count — a high suppression rate with few applies means the evidence bar is doing its job, not that the loop is broken.",
+		action: "This is where new rules and notes are born. Read a staged rule before arming it (Meta shows the part scores), and check the suppressed count — a high suppression rate with few applies means the evidence bar is doing its job, not that the loop is broken. The gate calibration card below shows which proposals land in which band.",
 	},
 	refineStaging: {
 		title: "Staged rules",
@@ -234,6 +234,13 @@ const HELP = {
 		formula: "Runs and proposals come from the tuner's audit and proposal logs; statuses (open/dismissed/applied) are the review decisions recorded with each proposal. The state panel shows its last run and config.",
 		source: "~/.pi/agent/jev-decisions/decision-tuner/{tuner,proposals}.jsonl plus state.json / config.json.",
 		action: "Work the open proposals: each one names its target and the evidence, and View opens the rule or file it wants to change. Dismissed proposals stay visible so you can see what you have already considered.",
+	},
+	refineGate: {
+		title: "Refine gate calibration",
+		what: "The rule gate scores every proposal on three parts and stages it in one of two bands. This shows how close proposals actually come to those floors — the measurement that justified replacing a single weakest-link threshold with per-part floors.",
+		formula: "Bands are re-derived from the part scores logged with each rule proposal: ready when evidence ≥ 0.6, novelty ≥ 0.6 and trigger ≥ 0.5; near-miss when min(evidence, novelty) ≥ 0.4; otherwise below. Max and headroom show how the best-scoring proposal compares with its floor.",
+		source: "refine/auto-refine.jsonl — the jev and apply stage lines carry evidence, novelty and trigger scores.",
+		action: "If a part's max never reaches its floor, that floor is unreachable and the band is decorative — lower it or stop staging that class of proposal. If near-miss keeps filling while ready stays empty, the trigger requirement is the binding constraint.",
 	},
 	findings: {
 		title: "Findings",
@@ -624,12 +631,13 @@ async function impactPage(view, ctx) {
 	let trendSeriesCache = null;
 	const ledger = table({
 		columns: [
-			{ label: "Mechanism", render: (row) => h("span", { class: "rowtitle" }, row.mechanism) },
-			{ label: "Volume", render: (row) => h("span", { class: "small muted" }, row.volume) },
-			{ label: "Tokens", right: true, render: (row) => row.tokens },
-			{ label: "Est. $", right: true, render: (row) => row.usd },
+			{ label: "Mechanism", width: "18%", render: (row) => h("span", { class: "rowtitle" }, row.mechanism) },
+			{ label: "Volume", width: "26%", render: (row) => h("span", { class: "small muted" }, row.volume) },
+			{ label: "Tokens", right: true, width: "88px", render: (row) => row.tokens },
+			{ label: "Est. $", right: true, width: "84px", render: (row) => row.usd },
 			{
 				label: "Trend",
+				width: "104px",
 				render: (row) => {
 					const series = row.trendKey ? (trendSeriesCache?.[row.trendKey] ?? []) : [];
 					if (!series.length) return h("span", { class: "faint" }, "—");
@@ -738,12 +746,13 @@ async function impactPage(view, ctx) {
 			.join(" · ");
 		return table({
 			columns: [
-				{ label: "Mechanism", render: (row) => h("span", { class: "rowtitle" }, row.mechanism) },
-				{ label: "Costs you now", render: (row) => h("span", { class: "small muted" }, row.now) },
-				{ label: "The alternative", render: (row) => h("span", { class: "small muted" }, row.alternative) },
-				{ label: "Net", right: true, render: (row) => row.net },
+				{ label: "Mechanism", width: "16%", render: (row) => h("span", { class: "rowtitle" }, row.mechanism) },
+				{ label: "Costs you now", width: "18%", render: (row) => h("span", { class: "small muted" }, row.now) },
+				{ label: "The alternative", width: "22%", render: (row) => h("span", { class: "small muted" }, row.alternative) },
+				{ label: "Net", right: true, width: "104px", render: (row) => row.net },
 				{
 					label: "Trend",
+					width: "104px",
 					render: (row) => {
 						const series = row.trendKey ? (d.trends?.series?.[row.trendKey] ?? []) : [];
 						if (!series.length) return h("span", { class: "faint" }, "—");
@@ -1137,19 +1146,20 @@ async function models(view, ctx) {
 	const chart = htmlRegion((d) => areaChart({ labels: d.daily.labels, series: d.daily.series, stacked: true, height: 210, valueFmt: fmtCost }));
 	const byModel = table({
 		columns: [
-			{ label: "Model", render: (row) => modelCell(row.model) },
-			{ label: "Calls", right: true, render: (row) => fmtInt(row.calls) },
-			{ label: "Tokens", right: true, render: (row) => fmtCompact(row.tokens) },
-			{ label: "Cache rate", right: true, render: (row) => fmtPct(row.cacheRate, 0) },
-			{ label: "Tokens / call", right: true, render: (row) => fmtCompact(row.tokensPerCall) },
-			{ label: "Cost / call", right: true, render: (row) => (row.costPerCall == null ? "—" : fmtCost(row.costPerCall)) },
+			{ label: "Model", width: "18%", render: (row) => modelCell(row.model) },
+			{ label: "Calls", right: true, width: "60px", render: (row) => fmtInt(row.calls) },
+			{ label: "Tokens", right: true, width: "74px", render: (row) => fmtCompact(row.tokens) },
+			{ label: "Cache rate", right: true, width: "78px", render: (row) => fmtPct(row.cacheRate, 0) },
+			{ label: "Tokens / call", right: true, width: "88px", render: (row) => fmtCompact(row.tokensPerCall) },
+			{ label: "Cost / call", right: true, width: "80px", render: (row) => (row.costPerCall == null ? "—" : fmtCost(row.costPerCall)) },
 			{
 				label: "Trend",
+				width: "96px",
 				render: (row) => h("div", { style: { width: "84px" }, "data-tip": `daily cost across ${(row.trend ?? []).length} day(s)` }, h("span", { html: (row.trend ?? []).length ? spark(row.trend, { height: 20 }) : "" })),
 			},
-			{ label: "Errors", right: true, render: (row) => (row.errors ? pill(String(row.errors), "warn") : "0") },
-			{ label: "Cost", right: true, render: (row) => fmtCost(row.cost) },
-			{ label: "Last used", right: true, render: (row) => timeAgo(row.lastTs) },
+			{ label: "Errors", right: true, width: "62px", render: (row) => (row.errors ? pill(String(row.errors), "warn") : "0") },
+			{ label: "Cost", right: true, width: "72px", render: (row) => fmtCost(row.cost) },
+			{ label: "Last used", right: true, width: "78px", render: (row) => timeAgo(row.lastTs) },
 		],
 		rows: data.byModel.map((m) => ({ ...m, key: m.model })),
 	});
@@ -1276,12 +1286,13 @@ async function ledgerPage(view, ctx) {
 	);
 	const rows = table({
 		columns: [
-			{ label: "Time", right: true, render: (row) => fmtClock(row.ts) },
-			{ label: "System", render: (row) => h("span", { class: "rowtitle" }, row.system) },
-			{ label: "Severity", render: (row) => severityPill(row.severity) },
-			{ label: "Event", render: (row) => h("div", {}, h("div", { class: "rowtitle" }, row.title ?? row.kind), row.summary ? h("div", { class: "rowsub truncate" }, row.summary) : null) },
+			{ label: "Time", right: true, width: "74px", render: (row) => fmtClock(row.ts) },
+			{ label: "System", width: "92px", render: (row) => h("span", { class: "rowtitle" }, row.system) },
+			{ label: "Severity", width: "80px", render: (row) => severityPill(row.severity) },
+			{ label: "Event", width: "30%", render: (row) => h("div", {}, h("div", { class: "rowtitle" }, row.title ?? row.kind), row.summary ? h("div", { class: "rowsub truncate" }, row.summary) : null) },
 			{
 				label: "Fate",
+				width: "116px",
 				render: (row) =>
 					row.fate
 						? pill(
@@ -1291,9 +1302,9 @@ async function ledgerPage(view, ctx) {
 							)
 						: h("span", { class: "faint" }, "—"),
 			},
-			{ label: "Cost", right: true, render: (row) => (row.costUsd != null ? fmtCost(row.costUsd) : "—") },
-			{ label: "Latency", right: true, render: (row) => fmtMs(row.latencyMs) },
-			{ label: "Session", render: (row) => (row.sessionId ? h("a", { href: `#/session?id=${row.sessionId}` }, h("span", { class: "mono" }, row.sessionId.slice(0, 8))) : "—") },
+			{ label: "Cost", right: true, width: "76px", render: (row) => (row.costUsd != null ? fmtCost(row.costUsd) : "—") },
+			{ label: "Latency", right: true, width: "76px", render: (row) => fmtMs(row.latencyMs) },
+			{ label: "Session", width: "92px", render: (row) => (row.sessionId ? h("a", { href: `#/session?id=${row.sessionId}` }, h("span", { class: "mono" }, row.sessionId.slice(0, 8))) : "—") },
 		],
 		rows: ledger.rows,
 		onRowClick: (row) => openEventDrawer(row),
@@ -1611,17 +1622,19 @@ async function sessionsPage(view, ctx) {
 		columns: [
 			{
 				label: "Session",
+				width: "26%",
 				render: (row) =>
 					h("div", {}, h("div", { class: "rowtitle" }, shortTitle(row.title) ?? row.sessionId.slice(0, 8)), h("div", { class: "rowsub" }, `${row.project ?? "—"} · ${row.sessionId.slice(0, 8)}`)),
 			},
-			{ label: "Calls", right: true, render: (row) => fmtInt(row.calls) },
-			{ label: "$ / call", right: true, render: (row) => (row.costPerCall == null ? "—" : fmtCost(row.costPerCall)) },
-			{ label: "Cost", right: true, render: (row) => fmtCost(row.cost) },
-			{ label: "Condensed", right: true, render: (row) => h("span", { "data-tip": `${fmtCompact(row.curatorTokens)} tokens kept out of context, carried across this session's remaining turns` }, fmtCompact(row.curatorTokens)) },
-			{ label: "Cache saved", right: true, render: (row) => h("span", { "data-tip": "provider cache discount on this session's cached prompt tokens" }, fmtCost(row.cacheDiscount)) },
+			{ label: "Calls", right: true, width: "60px", render: (row) => fmtInt(row.calls) },
+			{ label: "$ / call", right: true, width: "74px", render: (row) => (row.costPerCall == null ? "—" : fmtCost(row.costPerCall)) },
+			{ label: "Cost", right: true, width: "74px", render: (row) => fmtCost(row.cost) },
+			{ label: "Condensed", right: true, width: "86px", render: (row) => h("span", { "data-tip": `${fmtCompact(row.curatorTokens)} tokens kept out of context, carried across this session's remaining turns` }, fmtCompact(row.curatorTokens)) },
+			{ label: "Cache saved", right: true, width: "92px", render: (row) => h("span", { "data-tip": "provider cache discount on this session's cached prompt tokens" }, fmtCost(row.cacheDiscount)) },
 			{
 				label: "Problems",
 				right: true,
+				width: "86px",
 				render: (row) =>
 					row.problems > 0
 						? pill(String(row.problems), "warn", `${fmtInt(row.corrections)} correction(s) · ${fmtInt(row.offTrack)} off-track · ${fmtInt(row.errors)} error(s)`)
@@ -2166,62 +2179,143 @@ async function refinePage(view, ctx) {
 	]);
 	const decisions = nodeRegion((d) => bars(Object.entries(d.byDecision).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }));
 	const stages = nodeRegion((d) => bars(Object.entries(d.byStage).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }));
-	const artifacts = table({
-		columns: [
-			{ label: "Kind", render: (row) => pill(row.kind, row.kind === "rule" ? "accent" : "neutral") },
-			{ label: "Name", render: (row) => h("span", { class: "mono", style: { fontSize: "11.5px" } }, row.name) },
-			{ label: "Source", render: (row) => h("span", { class: "small muted" }, row.source ?? "—") },
-			{
-				label: "State",
-				render: (row) =>
-					row.rolledBack ? pill("rolled back", "warn") : row.kind === "rule" ? (row.live ? pill("live in rulebook", "ok") : pill("not in rulebook", "neutral")) : pill("note", "ok"),
-			},
-			{ label: "When", right: true, render: (row) => timeAgo(row.ts) },
-			{
-				label: "",
-				render: (row) =>
-					row.available
-						? h("button", { class: "btn", onclick: (event) => { event.stopPropagation(); void openFileDrawer(row.path, row.name); } }, "View")
-						: h("span", { class: "small faint", "data-tip": row.recordedPath ? `recorded at ${row.recordedPath} — no longer on disk` : "no file path recorded" }, "missing"),
-			},
-		],
-		rows: [],
-		maxHeight: "440px",
-	});
-	const fileList = (entries) =>
+	// Rules and notes are segregated: a rule has a lifecycle (proposed → staged →
+	// armed, or rolled back), a note is simply written down.
+	const artifactSegSlot = h("div", { class: "seg" });
+	const artifactSlot = h("div", { class: "cardbody flush" });
+	let artifactTab = "rules";
+	const statePill = (state) =>
+		pill(state, state === "armed" ? "ok" : state === "staged" ? "accent" : state === "rolled back" ? "warn" : state === "written" ? "ok" : "neutral");
+	const viewButton = (row) =>
+		row.available
+			? h("button", { class: "btn", onclick: (event) => { event.stopPropagation(); void openFileDrawer(row.path, row.name); } }, "View")
+			: h("span", { class: "small faint nowrap", "data-tip": row.recordedPath ? `recorded at ${row.recordedPath} — no longer on disk` : "no file path recorded" }, "missing");
+	function renderArtifacts(data) {
+		const rules = (data.artifacts ?? []).filter((artifact) => artifact.kind === "rule");
+		const notes = (data.artifacts ?? []).filter((artifact) => artifact.kind === "note");
+		clear(artifactSegSlot);
+		for (const [id, label, count] of [["rules", "Rules", rules.length], ["notes", "Notes", notes.length]]) {
+			artifactSegSlot.append(h("button", { class: artifactTab === id ? "active" : "", onclick: () => { artifactTab = id; renderArtifacts(data); } }, `${label} (${fmtInt(count)})`));
+		}
+		clear(artifactSlot);
+		const nameColumn = artifactTab === "rules" ? "Rule" : "Note";
+		artifactSlot.append(
+			table({
+				columns: [
+					{ label: nameColumn, render: (row) => h("span", { class: "mono", style: { fontSize: "11.5px" } }, row.name) },
+					{ label: "State", render: (row) => statePill(row.state) },
+					{ label: "Source", render: (row) => h("span", { class: "small muted" }, row.source ?? "—") },
+					{ label: "Evidence", render: (row) => h("span", { class: "small muted truncate" }, row.evidence ?? "—") },
+					{ label: "When", right: true, render: (row) => timeAgo(row.ts) },
+					{ label: "", width: "78px", render: viewButton },
+				],
+				rows: (artifactTab === "rules" ? rules : notes).map((row) => ({ ...row, key: row.id })),
+				maxHeight: "440px",
+				empty:
+					artifactTab === "rules"
+						? "No rules in this range — widen the range in the top bar to include earlier rule applies"
+						: "No notes in this range — widen the range in the top bar",
+			}),
+		);
+	}
+	const fileList = (entries, withMeta = false) =>
 		entries.length
 			? h(
 					"div",
 					{ class: "feed" },
-					...entries.map((entry) =>
-						h(
+					...entries.map((entry) => {
+						const parts = entry.parts && typeof entry.parts === "object"
+							? ["evidence", "novelty", "trigger"]
+									.filter((part) => typeof entry.parts[part] === "number")
+									.map((part) => `${part.slice(0, 2)} ${Number(entry.parts[part]).toFixed(2)}`)
+									.join(" · ")
+							: null;
+						return h(
 							"div",
 							{ class: "item" },
-							h("div", { class: "t" }, fmtCompact(entry.chars)),
-							h("div", { class: "dot info" }),
-							h("div", {}, h("div", { class: "title mono", style: { fontSize: "12px" } }, entry.name), h("div", { class: "sub" }, entry.preview)),
-							h("button", { class: "btn", onclick: () => void openFileDrawer(entry.path, entry.name) }, "View"),
-						),
-					),
+							h("div", { class: "t" }, entry.tier ? entry.tier.replace("near-miss", "near") : fmtCompact(entry.chars)),
+							h("div", { class: `dot ${entry.tier === "near-miss" ? "warn" : entry.tier === "ready" ? "ok" : "info"}` }),
+							h("div", {}, h("div", { class: "title mono", style: { fontSize: "12px" } }, entry.name), h("div", { class: "sub" }, [parts, entry.evidence ?? entry.preview].filter(Boolean).join(" — "))),
+							h(
+								"div",
+								{ style: { display: "flex", gap: "6px" } },
+								h("button", { class: "btn", onclick: () => void openFileDrawer(entry.path, entry.name) }, "View"),
+								withMeta && entry.metaPath ? h("button", { class: "btn", onclick: () => void openFileDrawer(entry.metaPath, `${entry.name} — meta`) }, "Meta") : null,
+							),
+						);
+					}),
 				)
 			: emptyState("Nothing here right now.");
-	const staging = nodeRegion((d) => fileList(d.staging));
-	const notes = nodeRegion((d) => fileList(d.notes.slice(0, 12)));
+	const staging = nodeRegion((d) => {
+		const ready = (d.staging ?? []).filter((entry) => entry.tier === "ready").length;
+		const near = (d.staging ?? []).filter((entry) => entry.tier === "near-miss").length;
+		return h(
+			"div",
+			{},
+			(d.staging ?? []).length ? h("div", { class: "small muted", style: { padding: "0 0 6px" } }, `${fmtInt(ready)} ready · ${fmtInt(near)} near-miss — Meta opens the scores behind each one`) : null,
+			fileList(d.staging ?? [], true),
+		);
+	});
+	const gateCard = nodeRegion((d) => {
+		const gate = d.gate;
+		if (!gate) return emptyState("No gate data in this range.");
+		const parts = Object.entries(gate.parts).map(([part, stats]) => ({ key: part, part, ...stats }));
+		return h(
+			"div",
+			{ class: "grid" },
+			h(
+				"div",
+				{ class: "grid cols-2" },
+				card({ title: "Bands", sub: "rule proposals by gate outcome, re-derived from logged part scores", body: bars(Object.entries(gate.bands).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }) }),
+				card({
+					title: "Part scores vs floors",
+					sub: "how close proposals come to each floor",
+					body: table({
+						columns: [
+							{ label: "Part", render: (row) => h("span", { class: "mono" }, row.part) },
+							{ label: "Avg", right: true, render: (row) => (row.avg == null ? "—" : row.avg.toFixed(2)) },
+							{ label: "Max", right: true, render: (row) => (row.max == null ? "—" : row.max.toFixed(2)) },
+							{ label: "Floor", right: true, render: (row) => row.floor.toFixed(2) },
+							{
+								label: "Headroom",
+								right: true,
+								render: (row) => (row.max == null ? "—" : h("span", { style: { color: row.max - row.floor >= 0 ? "var(--ok)" : "var(--err)" } }, (row.max - row.floor).toFixed(2))),
+							},
+						],
+						rows: parts,
+					}),
+				}),
+			),
+			h(
+				"div",
+				{ class: "small muted" },
+				`${fmtInt(gate.nearMissEligibleSuppressed)} suppressed proposal(s) would band as ready or near-miss under these floors — the gap the per-part gate was introduced to close. Floors: evidence ≥ ${gate.floors.evidence}, novelty ≥ ${gate.floors.novelty}, trigger ≥ ${gate.floors.trigger}; near-miss needs min(evidence, novelty) ≥ ${gate.floors.nearMiss}.`,
+			),
+		);
+	});
 
 	view.append(
 		kpis.node,
 		h("div", { class: "split" }, card({ title: "Loop decisions", sub: "what the auto-loop concluded each run", body: decisions.node }), card({ title: "Stages", sub: "where runs spent their effort", body: stages.node })),
-		card({ title: "Applied rules & notes", sub: "everything the loop has written — open any of them to read it in full", flush: true, body: artifacts, help: HELP.refine }),
-		h("div", { class: "split" }, card({ title: "Staged rules", sub: "waiting for one-glance arming", flush: true, body: staging.node, help: HELP.refineStaging }), card({ title: "Notes written", sub: "durable notes the loop recorded", flush: true, body: notes.node })),
+		card({
+			title: "Rules & notes",
+			sub: "everything the loop has written, segregated by kind — rules carry a lifecycle, notes are records",
+			actions: artifactSegSlot,
+			flush: true,
+			body: artifactSlot,
+			help: HELP.refine,
+		}),
+		card({ title: "Gate calibration", sub: "how close rule proposals come to the gate, and which band they land in", body: gateCard.node, help: HELP.refineGate }),
+		card({ title: "Staged rules", sub: "waiting for one-glance arming — Meta opens the scores behind each one", flush: true, body: staging.node, help: HELP.refineStaging }),
 	);
 	const render = (d) => {
 		kpis.render(d);
 		decisions.render(d);
 		stages.render(d);
-		artifacts.patch((d.artifacts ?? []).map((row) => ({ ...row, key: row.id })));
+		renderArtifacts(d);
 		staging.render(d);
-		notes.render(d);
-		ctx.setStatus(`${RANGE_LABEL[state.range]} · ${fmtInt(d.runs)} loop runs · ${fmtInt(d.artifacts.length)} artifacts`);
+		gateCard.render(d);
+		ctx.setStatus(`${RANGE_LABEL[state.range]} · ${fmtInt(d.runs)} loop runs · ${fmtInt(d.artifactCounts?.rules ?? 0)} rules / ${fmtInt(d.artifactCounts?.notes ?? 0)} notes`);
 	};
 	render(data);
 	ctx.onAutoRefresh(async () => render(await api("/api/refine", { from: state.range })));
@@ -2250,6 +2344,7 @@ async function tunerPage(view, ctx) {
 			{ label: "Decided", right: true, render: (row) => (row.decidedAt ? timeAgo(row.decidedAt) : "—") },
 			{
 				label: "",
+				width: "78px",
 				render: (row) =>
 					h(
 						"button",

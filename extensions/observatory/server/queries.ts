@@ -2883,7 +2883,27 @@ export function refineOverview(db: Database, range: Range) {
 	let latencyTotal = 0;
 	let latencyCount = 0;
 	let degraded = 0;
-	const proposals: Array<{ ts: string; decision: string; stage: string; kind: string | null; name: string | null; score: number | null; latencyMs: number | null; err: string | null }> = [];
+	const proposals: Array<{ ts: string; decision: string; stage: string; kind: string | null; name: string | null; score: number | null; latencyMs: number | null; err: string | null; tier: string | null }> = [];
+	// The rule gate scores three parts and stages in two bands (ready / near-miss).
+	// Re-deriving the bands here is what makes the gate legible — and it is editable,
+	// since the floors are env vars the extension reads.
+	const clamp01 = (raw?: string, fallback = 0.6): number => {
+		const parsed = Number(raw ?? fallback);
+		return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : fallback;
+	};
+	const floors = {
+		evidence: clamp01(process.env.REFINE_AUTO_RULE_EVIDENCE_FLOOR, 0.6),
+		novelty: clamp01(process.env.REFINE_AUTO_RULE_NOVELTY_FLOOR, 0.6),
+		trigger: clamp01(process.env.REFINE_AUTO_RULE_TRIGGER_FLOOR, 0.5),
+		nearMiss: clamp01(process.env.REFINE_AUTO_NEAR_MISS_FLOOR, 0.4),
+	};
+	const bandOf = (parts: { evidence: number; novelty: number; trigger: number }): "ready" | "near-miss" | "below" => {
+		if (parts.evidence >= floors.evidence && parts.novelty >= floors.novelty && parts.trigger >= floors.trigger) return "ready";
+		return Math.min(parts.evidence, parts.novelty) >= floors.nearMiss ? "near-miss" : "below";
+	};
+	const bands: Record<string, number> = { ready: 0, "near-miss": 0, below: 0 };
+	const partStats: Record<string, number[]> = { evidence: [], novelty: [], trigger: [] };
+	let nearMissEligibleSuppressed = 0;
 	for (const row of rows) {
 		const data = parseData(row);
 		const decision = typeof data.decision === "string" ? data.decision : "unknown";
@@ -2891,6 +2911,13 @@ export function refineOverview(db: Database, range: Range) {
 		byDecision[decision] = (byDecision[decision] ?? 0) + 1;
 		byStage[stage] = (byStage[stage] ?? 0) + 1;
 		if (typeof data.kind === "string") byKind[data.kind] = (byKind[data.kind] ?? 0) + 1;
+		const rawParts = (data.parts ?? null) as Record<string, unknown> | null;
+		if (data.kind === "rule" && rawParts && typeof rawParts.evidence === "number" && typeof rawParts.novelty === "number" && typeof rawParts.trigger === "number") {
+			const scored = { evidence: rawParts.evidence, novelty: rawParts.novelty, trigger: rawParts.trigger };
+			bands[bandOf(scored)] += 1;
+			for (const part of ["evidence", "novelty", "trigger"]) partStats[part].push(scored[part as "evidence" | "novelty" | "trigger"]);
+			if (decision === "suppressed" && bandOf(scored) !== "below") nearMissEligibleSuppressed += 1;
+		}
 		if (typeof data.latencyMs === "number") {
 			latencyTotal += data.latencyMs;
 			latencyCount += 1;
@@ -2905,6 +2932,7 @@ export function refineOverview(db: Database, range: Range) {
 			score: typeof data.score === "number" ? data.score : null,
 			latencyMs: typeof data.latencyMs === "number" ? data.latencyMs : null,
 			err: typeof data.err === "string" ? data.err.slice(0, 160) : null,
+			tier: typeof data.tier === "string" ? data.tier : null,
 		});
 	}
 
@@ -2931,6 +2959,29 @@ export function refineOverview(db: Database, range: Range) {
 		if (recorded) candidates.push(recorded);
 		return candidates.find((candidate) => existsSync(candidate)) ?? null;
 	};
+	// Staged rules first: their tiers decide the lifecycle state of each rule artifact.
+	const stagingEntries = markdownFiles(path.join(refineDir(), "rules-staging")).map((entry) => {
+		// Each staged rule carries a sibling meta file with its tier and part scores —
+		// that is what tells you whether to arm it or send it for review.
+		let meta: Record<string, unknown> | null = null;
+		const metaPath = path.join(refineDir(), "rules-staging", `${entry.name}.meta.json`);
+		try {
+			if (existsSync(metaPath)) meta = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
+		} catch (err) {
+			log.warn(`cannot read ${metaPath}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		return {
+			...entry,
+			metaPath: existsSync(metaPath) ? metaPath : null,
+			tier: typeof meta?.tier === "string" ? meta.tier : null,
+			parts: (meta?.parts ?? null) as Record<string, unknown> | null,
+			score: typeof meta?.score === "number" ? meta.score : null,
+			stagedAt: typeof meta?.stagedAt === "string" ? meta.stagedAt : null,
+			evidence: typeof meta?.evidence === "string" ? meta.evidence.slice(0, 200) : null,
+		};
+	});
+	const stagedNames = new Set(stagingEntries.map((entry) => entry.name));
+
 	const artifacts = history.map((row) => {
 		const data = parseData(row);
 		const kind = typeof data.kind === "string" ? data.kind : "artifact";
@@ -2949,6 +3000,8 @@ export function refineOverview(db: Database, range: Range) {
 			source: typeof data.source === "string" ? data.source : null,
 			live: kind === "rule" ? liveRules.has(name) : true,
 			rolledBack: data.rolledBack === true,
+			// The lifecycle a rule passes through: proposed → staged → armed, or rolled back.
+			state: data.rolledBack === true ? "rolled back" : kind === "note" ? "written" : liveRules.has(name) ? "armed" : stagedNames.has(name) ? "staged" : "proposed",
 		};
 	});
 
@@ -2962,7 +3015,32 @@ export function refineOverview(db: Database, range: Range) {
 		stagedRate: byDecision.applied !== undefined && rows.length > 0 ? byDecision.applied / rows.length : null,
 		proposals: proposals.slice(-80).reverse(),
 		artifacts,
-		staging: markdownFiles(path.join(refineDir(), "rules-staging")),
+		staging: stagingEntries,
+		artifactCounts: {
+			rules: artifacts.filter((artifact) => artifact.kind === "rule").length,
+			notes: artifacts.filter((artifact) => artifact.kind === "note").length,
+			byState: artifacts.reduce<Record<string, number>>((counts, artifact) => {
+				counts[artifact.state] = (counts[artifact.state] ?? 0) + 1;
+				return counts;
+			}, {}),
+		},
+		gate: {
+			floors,
+			bands,
+			nearMissEligibleSuppressed,
+			parts: Object.fromEntries(
+				Object.entries(partStats).map(([part, values]) => [
+					part,
+					{
+						count: values.length,
+						avg: values.length ? values.reduce((a, b) => a + b, 0) / values.length : null,
+						max: values.length ? Math.max(...values) : null,
+						min: values.length ? Math.min(...values) : null,
+						floor: floors[part as "evidence" | "novelty" | "trigger"],
+					},
+				]),
+			),
+		},
 		notes: markdownFiles(path.join(refineDir(), "notes")),
 		liveRuleCount: liveRules.size,
 	};

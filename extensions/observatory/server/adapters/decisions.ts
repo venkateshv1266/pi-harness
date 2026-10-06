@@ -218,9 +218,14 @@ const askJevMap = (o: RawRecord): EventDraft => {
 // ---------------------------------------------------------------- refine
 
 const refineMap = (o: RawRecord): EventDraft => {
-	const b = { stage: info(o.stage), decision: info(o.decision), trigger: info(o.trigger), name: info(o.name), kind: info(o.kind), score: num(o.score), err: info(o.err) };
+	const b = { stage: info(o.stage), decision: info(o.decision), trigger: info(o.trigger), name: info(o.name), kind: info(o.kind), score: num(o.score), err: info(o.err), tier: info(o.tier) };
+	const parts = (o.parts ?? {}) as Record<string, unknown>;
+	const partText = ["evidence", "novelty", "trigger"]
+		.filter((part) => typeof parts[part] === "number")
+		.map((part) => `${part.slice(0, 2)} ${Number(parts[part]).toFixed(2)}`)
+		.join(" · ");
 	const severity: Severity = b.decision === "degraded" || b.err ? "warn" : b.decision === "applied" || b.decision === "armed" ? "ok" : "info";
-	const d = draft({ ts: info(o.ts), session: info(o.session) }, `refine.${b.decision ?? "event"}`, severity, o, `${b.stage ?? "refine"}${b.name ? ` · ${b.name}` : b.trigger ? ` · ${b.trigger}` : ""}`, [`decision ${b.decision ?? "?"}`, b.kind, fmt(b.score) !== "—" ? `score ${fmt(b.score)}` : null, truncate(b.err, 90)].filter(Boolean).join(" · "));
+	const d = draft({ ts: info(o.ts), session: info(o.session) }, `refine.${b.decision ?? "event"}`, severity, o, `${b.stage ?? "refine"}${b.name ? ` · ${b.name}` : b.trigger ? ` · ${b.trigger}` : ""}${b.tier ? ` (${b.tier})` : ""}`, [`decision ${b.decision ?? "?"}`, b.kind, fmt(b.score) !== "—" ? `score ${fmt(b.score)}` : null, truncate(b.err, 90), partText].filter(Boolean).join(" · "));
 	d.latencyMs = num(o.latencyMs);
 	return d;
 };
