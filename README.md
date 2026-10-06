@@ -39,7 +39,7 @@ To uninstall an extension, delete its file (or directory) from
 |---|---|---|
 | `extensions/` | 33 pi extensions — delegation, models, judgment/guardrails, context/memory, supervision, observability, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
 | `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
-| `rules/` | 21 generic TTSR stream rules | [`docs/rules.md`](docs/rules.md) |
+| `rules/` | 21 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
 | `skills/` | 4 skills: add-rule, add-agent, add-mcp-server, code-review | [`skills/README.md`](skills/README.md) |
 | `themes/` | 3 custom pi themes | [`themes/README.md`](themes/README.md) |
 | `utils/` | Shared helpers (decision contract, role resolution, Jev client + ask CLI) + the omp-stats dashboard | [`utils/README.md`](utils/README.md) |

@@ -37,6 +37,8 @@ done
 # 2. Generic rules (allowlist-driven, per file)
 for f in "$REPO_DIR"/rules/*.md; do
   name="$(basename "$f")"
+  # README.md documents the collection for repo readers; it is not a rule and has no live counterpart
+  if [ "$name" = "README.md" ]; then continue; fi
   if [ -f "$AGENT/rules/$name" ]; then
     cp "$AGENT/rules/$name" "$f"
   else
