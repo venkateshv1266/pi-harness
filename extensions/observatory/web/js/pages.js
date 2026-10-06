@@ -123,6 +123,13 @@ const HELP = {
 		source: "~/.pi/agent/rules/*.md for sizes, ttsr-jev.jsonl for deliveries, model_calls for the call count.",
 		action: "This grows with rule count and call count — the strongest argument for keeping rules narrow and triggers precise instead of hoisting them into AGENTS.md.",
 	},
+	benefitCurator: {
+		title: "Context curator — tokens condensed",
+		what: "How much text the curator kept out of context, reported two ways: the tokens avoided on the turn an item was condensed (one-time), and that same saving carried across the turns the session had left — the figure the Curator page leads with.",
+		formula: "(source chars − extract chars) ÷ 4 for items delivered as an extract or index only. The one-time figure is exact; the carried figure multiplies it by the session's remaining turns, so it estimates what those chars would have cost on later turns. Items kept in full are counted, never priced.",
+		source: "~/.pi/agent/jev-decisions curator ledger items (chars, extractChars, verdict, turn) joined to each session's turn count, priced at the blended input rate.",
+		action: "If most items are kept in full, the curator is not the lever — cap the tool output at the source (head/tail/filter) so the bulk never enters context in the first place.",
+	},
 	benefitBaseline: {
 		title: "Always-on prompt cost",
 		what: "What every call pays before the harness adds anything: system sections plus tool declarations. The floor your spend sits on.",
@@ -713,6 +720,13 @@ async function impactPage(view, ctx) {
 				help: HELP.benefitRules,
 			}),
 			kpi({
+				label: "Tokens condensed (curator)",
+				value: fmtCompact(d.curator.savedTokensEst),
+				sub: `${fmtCompact(d.curator.savedTokensOneTime)} one-time · ${fmtInt(d.curator.retainFull)} items kept in full`,
+				valueClass: "good",
+				help: HELP.benefitCurator,
+			}),
+			kpi({
 				label: "Always-on prompt cost",
 				value: b.baseline.cost == null ? "—" : fmtCost(b.baseline.cost),
 				sub: `${fmtCompact(b.baseline.tokens)} tok/call × ${fmtInt(b.baseline.calls)} calls`,
@@ -740,6 +754,7 @@ async function impactPage(view, ctx) {
 	});
 	const benefitTable = nodeRegion((d) => {
 		const b = d.benefits;
+		const c = d.curator;
 		const toolMix = Object.entries(b.judgment.tools)
 			.sort((a, z) => z[1] - a[1])
 			.slice(0, 4)
@@ -771,6 +786,18 @@ async function impactPage(view, ctx) {
 					alternative: `all ${fmtInt(b.rules.ruleCount)} rules resident: ${fmtCompact(b.rules.tokens)} tok × ${fmtInt(b.baseline.calls)} calls = ${fmtCost(b.rules.alwaysOnCost ?? 0)}`,
 					net: h("span", { style: { color: "var(--ok)", fontWeight: "650" } }, `${fmtCost(b.rules.net ?? 0)} saved`),
 					basis: `Rule text ÷ 4, priced at ${fmtCost((b.rates.effectivePerToken ?? 0) * 1_000_000)}/M. Resident rules would add ${fmtPct(b.rules.shareOfBaseline ?? 0, 1)} to the always-on prompt.`,
+				},
+				{
+					key: "curator",
+					mechanism: "Context curator",
+					trendKey: "curatorTokens",
+					now: `${fmtInt(c.emits)} condensed of ${fmtInt(c.candidates)} candidates · ${fmtInt(c.retainFull)} kept in full · verifier spend sits in the Jev row`,
+					alternative: `kept in context instead: ${fmtCompact(c.savedTokensOneTime)} tok one-time + carried across later turns = ${fmtCompact(c.savedTokensEst)} tok ≈ ${fmtCost(c.savedUsdEst ?? 0)}`,
+					net:
+						c.savedUsdEst == null
+							? h("span", { class: "faint" }, "no rate")
+							: h("span", { style: { color: "var(--ok)", fontWeight: "650" } }, `${fmtCost(c.savedUsdEst)} saved`),
+					basis: `(source chars − extract chars) ÷ 4 for every item delivered as an extract or index only, priced at ${fmtCost((b.rates.effectivePerToken ?? 0) * 1_000_000)}/M and multiplied by the turns left in that session — exact for the chars condensed, an estimate for what they would have cost on later turns. Items kept in full are counted, not priced. The curator's own verifier calls are counted in the Jev row, not here.`,
 				},
 				{
 					key: "baseline",
