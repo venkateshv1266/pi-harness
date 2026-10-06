@@ -74,6 +74,8 @@ import { Type, uuidv7, type AssistantMessage, type Context, type ThinkingLevel }
 import {
 	convertToLlm,
 	defineTool,
+	keyHint,
+	truncateToVisualLines,
 	type ContextEditEntryDraft,
 	type CustomEntryDraft,
 	type ExtensionAPI,
@@ -84,8 +86,10 @@ import {
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ToolCallEvent,
+	type ToolRenderers,
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1947,6 +1951,62 @@ async function v2DueAndEmit(
 	return out;
 }
 
+const RECALL_PREVIEW_VISUAL_LINES = 10;
+
+interface RecallPreviewState {
+	width?: number;
+	lines?: string[];
+	skipped?: number;
+}
+
+class RecallResultComponent extends Container {
+	preview: RecallPreviewState = {};
+}
+
+const recallToolRenderers: ToolRenderers = {
+	renderResult(result, options, theme, context) {
+		const component = context.lastComponent instanceof RecallResultComponent ? context.lastComponent : new RecallResultComponent();
+		component.clear();
+		const output = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+		if (!output) return component;
+		const styled = output
+			.split("\n")
+			.map((line) => theme.fg("toolOutput", line))
+			.join("\n");
+		if (options.expanded) {
+			component.addChild(new Text(styled, 0, 0));
+			return component;
+		}
+		// pi's default preview caps logical lines, so one recalled minified line
+		// still wraps across the screen collapsed; cap wrapped lines instead.
+		const state = component.preview;
+		component.addChild({
+			render: (width: number): string[] => {
+				if (state.lines === undefined || state.width !== width) {
+					const preview = truncateToVisualLines(styled, RECALL_PREVIEW_VISUAL_LINES, width, 0, "start");
+					state.lines = preview.visualLines;
+					state.skipped = preview.skippedCount;
+					state.width = width;
+				}
+				const lines = [...(state.lines ?? [])];
+				if (state.skipped) {
+					lines.push(
+						theme.fg("muted", `... (${state.skipped} more lines,`) +
+							` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`,
+					);
+				}
+				return lines;
+			},
+			invalidate: () => {
+				state.width = undefined;
+				state.lines = undefined;
+				state.skipped = undefined;
+			},
+		});
+		return component;
+	},
+};
+
 // ─── Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -2342,6 +2402,8 @@ ${goalspecSummary()}` }],
 		// durable state and deliberately survives compaction in memory
 		shadowJudged.clear();
 	});
+
+	pi.registerToolRenderer((toolName, next) => (toolName === "jev_recall" ? { ...next(), ...recallToolRenderers } : next()));
 
 	pi.registerTool(
 		defineTool({
