@@ -10,9 +10,20 @@ import path from "node:path";
 export interface CuratorConfig {
 	enabled: boolean;
 	mode: string;
+	verifierMode: string;
 	verifierModel: string;
 	verifierTimeoutMs: number;
 	verifyRawCap: number;
+	covMin: number;
+	cardBgProb: number;
+	verifyMaxLines: number;
+	repairSlack: number;
+	verifierShadowPct: number;
+	jevBreaker: number;
+	reclassPerTurn: number;
+	supersedeMax: number;
+	registryCap: number;
+	overflowCap: number;
 	minChars: number;
 	recencyTurns: number;
 	stubProb: number;
@@ -70,6 +81,20 @@ export const CURATOR_SETTING_SPECS: CuratorSettingSpec[] = [
 		],
 	},
 	{
+		key: "verifierMode",
+		env: "JEVCURATOR_VERIFIER",
+		kind: "enum",
+		label: "Verifier protocol",
+		detail:
+			"hybrid = Jev fact-decomposed verification (coverage check + repair-first) with frontier escalation on uncertainty; jev = Jev-only, uncertain → retainFull; frontier = the holistic frontier gate only.",
+		defaultValue: "hybrid",
+		options: [
+			{ value: "hybrid", label: "hybrid", description: "Jev protocol + frontier escalation (default)" },
+			{ value: "jev", label: "jev", description: "Jev protocol only; uncertain cases retain full" },
+			{ value: "frontier", label: "frontier", description: "Holistic frontier verifier only (pre-V4 gate)" },
+		],
+	},
+	{
 		key: "verifierModel",
 		env: "JEVCURATOR_VERIFIER_MODEL",
 		kind: "model",
@@ -90,6 +115,16 @@ interface CuratorEnvSpec {
 const CURATOR_ENV_SPECS: CuratorEnvSpec[] = [
 	{ key: "verifierTimeoutMs", env: "JEVCURATOR_VERIFIER_TIMEOUT_MS", defaultValue: 90000 },
 	{ key: "verifyRawCap", env: "JEVCURATOR_VERIFY_RAW_CAP", defaultValue: 60000 },
+	{ key: "covMin", env: "JEVCURATOR_COV_MIN", defaultValue: 0.5 },
+	{ key: "cardBgProb", env: "JEVCURATOR_CARD_BG_PROB", defaultValue: 0.8 },
+	{ key: "verifyMaxLines", env: "JEVCURATOR_VERIFY_MAX_LINES", defaultValue: 30 },
+	{ key: "repairSlack", env: "JEVCURATOR_REPAIR_SLACK", defaultValue: 1.5 },
+	{ key: "verifierShadowPct", env: "JEVCURATOR_VERIFIER_SHADOW_PCT", defaultValue: 0.15 },
+	{ key: "jevBreaker", env: "JEVCURATOR_JEV_BREAKER", defaultValue: 2 },
+	{ key: "reclassPerTurn", env: "JEVCURATOR_RECLASS_PER_TURN", defaultValue: 5 },
+	{ key: "supersedeMax", env: "JEVCURATOR_SUPERSEDE_MAX", defaultValue: 5 },
+	{ key: "registryCap", env: "JEVCURATOR_REGISTRY_CAP", defaultValue: 150 },
+	{ key: "overflowCap", env: "JEVCURATOR_OVERFLOW_CAP", defaultValue: 50 },
 	{ key: "minChars", env: "JEVCURATOR_MIN_CHARS", defaultValue: 1500 },
 	{ key: "recencyTurns", env: "JEVCURATOR_RECENCY_TURNS", defaultValue: 3 },
 	{ key: "ingestCap", env: "JEVCURATOR_INGEST_CAP", defaultValue: 25000 },
