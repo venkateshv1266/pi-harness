@@ -81,6 +81,9 @@
 [hidden] { display: none !important; }
 
 html, body { margin: 0; min-height: 100%; }
+/* The page itself never scrolls sideways; wide content lives inside its card. */
+html { overflow-x: clip; }
+body { overflow-x: clip; }
 body {
 	background: var(--bg);
 	color: var(--text);
@@ -130,7 +133,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, 
 .shell { display: flex; flex-direction: column; min-width: 0; }
 .topbar {
 	position: sticky; top: 0; z-index: 20;
-	display: flex; align-items: center; gap: 12px;
+	display: flex; align-items: center; flex-wrap: wrap; gap: 12px; row-gap: 8px;
 	padding: 11px 24px;
 	border-bottom: 1px solid var(--border);
 	background: color-mix(in oklab, var(--bg) 88%, transparent);
@@ -138,7 +141,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, 
 	-webkit-backdrop-filter: blur(10px);
 }
 .topbar h2 { margin: 0; font-size: 15.5px; font-weight: 680; letter-spacing: -0.1px; }
-.topbar .sub { color: var(--muted); font-size: 12px; }
+.topbar .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 52ch; }
 .grow { flex: 1; }
 
 /* ---------------- controls ---------------- */
@@ -152,7 +155,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, 
 .btn {
 	appearance: none; border: 1px solid var(--border); background: var(--panel); color: var(--text);
 	border-radius: 9px; padding: 5px 11px; font-size: 12.5px; font-weight: 620; cursor: pointer;
-	display: inline-flex; align-items: center; gap: 6px; font-family: inherit;
+	display: inline-flex; align-items: center; gap: 6px; font-family: inherit; white-space: nowrap;
 }
 .btn:hover { border-color: var(--border-strong); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -166,7 +169,8 @@ input.input::placeholder { color: var(--faint); }
 input.input:focus, select.select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 
 /* ---------------- view ---------------- */
-.view { padding: 18px 24px 72px; display: flex; flex-direction: column; gap: 14px; max-width: 1560px; width: 100%; }
+.view { padding: 18px 24px 72px; display: flex; flex-direction: column; gap: 14px; width: 100%; min-width: 0; }
+.view > * { min-width: 0; }
 .grid { display: grid; gap: 14px; }
 .kpis { grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); }
 .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -240,21 +244,34 @@ input.input:focus, select.select:focus { outline: 2px solid var(--accent-soft); 
 
 /* ---------------- tables ---------------- */
 .tablewrap { overflow: auto; max-height: 620px; }
-table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+/* Auto layout so columns take exactly the width their content needs — narrow
+ * columns shrink, the long text column absorbs the rest. `overflow-wrap:
+ * anywhere` (unlike break-word) also shrinks min-content, so a long unbreakable
+ * string can't force the table wider than its card. */
+table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: auto; }
 .tbl th {
 	position: sticky; top: 0; z-index: 1; background: var(--panel);
 	text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.55px;
 	color: var(--muted); font-weight: 720; padding: 8px 12px;
 	border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-.tbl td { padding: 7px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+.tbl td { padding: 7px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 .tbl tbody tr:last-child td { border-bottom: 0; }
 .tbl tr.clickable { cursor: pointer; }
 .tbl tr.clickable:hover td { background: var(--panel-2); }
 .tbl td.right, .tbl th.right { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl td.mono, .tbl td .mono { font-size: 11.5px; }
 .tbl .truncate { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tbl .rowtitle { font-weight: 600; color: var(--text); }
+.tbl .rowtitle { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.tbl .rowsub { overflow-wrap: anywhere; }
+/* Inside a table, truncation means "wrap", never "hide": the whole point of a
+ * row is that you can read it. */
+.tbl .truncate { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+/* Cell prose wraps; only short UI atoms are held on one line, so a button label
+ * never breaks mid-word when its column is tight. `.faint` and `.mono` are
+ * deliberately NOT here: both are used for long cell prose (a column's whole
+ * basis text), and forcing those onto one line is what makes a table scroll. */
+.tbl td .btn, .tbl td .pill, .tbl td .nowrap { white-space: nowrap; overflow-wrap: normal; }
 .tbl .rowsub { color: var(--muted); font-size: 11.5px; }
 
 /* ---------------- charts ---------------- */
@@ -305,7 +322,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .dhead { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-bottom: 1px solid var(--border); }
 .dhead h3 { margin: 0; font-size: 14px; }
 .dbody { padding: 16px 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
-pre.json { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow: auto; font-size: 11.5px; line-height: 1.55; margin: 0; }
+pre.json { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.55; margin: 0; }
 .tooltip {
 	position: fixed; z-index: 80; pointer-events: none;
 	background: var(--tooltip-bg); color: var(--tooltip-fg);

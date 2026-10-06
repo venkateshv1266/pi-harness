@@ -35,7 +35,7 @@ Server logs: `~/.pi/agent/observatory/server.log`.
 | **Jev Ledger** | One filterable table over all decision logs (curator, TTSR, guard, memory, router, course-check, refine, tuner, ask-jev, subagent router) + per-system effectiveness tabs |
 | **Curator** | Per-session candidate flow (source → role → verifier verdict), ledger items, context edits, GoalSpec amendments |
 | **Sessions** | All sessions sortable by cost/tokens/recency **and by harness impact** (condensed tokens, cache saved, problems); per-session timeline lanes (messages, harness events, model calls), a **Session impact** section (benefit, quality meters, improvement hints, biggest context items) and a side-by-side **compare** against another session |
-| **Refine** | The self-improvement loop: runs audited, decisions and stages, **applied rules and notes** (open any artifact in full, with a copy button), rules **staged for arming**, and the notes it wrote |
+| **Refine** | The self-improvement loop: runs audited, decisions and stages, **rules and notes segregated by kind** — rules carry their lifecycle (proposed → staged → armed, or rolled back), notes are records — with every artifact openable in full, rules **staged for arming** with their tier (`ready` / `near-miss`) and part scores, and **gate calibration**: the band each rule proposal lands in and how close its evidence/novelty/trigger scores come to the floors |
 | **Tuner** | Weekly tuning passes and their **proposals** — prune or config, with the evidence behind each, its review status, and a link to the target rule or file |
 | **Extensions** | Every installed extension with activity, cost, adapter coverage, and a **silent 7d+** flag |
 | **Health** | Warnings/errors per subsystem and recent issues, with raw-record drilldown |
@@ -43,6 +43,8 @@ Server logs: `~/.pi/agent/observatory/server.log`.
 
 Every headline number drills through to the raw log record it came from.
 Values the logs do not contain are shown as `—`, never estimated silently.
+Every view fits the viewport: column widths follow content, cell text wraps rather
+than clipping, and no page scrolls sideways.
 
 ## Data sources
 
