@@ -6,7 +6,7 @@
  *          D: $used/$cap (pct%)                     M: $used/$cap (pct%)
  * Editor:  ╭─────────── 🤖 <model> (<thinking>) ─╮            (top border)
  *          │ <input>                               │            (side borders)
- *          ╰─ 🌿 <branch> ─────── <ctx%> (<max>) $<cost> ─╯    (bottom border)
+ *          ╰─ 🌿 <branch> ─────── <ctx%> (<max>) $<cost> ─╯    (bottom; 📁 <cwd> when not a git repo)
  *
  * Strips are non-capturing overlays, re-created whenever the editor's rendered
  * geometry changes (multi-line input, autocomplete height) and hidden while the
@@ -25,7 +25,7 @@ const API_BASE = "https://openrouter.ai/api/v1";
 const SETTINGS_PATH = nodePath.join(os.homedir(), ".pi", "agent", "settings.json");
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-const BRANCH_STRIP_MIN = 12;
+const BRANCH_STRIP_MIN = 9;
 const USAGE_STRIP_MIN = 15;
 const EDGE_STRIP_WIDTH = 1;
 const FOOTER_ROWS = 2;
@@ -62,6 +62,7 @@ type ApiError = {
 
 type EditorGeometry = { focused: boolean; rows: number; autocomplete: number };
 type StripGeometry = EditorGeometry & { width: number; modelWidth: number; branchWidth: number; usageWidth: number };
+type BranchLabel = { icon: string; text: string };
 
 async function getJson<T>(url: string, apiKey: string): Promise<T> {
 	const response = await fetch(url, {
@@ -193,11 +194,11 @@ function renderModelStrip(ctx: ExtensionContext, width: number, theme: Theme): s
 	return [truncateToWidth(pad + content, width)];
 }
 
-function renderBranchStrip(branch: string, width: number, theme: Theme, level: ExtensionContext["thinkingLevel"]): string[] {
+function renderBranchStrip(label: BranchLabel, width: number, theme: Theme, level: ExtensionContext["thinkingLevel"]): string[] {
 	const border = thinkingBorder(theme, level);
-	const chrome = visibleWidth("╰─ ") + visibleWidth("🌿 ") + visibleWidth(" ─");
-	const name = truncateMiddle(branch, Math.max(4, width - chrome));
-	const content = border("╰─ ") + theme.fg("muted", "🌿 ") + theme.fg("success", name) + border(" ─");
+	const chrome = visibleWidth("─ ") + visibleWidth(`${label.icon} `) + visibleWidth(" ─");
+	const name = truncateMiddle(label.text, Math.max(4, width - chrome));
+	const content = border("─ ") + theme.fg("muted", `${label.icon} `) + theme.fg("success", name) + border(" ─");
 	const pad = border("─".repeat(Math.max(0, width - visibleWidth(content))));
 	return [truncateToWidth(content + pad, width)];
 }
@@ -237,8 +238,8 @@ function modelContentWidth(ctx: ExtensionContext): number {
 	);
 }
 
-function branchContentWidth(branch: string): number {
-	return visibleWidth("╰─ ") + visibleWidth("🌿 ") + visibleWidth(branch) + visibleWidth(" ─");
+function branchContentWidth(label: BranchLabel): number {
+	return visibleWidth("─ ") + visibleWidth(`${label.icon} `) + visibleWidth(label.text) + visibleWidth(" ─");
 }
 
 function usageContentWidth(ctx: ExtensionContext, withMax: boolean): number {
@@ -255,12 +256,12 @@ function usageContentWidth(ctx: ExtensionContext, withMax: boolean): number {
 	);
 }
 
-function stripWidths(ctx: ExtensionContext, branch: string, width: number): { model: number; branch: number; usage: number } {
+function stripWidths(ctx: ExtensionContext, label: BranchLabel, width: number): { model: number; branch: number; usage: number } {
 	const available = Math.max(0, width - 1);
 	const thinking = ctx.thinkingLevel ? ` (${ctx.thinkingLevel})` : "";
 	const modelMin = visibleWidth("─ ") + visibleWidth("🤖 ") + visibleWidth(thinking) + visibleWidth(" ─╮") + 4;
 	const model = available < modelMin ? 0 : Math.min(modelContentWidth(ctx), available);
-	let branchWidth = Math.min(branchContentWidth(branch), available);
+	let branchWidth = Math.min(branchContentWidth(label), available);
 	let usage = Math.min(usageContentWidth(ctx, true), available);
 	if (branchWidth + usage > available) usage = Math.min(usage, usageContentWidth(ctx, false));
 	if (branchWidth + usage > available) {
@@ -293,7 +294,7 @@ function editorGeometry(tui: TUI): EditorGeometry {
 
 function installStatusStrips(
 	ctx: ExtensionContext,
-	getBranch: () => string,
+	getLabel: () => BranchLabel,
 	showSides: boolean,
 ): { tick: (tui: TUI, width: number) => void; dispose: () => void } {
 	let disposed = false;
@@ -336,6 +337,13 @@ function installStatusStrips(
 			offsetX: 0,
 			width: EDGE_STRIP_WIDTH,
 		});
+		addStrip((_w, t) => renderEdge(t, ctx.thinkingLevel, "╰"), {
+			...shared,
+			anchor: "bottom-left",
+			offsetY: bottom,
+			offsetX: 0,
+			width: EDGE_STRIP_WIDTH,
+		});
 		if (showSides) {
 			addStrip((_w, t) => renderEdge(t, ctx.thinkingLevel, "│", geometry.rows), {
 				...shared,
@@ -362,11 +370,11 @@ function installStatusStrips(
 			});
 		}
 		if (geometry.branchWidth > 0) {
-			addStrip((w, t) => renderBranchStrip(getBranch(), w, t, ctx.thinkingLevel), {
+			addStrip((w, t) => renderBranchStrip(getLabel(), w, t, ctx.thinkingLevel), {
 				...shared,
 				anchor: "bottom-left",
 				offsetY: bottom,
-				offsetX: 0,
+				offsetX: 1,
 				width: geometry.branchWidth,
 			});
 		}
@@ -406,7 +414,7 @@ function installStatusStrips(
 		}
 		if (!base.focused) return;
 		const effectiveWidth = Math.max(1, Math.floor(width));
-		const widths = stripWidths(ctx, getBranch(), effectiveWidth);
+		const widths = stripWidths(ctx, getLabel(), effectiveWidth);
 		const geometry: StripGeometry = {
 			...base,
 			width: effectiveWidth,
@@ -450,12 +458,15 @@ function installFooter(ctx: ExtensionContext): () => void {
 	let refreshInFlight = false;
 	let state: BudgetState = { status: "loading" };
 	let requestRender: (() => void) | undefined;
-	let readBranch = () => "-";
+	let readBranchLabel = () => ({ icon: "📁", text: nodePath.basename(process.cwd()) });
 
-	const strips = installStatusStrips(ctx, () => readBranch(), readEditorPaddingX() >= 1);
+	const strips = installStatusStrips(ctx, () => readBranchLabel(), readEditorPaddingX() >= 1);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
-		readBranch = () => footerData.getGitBranch() || "-";
+		readBranchLabel = () => {
+			const branch = footerData.getGitBranch();
+			return branch ? { icon: "🌿", text: branch } : { icon: "📁", text: nodePath.basename(process.cwd()) };
+		};
 		const unsub = footerData.onBranchChange(() => tui.requestRender());
 		requestRender = () => tui.requestRender();
 
