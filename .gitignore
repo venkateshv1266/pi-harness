@@ -2,3 +2,5 @@ node_modules/
 .DS_Store
 *.log
 tasks/
+# cmux installs and upgrades this in ~/.pi/agent — never vendored here
+extensions/cmux-session.ts

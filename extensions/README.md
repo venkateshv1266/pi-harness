@@ -34,7 +34,6 @@ New docs follow
 | Extension | What it does |
 |---|---|
 | [`claude-compat`](#claude-compat) | Surfaces Claude Code resources (`.claude/CLAUDE.md`, `.claude/skills/`) from the repo tree. |
-| [`cmux-session`](#cmux-session) | cmux lifecycle/telemetry bridge; machine-managed, do not edit. |
 | [`confirm-destructive`](#confirm-destructive) | Confirmation prompts before session switch and fork. |
 | [`custom-footer`](#custom-footer) | Guardrail footer (blank margin row, D left / M right) + a rounded box around the editor (model, branch, context/cost strips, side borders); `/footer` toggles. |
 | [`decisions-report`](#decisions-report) | `/decisions-report` joins decision logs to outcomes and flags prune/reword candidates. |
@@ -62,27 +61,6 @@ Surfaces Claude Code resources — `.claude/CLAUDE.md` and `.claude/skills/` —
 **How it works** — `session_start` refreshes the cache and notifies; `resources_discover` recomputes and returns `{ skillPaths }`; `before_agent_start` appends the cached CLAUDE.md under `## Project-local Claude context (.claude/CLAUDE.md)` inside a `<project_instructions>` block. The innermost `.claude` wins (context files deduped by realpath); `~/.claude` counts only when home is an ancestor of the cwd. Skills whose names collide with pi's default global skill dirs (`~/.pi/agent/skills`, `~/.agents/skills`) are skipped in favor of pi-native, and the skipped count is surfaced in the notification.
 
 **Caveats** — No settings, env vars, or off switch — removing the extension is the only disable. Hooks and `.claude/` contexts are not discovered: only `CLAUDE.md` and `skills/`.
-
-## cmux-session
-
-Bridges pi session lifecycle, telemetry, and notifications into cmux. **Machine-managed — do not hand-edit.**
-
-**What it does** — Forwards pi events to the cmux CLI (`hooks pi …`): session start, prompt submit, tool start/end (including subagent start/stop), compaction pre/post, completion notifications, and stop. Installed and overwritten in place by `cmux hooks pi install` (header marker `cmux-pi-session-extension-marker v2`).
-
-**Configuration** — Environment (all read at runtime):
-
-| Env var | Default | Effect |
-|---|---|---|
-| `CMUX_PI_CMUX_BIN` | `cmux` (via PATH) | cmux binary to invoke |
-| `CMUX_PI_HOOKS_DISABLED` | unset | `1` disables the bridge entirely |
-| `CMUX_SURFACE_ID` | unset | Required for event delivery; without it events are silently dropped |
-| `CMUX_WORKSPACE_ID` / `CMUX_PANEL_ID` | unset | Optional targeting |
-| `CMUX_SOCKET_PASSWORD` | unset | Forwarded only to cmux CLI child processes |
-| `CMUX_AGENT_LAUNCH_KIND/_EXECUTABLE/_ARGV_B64/_CWD` | set by the extension if absent | Launch context for cmux |
-
-**How it works** — `session_start` → `hooks pi session-start` plus a resume binding; `before_agent_start` → prompt-submit; `tool_execution_start`/`end` → PreToolUse/PostToolUse and SubagentStart/SubagentStop; `session_before_compact`/`session_compact` → PreCompact/PostCompact; `agent_end` holds the last assistant message for the completion notification (published immediately on pi < 0.80.5); `agent_settled` (pi ≥ 0.80.5) drains the queue → `hooks pi notification` + `hooks pi stop`; `session_shutdown` → stop if not already stopped, clears the resume binding.
-
-**Caveats** — `install.sh` copies this file only when the `cmux` binary is on PATH and removes any stale installed copy otherwise — its hooks would fail on every event without the binary.
 
 ## model-roles
 

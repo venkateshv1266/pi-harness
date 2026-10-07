@@ -11,11 +11,12 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT="${HOME}/.pi/agent"
 
-# 1. Extensions (full sync; the repo mirrors the whole extensions dir)
+# 1. Extensions (full sync except cmux-session.ts, which cmux manages in place)
 rsync -a --delete \
   --exclude='node_modules' \
   --exclude='.cmux-session.lock' \
   --exclude='.DS_Store' \
+  --exclude='cmux-session.ts' \
   "$AGENT/extensions/" "$REPO_DIR/extensions/"
 
 # 1b. Shared utils imported by extensions

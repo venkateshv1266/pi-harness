@@ -15,15 +15,10 @@ if ! command -v pi >/dev/null 2>&1; then
 fi
 
 # 1. Extensions
+# cmux-session.ts is intentionally absent — cmux installs and upgrades it in
+# place (`cmux hooks pi install`); this rsync never touches it.
 mkdir -p "$AGENT/extensions"
-# cmux-session.ts is managed by cmux (README: "Skip it if you don't use cmux").
-# Without the cmux binary its hooks fail on every event, so skip it and remove
-# any stale installed copy when cmux is not on PATH.
 RSYNC_EXCLUDES=(--exclude='node_modules' --exclude='.DS_Store')
-if ! command -v cmux >/dev/null 2>&1; then
-  RSYNC_EXCLUDES+=(--exclude='cmux-session.ts')
-  rm -f "$AGENT/extensions/cmux-session.ts"
-fi
 rsync -a "${RSYNC_EXCLUDES[@]}" "$REPO_DIR/extensions/" "$AGENT/extensions/"
 
 # 1b. Shared utils imported by extensions
