@@ -15,11 +15,12 @@ migration that `./install.sh` runs for you.
 
 ---
 
-## YubiKey alerts for Git in cmux
+## YubiKey alerts for Git in cmux and Orca
 
 If Git uses a YubiKey for SSH authentication or signing, the wrappers in
-`bin/` fire a cmux notification, a screen flash, and a sound just before the
-touch is needed. Run:
+`bin/` fire a notification, an attention signal, and a sound just before the
+touch is needed — inside cmux that's `cmux notify` plus `cmux trigger-flash`,
+inside Orca a macOS notification banner plus the workspace unread dot. Run:
 
 ```bash
 ./scripts/install-yubikey-notifications.sh
@@ -64,20 +65,24 @@ from the alert.
   flag cluster containing `s`/`S`/`b` (Git passes clusters like `-bsau…`
   when signing commits and tags). Verification (`--verify`) stays silent.
 
-Alerts fire only inside cmux: each wrapper checks that `CMUX_SOCKET_PATH` or
-`CMUX_SOCKET` is non-empty and otherwise execs straight through silently.
-Inside cmux, the wrapper backgrounds three actions — `cmux notify
+Alerts fire only inside cmux or Orca; anywhere else the wrappers exec
+straight through silently. Each wrapper checks for cmux (`CMUX_SOCKET_PATH`
+or `CMUX_SOCKET` non-empty) or Orca (`TERM_PROGRAM=Orca` or
+`ORCA_WORKTREE_ID` non-empty) and backgrounds the alert actions so the Git
+operation is never delayed. Inside cmux those actions are `cmux notify
 --title "YubiKey touch needed"` with an operation-specific body,
-`cmux trigger-flash`, and `afplay` on the configured sound — so the Git
-operation is never delayed. The behavior of `cmux notify` and
-`cmux trigger-flash` themselves is not documented in code.
+`cmux trigger-flash`, and `afplay` on the configured sound. Inside Orca they
+are a macOS notification banner via `osascript`, the workspace's sidebar
+unread dot via `orca worktree set --unread`, and the same `afplay` sound.
 
 ### Configuration
 
 | Env var | Default | Effect |
 |---|---|---|
 | `PI_YUBIKEY_NOTIFICATION_SOUND` | `$HOME/.pi/agent/sounds/yubikey-alert-2-beep.wav` | Sound file both wrappers play via `afplay` (macOS). If the file does not exist, they fall back to `/System/Library/Sounds/Sosumi.aiff`. |
-| `CMUX_SOCKET_PATH`, `CMUX_SOCKET` | unset | Presence (non-empty) is what enables alerts. Expected to be provided by cmux inside its sessions; not meant to be set by hand. |
+| `CMUX_SOCKET_PATH`, `CMUX_SOCKET` | unset | Presence (non-empty) is what enables cmux alerts. Expected to be provided by cmux inside its sessions; not meant to be set by hand. |
+| `TERM_PROGRAM=Orca`, `ORCA_WORKTREE_ID` | unset | Either one non-empty enables Orca alerts. Provided by Orca inside its terminals; not meant to be set by hand. |
+| `ORCA_CLI_COMMAND` | `orca` | Orca CLI binary the wrappers call for the unread dot; Orca exports it in some managed environments, otherwise `orca` from `PATH` is used. |
 
 ### Uninstall / revert
 
