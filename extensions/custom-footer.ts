@@ -6,7 +6,7 @@
  *          D: $used/$cap (pct%)                     M: $used/$cap (pct%)
  * Editor:  ╭─────────── 🤖 <model> (<thinking>) ─╮            (top border)
  *          │ <input>                               │            (side borders)
- *          ╰─ 🌿 <branch> ─────── <ctx%> (<max>) $<cost> ─╯    (bottom; 📁 <cwd> when not a git repo)
+ *          ╰─ 📁 <cwd> 🌿 <branch> ─── <ctx%> (<max>) $<cost> ─╯    (bottom; 🌿 omitted outside a git repo)
  *
  * Strips are non-capturing overlays, re-created whenever the editor's rendered
  * geometry changes (multi-line input, autocomplete height) and hidden while the
@@ -25,8 +25,7 @@ const API_BASE = "https://openrouter.ai/api/v1";
 const SETTINGS_PATH = nodePath.join(os.homedir(), ".pi", "agent", "settings.json");
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-const BRANCH_STRIP_MIN = 9;
-const USAGE_STRIP_MIN = 15;
+const LOCATION_STRIP_MIN = 9;
 const EDGE_STRIP_WIDTH = 1;
 const FOOTER_ROWS = 2;
 
@@ -61,8 +60,8 @@ type ApiError = {
 };
 
 type EditorGeometry = { focused: boolean; rows: number; autocomplete: number };
-type StripGeometry = EditorGeometry & { width: number; modelWidth: number; branchWidth: number; usageWidth: number };
-type BranchLabel = { icon: string; text: string };
+type StripGeometry = EditorGeometry & { width: number; modelWidth: number; locationWidth: number; usageWidth: number };
+type StripPart = { icon: string; text: string; color: ThemeColor };
 
 async function getJson<T>(url: string, apiKey: string): Promise<T> {
 	const response = await fetch(url, {
@@ -194,11 +193,22 @@ function renderModelStrip(ctx: ExtensionContext, width: number, theme: Theme): s
 	return [truncateToWidth(pad + content, width)];
 }
 
-function renderBranchStrip(label: BranchLabel, width: number, theme: Theme, level: ExtensionContext["thinkingLevel"]): string[] {
+function renderLocationStrip(parts: StripPart[], width: number, theme: Theme, level: ExtensionContext["thinkingLevel"]): string[] {
 	const border = thinkingBorder(theme, level);
-	const chrome = visibleWidth("─ ") + visibleWidth(`${label.icon} `) + visibleWidth(" ─");
-	const name = truncateMiddle(label.text, Math.max(4, width - chrome));
-	const content = border("─ ") + theme.fg("muted", `${label.icon} `) + theme.fg("success", name) + border(" ─");
+	const chrome = visibleWidth("─ ") + visibleWidth(" ─") + Math.max(0, parts.length - 1);
+	const budget = width - chrome;
+	const fitted = parts.map((part) => ({ ...part }));
+	let total = fitted.reduce((sum, part) => sum + visibleWidth(`${part.icon} ${part.text}`), 0);
+	for (let i = fitted.length - 1; i >= 0 && total > budget; i--) {
+		const part = fitted[i];
+		const before = visibleWidth(`${part.icon} ${part.text}`);
+		part.text = truncateMiddle(part.text, Math.max(1, visibleWidth(part.text) - (total - budget)));
+		total -= before - visibleWidth(`${part.icon} ${part.text}`);
+	}
+	const body = fitted
+		.map((part) => theme.fg("muted", `${part.icon} `) + theme.fg(part.color, part.text))
+		.join(" ");
+	const content = border("─ ") + body + border(" ─");
 	const pad = border("─".repeat(Math.max(0, width - visibleWidth(content))));
 	return [truncateToWidth(content + pad, width)];
 }
@@ -238,8 +248,9 @@ function modelContentWidth(ctx: ExtensionContext): number {
 	);
 }
 
-function branchContentWidth(label: BranchLabel): number {
-	return visibleWidth("─ ") + visibleWidth(`${label.icon} `) + visibleWidth(label.text) + visibleWidth(" ─");
+function locationContentWidth(parts: StripPart[]): number {
+	const body = parts.reduce((sum, part) => sum + visibleWidth(`${part.icon} ${part.text}`), 0) + Math.max(0, parts.length - 1);
+	return visibleWidth("─ ") + body + visibleWidth(" ─");
 }
 
 function usageContentWidth(ctx: ExtensionContext, withMax: boolean): number {
@@ -256,24 +267,21 @@ function usageContentWidth(ctx: ExtensionContext, withMax: boolean): number {
 	);
 }
 
-function stripWidths(ctx: ExtensionContext, label: BranchLabel, width: number): { model: number; branch: number; usage: number } {
+function stripWidths(ctx: ExtensionContext, parts: StripPart[], width: number): { model: number; location: number; usage: number } {
 	const available = Math.max(0, width - 1);
 	const thinking = ctx.thinkingLevel ? ` (${ctx.thinkingLevel})` : "";
 	const modelMin = visibleWidth("─ ") + visibleWidth("🤖 ") + visibleWidth(thinking) + visibleWidth(" ─╮") + 4;
 	const model = available < modelMin ? 0 : Math.min(modelContentWidth(ctx), available);
-	let branchWidth = Math.min(branchContentWidth(label), available);
-	let usage = Math.min(usageContentWidth(ctx, true), available);
-	if (branchWidth + usage > available) usage = Math.min(usage, usageContentWidth(ctx, false));
-	if (branchWidth + usage > available) {
-		const over = branchWidth + usage - available;
-		const usageCut = Math.min(over, Math.max(0, usage - USAGE_STRIP_MIN));
-		usage -= usageCut;
-		branchWidth -= Math.min(over - usageCut, Math.max(0, branchWidth - BRANCH_STRIP_MIN));
-	}
-	if (branchWidth + usage > available) branchWidth = 0;
-	if (usage < USAGE_STRIP_MIN) usage = 0;
-	if (branchWidth < BRANCH_STRIP_MIN) branchWidth = 0;
-	return { model, branch: branchWidth, usage };
+	const usageFull = usageContentWidth(ctx, true);
+	const usageCompact = usageContentWidth(ctx, false);
+	// usage keeps its full form (pct, window, cost) unless the terminal itself is too narrow for it
+	const usage = Math.min(available >= usageFull ? usageFull : usageCompact, available);
+	const locationWidth = Math.min(locationContentWidth(parts), Math.max(0, available - usage));
+	return {
+		model,
+		location: locationWidth < LOCATION_STRIP_MIN ? 0 : locationWidth,
+		usage,
+	};
 }
 
 function editorGeometry(tui: TUI): EditorGeometry {
@@ -294,7 +302,7 @@ function editorGeometry(tui: TUI): EditorGeometry {
 
 function installStatusStrips(
 	ctx: ExtensionContext,
-	getLabel: () => BranchLabel,
+	getLocation: () => StripPart[],
 	showSides: boolean,
 ): { tick: (tui: TUI, width: number) => void; dispose: () => void } {
 	let disposed = false;
@@ -369,13 +377,13 @@ function installStatusStrips(
 				width: geometry.modelWidth,
 			});
 		}
-		if (geometry.branchWidth > 0) {
-			addStrip((w, t) => renderBranchStrip(getLabel(), w, t, ctx.thinkingLevel), {
+		if (geometry.locationWidth > 0) {
+			addStrip((w, t) => renderLocationStrip(getLocation(), w, t, ctx.thinkingLevel), {
 				...shared,
 				anchor: "bottom-left",
 				offsetY: bottom,
 				offsetX: 1,
-				width: geometry.branchWidth,
+				width: geometry.locationWidth,
 			});
 		}
 		if (geometry.usageWidth > 0) {
@@ -414,12 +422,12 @@ function installStatusStrips(
 		}
 		if (!base.focused) return;
 		const effectiveWidth = Math.max(1, Math.floor(width));
-		const widths = stripWidths(ctx, getLabel(), effectiveWidth);
+		const widths = stripWidths(ctx, getLocation(), effectiveWidth);
 		const geometry: StripGeometry = {
 			...base,
 			width: effectiveWidth,
 			modelWidth: widths.model,
-			branchWidth: widths.branch,
+			locationWidth: widths.location,
 			usageWidth: widths.usage,
 		};
 		const key = [
@@ -427,7 +435,7 @@ function installStatusStrips(
 			geometry.autocomplete,
 			geometry.width,
 			geometry.modelWidth,
-			geometry.branchWidth,
+			geometry.locationWidth,
 			geometry.usageWidth,
 		].join(":");
 		if (key === builtKey) return;
@@ -458,14 +466,16 @@ function installFooter(ctx: ExtensionContext): () => void {
 	let refreshInFlight = false;
 	let state: BudgetState = { status: "loading" };
 	let requestRender: (() => void) | undefined;
-	let readBranchLabel = () => ({ icon: "📁", text: nodePath.basename(process.cwd()) });
+	let readLocation = (): StripPart[] => [{ icon: "📁", text: nodePath.basename(process.cwd()), color: "mdLink" }];
 
-	const strips = installStatusStrips(ctx, () => readBranchLabel(), readEditorPaddingX() >= 1);
+	const strips = installStatusStrips(ctx, () => readLocation(), readEditorPaddingX() >= 1);
 
 	ctx.ui.setFooter((tui, theme, footerData) => {
-		readBranchLabel = () => {
+		readLocation = () => {
+			const parts: StripPart[] = [{ icon: "📁", text: nodePath.basename(process.cwd()), color: "mdLink" }];
 			const branch = footerData.getGitBranch();
-			return branch ? { icon: "🌿", text: branch } : { icon: "📁", text: nodePath.basename(process.cwd()) };
+			if (branch) parts.push({ icon: "🌿", text: branch, color: "success" });
+			return parts;
 		};
 		const unsub = footerData.onBranchChange(() => tui.requestRender());
 		requestRender = () => tui.requestRender();
