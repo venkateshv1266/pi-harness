@@ -63,6 +63,63 @@ export function areaChart({ labels, series, height = 190, stacked = false, value
 	return `<svg class="chart" viewBox="0 0 ${VIEW_W} ${height}" style="width:100%;height:auto" role="img">${grid}${paths}${slices}${ticks}</svg>`;
 }
 
+/**
+ * Vertical bars, optionally stacked. Same frame as areaChart, for a daily volume
+ * where the total for a day is the reading rather than the shape between days.
+ */
+export function barChart({ labels, series, height = 190, stacked = true, valueFmt = fmtCompact }) {
+	const n = labels.length;
+	if (!n || !series.length) return '<div class="empty">No data in range</div>';
+	const padL = 48;
+	const padR = 14;
+	const padT = 12;
+	const padB = 24;
+	const iw = VIEW_W - padL - padR;
+	const ih = height - padT - padB;
+	const totals = labels.map((_, i) => series.reduce((a, s) => a + (s.values[i] ?? 0), 0));
+	const max = Math.max(...(stacked ? totals : series.flatMap((s) => s.values)), 1e-9);
+	const y = (v) => padT + ih - (v / max) * ih;
+	const slot = iw / n;
+	const barW = Math.max(1.5, Math.min(28, slot * 0.6));
+
+	const grid = [0, 0.25, 0.5, 0.75, 1]
+		.map((f) => {
+			const yy = padT + ih * (1 - f);
+			return `<line class="gridline" x1="${padL}" x2="${VIEW_W - padR}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" /><text x="${padL - 7}" y="${(yy + 3).toFixed(1)}" text-anchor="end">${esc(valueFmt(max * f))}</text>`;
+		})
+		.join("");
+
+	const bars = labels
+		.map((_, i) => {
+			const cx = padL + slot * i + slot / 2;
+			let base = 0;
+			return series
+				.map((s, si) => {
+					const v = Math.max(0, s.values[i] ?? 0);
+					if (v === 0) return "";
+					const yTop = y(stacked ? base + v : v);
+					const yBase = y(stacked ? base : 0);
+					if (stacked) base += v;
+					return `<rect x="${(cx - barW / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0.8, yBase - yTop).toFixed(1)}" rx="1.5" fill="${seriesColor(si)}" fill-opacity="0.8" />`;
+				})
+				.join("");
+		})
+		.join("");
+
+	const slices = labels
+		.map((label, i) => {
+			const tip = [label, ...series.map((s) => `${s.name}: ${valueFmt(s.values[i] ?? 0)}`)].join("\n");
+			return `<rect x="${(padL + slot * i).toFixed(1)}" y="${padT}" width="${slot.toFixed(1)}" height="${ih}" fill="transparent" data-tip="${esc(tip)}" />`;
+		})
+		.join("");
+
+	const ticks = labels
+		.map((label, i) => (i === 0 || i === n - 1 || i === Math.floor((n - 1) / 2) ? `<text x="${(padL + slot * i + slot / 2).toFixed(1)}" y="${height - 7}" text-anchor="middle">${esc(shortDate(label))}</text>` : ""))
+		.join("");
+
+	return `<svg class="chart" viewBox="0 0 ${VIEW_W} ${height}" style="width:100%;height:auto" role="img">${grid}${bars}${slices}${ticks}</svg>`;
+}
+
 export function spark(values, { color = "var(--accent)", height = 30 } = {}) {
 	const n = values.length;
 	if (!n) return "";

@@ -2,11 +2,12 @@
 // in-place refresher (`ctx.onAutoRefresh`) that re-fetches and patches only the
 // regions whose data changed — no page rebuilds, no scroll jumps.
 import { api, post, h, clear, fmtCompact, fmtCost, fmtInt, fmtPct, fmtMs, fmtClock, fmtDateTime, timeAgo, toneForSeverity, toneForVerdict, openDrawer, toast, seriesColor, debounce } from "./util.js";
-import { areaChart, spark, histogram, sankey } from "./charts.js";
+import { areaChart, barChart, spark, histogram, sankey } from "./charts.js";
 import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, banner, emptyState, lanes, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
 
 export const state = {
 	range: localStorage.getItem("observatory-range") || "7d",
+	dailyMetric: localStorage.getItem("observatory-daily-metric") || "cost",
 	ledgerSystem: null,
 	ledgerSeverity: null,
 	ledgerQuery: "",
@@ -178,6 +179,13 @@ const HELP = {
 		formula: "Source size in chars reported by the curator ledger; 'retainFull' means it stayed in context whole, condensed verdicts replaced it with an extract.",
 		source: "Curator ledger items stored in this session's log.",
 		action: "A big item marked retainFull is the clearest avoidable cost in the session — cap that command at the source, or check why the verifier refused the extract.",
+	},
+	perDay: {
+		title: "Per day",
+		what: "Daily volume, read three ways — what it cost, how many tokens it burned, and how many requests it took. Switch the reading before explaining a shape.",
+		formula: "cost = model cost from the session logs + harness cost where a subsystem logs its own price; tokens = model tokens only (the harness logs none); requests = model calls + harness decisions.",
+		source: "observatory.db — model_calls (cost, tokens, calls) joined to decision events by day.",
+		action: "Cost up without requests up is a price or model change; requests up without cost is volume. A gap in the bars is a day with no logged calls.",
 	},
 	routerOutcomes: {
 		title: "Outcome quality by tier",
@@ -367,6 +375,32 @@ function gridRegion(build) {
 	return { node, render: (data) => node.replaceChildren(...build(data)) };
 }
 
+const DAILY_METRICS = [
+	{ id: "cost", label: "Cost", fmt: fmtCost },
+	{ id: "tokens", label: "Tokens", fmt: fmtCompact },
+	{ id: "requests", label: "Requests", fmt: fmtCompact },
+];
+
+const dailyMetric = () => DAILY_METRICS.find((m) => m.id === state.dailyMetric) ?? DAILY_METRICS[0];
+
+/** The Cost / Tokens / Requests switch. Redraws from the data already fetched. */
+function metricChips(redraw) {
+	return h(
+		"div",
+		{ class: "chiprow" },
+		...DAILY_METRICS.map((m) =>
+			chip(m.label, null, {
+				active: dailyMetric().id === m.id,
+				onClick: () => {
+					state.dailyMetric = m.id;
+					localStorage.setItem("observatory-daily-metric", m.id);
+					redraw();
+				},
+			}),
+		),
+	);
+}
+
 /** Markdown drawer: the digest is meant to be copied out, not read only here. */
 /** Fetch a harness file and show it for review, with a copy button. */
 async function openFileDrawer(file, title) {
@@ -463,17 +497,26 @@ async function overview(view, ctx) {
 			kpi({ label: "Reasoning tokens", value: fmtCompact(t.reasoning), sub: "thinking / reasoning output" }),
 		];
 	});
-	const chart = htmlRegion((d) =>
-		areaChart({
-			labels: d.daily.map((x) => x.date),
-			series: [
-				{ name: "model work", values: d.daily.map((x) => x.costModel) },
-				{ name: "harness", values: d.daily.map((x) => x.costHarness) },
-			],
-			stacked: true,
-			valueFmt: fmtCost,
-		}),
-	);
+	// One payload, three readings — each broken out per model (top 5 + other), with
+	// harness overhead as its own segment where a subsystem logs a price.
+	const dailyNote = { cost: "per model (top 5 + other) vs harness overhead", tokens: "per model (top 5 + other) — the harness logs none", requests: "calls per model (top 5 + other) vs harness decisions" };
+	let dailyData = null;
+	let dailySub = null;
+	const chart = nodeRegion((d) => {
+		dailyData = d;
+		const metric = dailyMetric();
+		const series = d.dailyMetrics?.[metric.id] ?? [];
+		if (dailySub) dailySub.textContent = dailyNote[metric.id];
+		return h(
+			"div",
+			{},
+			h("div", { class: "chartctl" }, metricChips(() => chart.render(dailyData))),
+			h("div", { html: barChart({ labels: d.daily.map((x) => x.date), series, stacked: true, height: 200, valueFmt: metric.fmt }) }),
+			h("div", { class: "legendrow" }, legend(series.map((s) => ({ name: s.name })))),
+		);
+	});
+	const dailyCard = card({ title: "Per day", sub: dailyNote[dailyMetric().id], body: chart.node, help: HELP.perDay });
+	dailySub = dailyCard.querySelector(".cardhead .sub");
 	const leverage = nodeRegion((d) => {
 		const lev = d.leverage;
 		const curatorVerdicts = Object.entries(lev.curator.verdicts ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
@@ -529,7 +572,7 @@ async function overview(view, ctx) {
 	view.append(
 		kpis.node,
 		card({ title: "Top findings", sub: "the sharpest things to fix right now — full list on Impact", body: topFindings.node, help: HELP.findings }),
-		card({ title: "Cost per day", sub: "model work vs harness overhead (logged)", actions: legend([{ name: "model work" }, { name: "harness" }]), body: chart.node }),
+		dailyCard,
 		leverage.node,
 		h("div", { class: "split" }, card({ title: "Top models", sub: "by cost in range", body: topModels.node }), card({ title: "Watchlist", sub: "warnings and errors", flush: true, body: watchlist })),
 	);
@@ -1166,7 +1209,22 @@ async function models(view, ctx) {
 		kpi({ label: "Cache savings", value: fmtCost(d.cache.savingsUsd), sub: `${fmtInt(d.cache.pricedCalls)} priced · ${fmtInt(d.cache.unpricedCalls)} unpriced`, tip: "Estimated from live model prices (cache read rate vs input rate) for calls whose model has a known price." }),
 		kpi({ label: "Unpriced calls", value: fmtInt(d.cache.unpricedCalls), sub: "no matching price in models-store" }),
 	]);
-	const chart = htmlRegion((d) => areaChart({ labels: d.daily.labels, series: d.daily.series, stacked: true, height: 210, valueFmt: fmtCost }));
+	let dailyData = null;
+	let dailySub = null;
+	const chart = nodeRegion((d) => {
+		dailyData = d;
+		const metric = dailyMetric();
+		const series = d.daily.byMetric?.[metric.id] ?? d.daily.series;
+		if (dailySub) dailySub.textContent = `top 5 + other · ${metric.label.toLowerCase()}`;
+		return h(
+			"div",
+			{},
+			h("div", { class: "chartctl" }, metricChips(() => chart.render(dailyData))),
+			h("div", { html: barChart({ labels: d.daily.labels, series, stacked: true, height: 210, valueFmt: metric.fmt }) }),
+		);
+	});
+	const dailyCard = card({ title: "Per day by model", sub: "top 5 + other", actions: legend(data.daily.series.slice(0, 6).map((s) => ({ name: s.name }))), body: chart.node });
+	dailySub = dailyCard.querySelector(".cardhead .sub");
 	const byModel = table({
 		columns: [
 			{ label: "Model", width: "18%", render: (row) => modelCell(row.model) },
@@ -1202,7 +1260,7 @@ async function models(view, ctx) {
 
 	view.append(
 		kpis.node,
-		card({ title: "Cost per day by model", sub: "top 5 + other", actions: legend(data.daily.series.slice(0, 6).map((s) => ({ name: s.name }))), body: chart.node }),
+		dailyCard,
 		card({ title: "Model breakdown", sub: "unit economics first — cost and tokens per call are what a switch actually changes", flush: true, body: byModel, help: HELP.modelsUnit }),
 		h("div", { class: "split" }, card({ title: "Thinking levels", sub: "calls per requested level", body: thinking.node }), card({ title: "Cache", sub: "prompt token reuse", body: cache.node })),
 	);
