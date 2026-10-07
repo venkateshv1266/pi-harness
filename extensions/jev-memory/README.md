@@ -45,6 +45,16 @@ The default `memoryDir` is `~/.pi/agent/jev-memory`.
 - `/memory-preview-context`
 - `/learn-memory-tool`
 
+## /setup integration
+
+`/setup` auto-discovers this extension's `setup.ts` and contributes three editable sections:
+
+- **Memory Review** — review model (model picker with an optional `:thinking` level, ⌫ clears back to the session model), transport, enable toggle, turn/tool-call nudge thresholds, messages per review
+- **Memory Stores** — auto-consolidate, failure warnings, consolidation timeout, overflow strategy, memory/user/project char limits, session retention
+- **Memory Capture** — flush on compact/shutdown, flush thresholds, correction detection, failure injection, standing instructions, quick check, memory mode, policy style, Jev pregate/admission/audit toggles
+
+Edits read-merge-write `~/.pi/agent/jev-memory-config.json` (unrelated keys are never clobbered, and an unparseable file is left untouched) and take effect in new sessions.
+
 ## Jev decision layer
 
 Every memory-management decision degrades to pre-Jev (hermes) behavior whenever Jev is
