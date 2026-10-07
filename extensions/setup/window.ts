@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable, KeybindingsManager, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import type { Component, Focusable, KeybindingsManager, OverlayHandle, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { Input, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Model } from "@earendil-works/pi-ai";
 import { THINKING_LEVELS, availableModels, keyOf, prettyRef } from "./io.ts";
@@ -61,6 +61,7 @@ export class SetupWindow implements Component, Focusable {
 
 	// filter
 	private filterInput = new Input();
+	private overlayHandle?: OverlayHandle;
 
 	private flash: { text: string; ok: boolean } | undefined;
 	private changes: string[] = [];
@@ -90,6 +91,10 @@ export class SetupWindow implements Component, Focusable {
 		this.refresh = opts.refresh;
 		this.onDone = opts.onDone;
 		this.active = clamp(opts.initialActive ?? 0, 0, Math.max(0, this.sections.length - 1));
+	}
+
+	setOverlayHandle(handle: OverlayHandle): void {
+		this.overlayHandle = handle;
 	}
 
 	// ─── Focusable (propagate IME focus to whichever Input is live) ─────────
@@ -308,6 +313,7 @@ export class SetupWindow implements Component, Focusable {
 				this.filterInput.setValue("");
 				this.sel = 0;
 			} else {
+				this.overlayHandle?.hide();
 				this.onDone(this.changes);
 			}
 		} else if (this.kb.matches(data, "tui.select.confirm") || matchesKey(data, Key.enter)) {
