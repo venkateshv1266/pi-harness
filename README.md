@@ -49,7 +49,7 @@ To uninstall an extension, delete its file (or directory) from
 Common entry points:
 
 - **Models** — [roles](extensions/README.md#model-roles), [route-ahead](extensions/README.md#model-router),
-  [failover](extensions/README.md#model-fallback), [OpenRouter guardrails](extensions/README.md#openrouter-guardrail-header)
+  [failover](extensions/README.md#model-fallback)
 - **Delegation** — [delegate](extensions/delegate/README.md) with the
   [one-shot engine](extensions/subagent/README.md) and
   [persistent engine](extensions/persistent-subagent/README.md)

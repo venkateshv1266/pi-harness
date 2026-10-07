@@ -36,7 +36,7 @@ New docs follow
 | [`claude-compat`](#claude-compat) | Surfaces Claude Code resources (`.claude/CLAUDE.md`, `.claude/skills/`) from the repo tree. |
 | [`cmux-session`](#cmux-session) | cmux lifecycle/telemetry bridge; machine-managed, do not edit. |
 | [`confirm-destructive`](#confirm-destructive) | Confirmation prompts before session switch and fork. |
-| [`custom-footer`](#custom-footer) | Two-line status footer (dir, branch, tokens, context %, cost, model); `/footer` toggles. |
+| [`custom-footer`](#custom-footer) | Guardrail footer (blank margin row, D left / M right) + a rounded box around the editor (model, branch, context/cost strips, side borders); `/footer` toggles. |
 | [`decisions-report`](#decisions-report) | `/decisions-report` joins decision logs to outcomes and flags prune/reword candidates. |
 | [`dirty-repo-guard`](#dirty-repo-guard) | Blocks session switch/fork while the repo has uncommitted changes. |
 | [`handoff`](#handoff) | `/handoff <goal>` distills the conversation into a fresh focused session. |
@@ -44,7 +44,6 @@ New docs follow
 | [`model-fallback`](#model-fallback) | Switches to a fallback model on provider-attributable failures; loops and transport errors are guarded. |
 | [`model-roles`](#model-roles) | `/roles` assigns the `@smol`/`@slow`/`@plan`/`@task`/`@designer` role settings. |
 | [`model-router`](#model-router) | Route-ahead: Jev classifies each new task and picks the tier before the first token. |
-| [`openrouter-guardrail-header`](#openrouter-guardrail-header) | Sticky header with daily/monthly OpenRouter usage vs configured caps. |
 | [`plugins`](#plugins) | `/plugins` browses and installs skills from local Claude plugin marketplaces. |
 | [`repo-agents-guard`](#repo-agents-guard) | Blocks repo-targeting tool calls until the nearest `AGENTS.md` is read. |
 | [`rewind`](#rewind) | `/rewind` checkpoints edits and restores code and/or conversation to any prompt. |
@@ -84,25 +83,6 @@ Bridges pi session lifecycle, telemetry, and notifications into cmux. **Machine-
 **How it works** — `session_start` → `hooks pi session-start` plus a resume binding; `before_agent_start` → prompt-submit; `tool_execution_start`/`end` → PreToolUse/PostToolUse and SubagentStart/SubagentStop; `session_before_compact`/`session_compact` → PreCompact/PostCompact; `agent_end` holds the last assistant message for the completion notification (published immediately on pi < 0.80.5); `agent_settled` (pi ≥ 0.80.5) drains the queue → `hooks pi notification` + `hooks pi stop`; `session_shutdown` → stop if not already stopped, clears the resume binding.
 
 **Caveats** — `install.sh` copies this file only when the `cmux` binary is on PATH and removes any stale installed copy otherwise — its hooks would fail on every event without the binary.
-
-## openrouter-guardrail-header
-
-Sticky header showing daily and monthly OpenRouter usage against configured caps.
-
-**What it does** — Renders a full-width top band: `💰 Guardrails` with `D: $used/$limit (pct%)` and `M: $used/$limit (pct%)`. Usage combines credit and BYOK spend for the active key. Colors: error ≥90%, warning ≥75%, success below; muted when no limit is known. Loading and unavailable states render as notices instead of numbers.
-
-**Configuration**
-
-| Key | Default | Effect |
-|---|---|---|
-| `openrouterGuardrails.dailyLimit` | unset (`install.sh` seeds `75`) | Daily cap; falls back to the key's `daily_limit` |
-| `openrouterGuardrails.monthlyLimit` | unset (`install.sh` seeds `500`) | Monthly cap; falls back to the key's `monthly_limit` |
-
-Limit fallback chain: setting → the key's per-period limit → the key's `limit` when `limit_reset` matches the period → `—` (percentage shown only when the limit is > 0). Also editable in `/setup` → Guardrails.
-
-**How it works** — `GET /api/v1/key` on the OpenRouter API with the key from pi's provider auth (10 s timeout). Refreshes every 5 minutes and immediately on `session_start`; settings are re-read on every refresh, so cap edits need no `/reload`.
-
-**Caveats** — No env vars; the key comes from pi's provider auth, not `OPENROUTER_API_KEY`. Non-TUI sessions render nothing.
 
 ## model-roles
 
@@ -391,9 +371,18 @@ The port comes from the command argument (1–65535, otherwise default `3847`). 
 
 ## custom-footer
 
-Two-line TUI status bar — directory, git branch, token/cost totals, context usage, and model — enabled by default.
+Guardrail footer with a blank margin row above it plus status strips on the editor's border rows — enabled by default.
 
-**What it does** — Replaces the default footer. Line 1 shows the current directory's basename and git branch. Line 2 shows session input/output token totals, context-window usage as a percentage of the model's max (warning color at ≥60%, error at ≥85%), running cost, and the model id with thinking level. `/footer` toggles it off (restoring the default footer) and back on.
+**What it does** — Replaces the default footer with a blank margin row and one content line: `D: $used/$cap (pct%)` on the left and `M: $used/$cap (pct%)` on the right (the loading/unavailable notice takes the left half). Three non-capturing overlay strips decorate the input box's border rows in the editor's thinking-level border color: the model id with thinking level on the top border (right-aligned), the git branch on the bottom border (left-aligned), and the context fill with session cost — `ctx% (max) $cost` — on the bottom border (right-aligned). Rounded corners (`╭ ╮ ╰ ╯`) plus side borders (`│`) on the content rows close the input area into a clear rounded box; the side borders need `editorPaddingX` ≥ 1 (they are skipped at 0, where a border cell would cover the first character). The directory is not shown. `/footer` toggles everything off (restoring the default footer) and back on.
+
+**Guardrail configuration**
+
+| Key | Default | Effect |
+|---|---|---|
+| `openrouterGuardrails.dailyLimit` | unset (`install.sh` seeds `75`) | Daily cap; falls back to the key's `daily_limit` |
+| `openrouterGuardrails.monthlyLimit` | unset (`install.sh` seeds `500`) | Monthly cap; falls back to the key's `monthly_limit` |
+
+Limit fallback chain: setting → the key's per-period limit → the key's `limit` when `limit_reset` matches the period → `—` (percentage shown only when the limit is > 0). Also editable in `/setup` → Guardrails.
 
 **Commands and tools**
 
@@ -401,9 +390,9 @@ Two-line TUI status bar — directory, git branch, token/cost totals, context us
 |---|---|
 | `/footer` | Toggle the custom footer; off restores the default footer |
 
-**How it works** — Totals are recomputed on every render by summing `usage.input`, `usage.output`, and `usage.cost.total` over all assistant messages on the current branch. The footer re-renders on git branch changes via `footerData.onBranchChange` (unsubscribed on dispose). It is reinstalled on every `session_start` (new, resume, fork, reload) while enabled.
+**How it works** — The strips are re-created whenever the editor's rendered geometry changes (visible content rows and autocomplete height, read from the focused editor on every footer render), with offsets computed from the terminal bottom (the footer occupies two rows: blank margin + guardrails): model at `−(3 + autocomplete + rows)`, branch and usage at `−(2 + autocomplete)`. They hide while the editor is not focused (a dialog is open) and on terminals narrower than 90 columns; long model and branch names shrink with a middle ellipsis. Session cost sums `usage.cost.total` over assistant messages on the current branch; context fill comes from `ctx.getContextUsage()` against the model's context window (warning ≥60%, error ≥85%). Guardrail budgets come from `GET /api/v1/key` on the OpenRouter API with the key from pi's provider auth (10 s timeout), refreshed every 5 minutes and immediately on install; settings are re-read on every refresh, so cap edits need no `/reload`. Usage combines credit and BYOK spend; colors are error ≥90%, warning ≥75%, success below, muted when no limit is known. The footer re-renders on git branch changes via `footerData.onBranchChange` (unsubscribed on dispose). It is reinstalled on every `session_start` (new, resume, fork, reload) while enabled.
 
-**Caveats** — The on/off toggle is in-memory: it survives session switches but resets to enabled on extension reload or restart. Never installed in non-TUI sessions. Context shows 0% when the model has no known context window; the branch shows `-` when git info is unavailable.
+**Caveats** — The on/off toggle is in-memory: it survives session switches but resets to enabled on extension reload or restart. Never installed in non-TUI sessions. Strip placement relies on the editor's rendered geometry; if a replacement editor does not expose it the strips hide. Side borders are skipped when `editorPaddingX` is 0 (no free column for them). Guardrails show loading/unavailable notices instead of numbers until the API responds; the key comes from pi's provider auth, not `OPENROUTER_API_KEY`.
 
 ## confirm-destructive
 
