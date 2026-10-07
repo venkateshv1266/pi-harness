@@ -167,7 +167,7 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
         const trimmed = parsed.llmModelOverride.trim();
         if (trimmed.length > 0) config.llmModelOverride = trimmed;
       }
-      // Support array form for primary override too (e.g. llmModelOverride: ["a/b","c/d"]) — first entry is primary, rest are fallbacks
+      // Support array form for primary override too (e.g. llmModelOverride: ["a/b:max","c/d"]) — first entry is primary, rest are fallbacks; entries may carry a ":thinking" suffix
       if (Array.isArray(parsed.llmModelOverride) && parsed.llmModelOverride.every((v: unknown) => typeof v === "string")) {
         const cleaned = (parsed.llmModelOverride as string[]).map((s) => s.trim()).filter(Boolean);
         if (cleaned.length > 0) {

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { MemoryConfig, ThinkingLevel } from "../types.js";
 import { AGENT_ROOT } from "../paths.js";
+import { parseModelRef } from "./model-ref.js";
 
 type ChildLlmConfig = Pick<MemoryConfig, "llmModelOverride" | "llmThinkingOverride" | "childExtensionPaths">;
 
@@ -79,11 +80,14 @@ const OWN_EXTENSION_PATH: string = (() => {
 
 function normalizedModelOverride(config: ChildLlmConfig): string | undefined {
   const trimmed = config.llmModelOverride?.trim();
-  return trimmed ? trimmed : undefined;
+  return trimmed ? parseModelRef(trimmed).ref : undefined;
 }
 
 function effectiveThinkingOverride(config: ChildLlmConfig): ThinkingLevel | undefined {
-  return config.llmThinkingOverride ?? (normalizedModelOverride(config) ? "off" : undefined);
+  if (config.llmThinkingOverride) return config.llmThinkingOverride;
+  const raw = config.llmModelOverride?.trim();
+  if (!raw) return undefined;
+  return parseModelRef(raw).thinking ?? "off";
 }
 
 export function hasChildLlmOverrides(config: ChildLlmConfig): boolean {
