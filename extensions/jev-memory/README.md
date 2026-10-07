@@ -22,7 +22,7 @@ Create `~/.pi/agent/jev-memory-config.json` to override defaults. Supported envi
 - `reviewEnabled`, `reviewTransport`, `nudgeInterval`, `nudgeToolCalls`
 - `correctionDetection`, `failureInjectionEnabled`, `standingInstructionsEnabled`
 - `flushOnCompact`, `flushOnShutdown`, `flushMinTurns`, `flushRecentMessages`
-- `llmModelOverride`, `llmThinkingOverride`, `childExtensionPaths`
+- `llmModelOverride` (may carry a `:thinking` suffix, e.g. `"z-ai/glm-5.3:max"` — same convention as pi's model roles; `llmThinkingOverride` still wins when both are set), `llmThinkingOverride`, `childExtensionPaths`
 - `memoryOverflowStrategy`, `autoConsolidate`, `consolidationTimeoutMs`, `overflowGraceMs`
 
 The default `memoryDir` is `~/.pi/agent/jev-memory`.

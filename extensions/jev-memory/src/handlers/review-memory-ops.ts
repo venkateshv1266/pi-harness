@@ -20,6 +20,7 @@ import {
   type AdmissionState,
 } from "../jev/gates.js";
 import { ADMISSION_QUESTIONS } from "../jev/questions.js";
+import { parseModelRef } from "./model-ref.js";
 
 export interface ReviewMemoryOperation {
   action: "add" | "replace" | "remove";
@@ -64,7 +65,7 @@ export function usesDirectTransport(config: Pick<MemoryConfig, "reviewTransport"
 
 type ReviewLlmConfig = Pick<MemoryConfig, "llmModelOverride" | "llmFallbackModels" | "llmThinkingOverride">;
 
-function findExactModelReferenceMatch(modelReference: string, availableModels: Model<Api>[]): Model<Api> | undefined {
+function findPlainModelReferenceMatch(modelReference: string, availableModels: Model<Api>[]): Model<Api> | undefined {
   const trimmedReference = modelReference.trim();
   if (!trimmedReference) return undefined;
 
@@ -92,6 +93,20 @@ function findExactModelReferenceMatch(modelReference: string, availableModels: M
   return idMatches.length === 1 ? idMatches[0] : undefined;
 }
 
+/** Exact match that also accepts a ":thinking" suffix on the reference —
+ * "z-ai/glm-5.3:max" resolves to the glm-5.3 model. The full string is tried
+ * first so ids that genuinely contain a colon (e.g. "z-ai/glm-5.3:batch")
+ * keep matching verbatim. */
+export function findExactModelReferenceMatch(modelReference: string, availableModels: Model<Api>[]): Model<Api> | undefined {
+  const direct = findPlainModelReferenceMatch(modelReference, availableModels);
+  if (direct) return direct;
+  const { ref, thinking } = parseModelRef(modelReference);
+  if (thinking && ref !== modelReference.trim()) {
+    return findPlainModelReferenceMatch(ref, availableModels);
+  }
+  return undefined;
+}
+
 function normalizedModelOverride(config: ReviewLlmConfig): string | undefined {
   const trimmed = config.llmModelOverride?.trim();
   return trimmed ? trimmed : undefined;
@@ -114,7 +129,10 @@ function allModelOverrides(config: ReviewLlmConfig): string[] {
 }
 
 function effectiveThinkingOverride(config: ReviewLlmConfig): ThinkingLevel | undefined {
-  return config.llmThinkingOverride ?? (normalizedModelOverride(config) ? "off" : undefined);
+  if (config.llmThinkingOverride) return config.llmThinkingOverride;
+  const primary = config.llmModelOverride?.trim();
+  if (!primary) return undefined;
+  return parseModelRef(primary).thinking ?? "off";
 }
 
 type ReviewModelRegistry = ExtensionContext["modelRegistry"];
