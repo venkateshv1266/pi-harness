@@ -7,3 +7,4 @@
 - Keep commits signed and push only after the README and checks pass.
 - Amend published commits only with `git push --force-with-lease`, never plain `--force`.
 - Keep this public setup repo generic: no secrets, internal URLs, employer details, or machine-specific paths.
+- Edit the live file under `~/.pi/agent/` first and publish via `./sync.sh`; edit a repo file directly only where sync can't carry it (`README.md` docs, `bin/`, `scripts/`).
