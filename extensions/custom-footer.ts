@@ -28,8 +28,10 @@ const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const MODEL_STRIP_WIDTH = 72;
 const BRANCH_STRIP_WIDTH = 30;
 const USAGE_STRIP_WIDTH = 28;
+const MODEL_STRIP_MIN = 20;
+const BRANCH_STRIP_MIN = 12;
+const USAGE_STRIP_MIN = 20;
 const EDGE_STRIP_WIDTH = 1;
-const STRIP_MIN_TERM_WIDTH = 90;
 const FOOTER_ROWS = 2;
 
 type KeyBudget = {
@@ -62,7 +64,7 @@ type ApiError = {
 	error?: { message?: string };
 };
 
-type StripGeometry = { focused: boolean; rows: number; autocomplete: number };
+type StripGeometry = { focused: boolean; rows: number; autocomplete: number; width: number };
 
 async function getJson<T>(url: string, apiKey: string): Promise<T> {
 	const response = await fetch(url, {
@@ -213,13 +215,11 @@ function renderUsageStrip(ctx: ExtensionContext, width: number, theme: Theme): s
 	const ctxMax = ctx.model?.contextWindow ?? 0;
 	const pct = ctxMax > 0 ? Math.min(100, Math.round(((usage?.tokens ?? 0) / ctxMax) * 100)) : 0;
 	const color: ThemeColor = pct >= 85 ? "error" : pct >= 60 ? "warning" : "muted";
-	const content =
-		border("─ ") +
-		theme.fg(color, `${pct}%`) +
-		theme.fg("dim", ` (${fmtCtx(ctxMax)})`) +
-		theme.fg("dim", " ") +
-		theme.fg("warning", `$${sessionCost(ctx).toFixed(3)}`) +
-		border(" ─╯");
+	const pctText = theme.fg(color, `${pct}%`);
+	const costText = theme.fg("warning", ` $${sessionCost(ctx).toFixed(3)}`);
+	const full = border("─ ") + pctText + theme.fg("dim", ` (${fmtCtx(ctxMax)})`) + costText + border(" ─╯");
+	const compact = border("─ ") + pctText + costText + border(" ─╯");
+	const content = width >= visibleWidth(full) ? full : compact;
 	const pad = border("─".repeat(Math.max(0, width - visibleWidth(content))));
 	return [truncateToWidth(pad + content, width)];
 }
@@ -229,19 +229,20 @@ function renderEdge(theme: Theme, level: ExtensionContext["thinkingLevel"], glyp
 	return Array.from({ length: Math.max(1, rows) }, () => line);
 }
 
-function editorGeometry(tui: TUI): StripGeometry {
+function editorGeometry(tui: TUI, width: number): StripGeometry {
 	const editor = (
 		tui as unknown as {
 			focusedComponent?: { renderedVisibleLineCount?: number; renderedAutocompleteHeight?: number };
 		}
 	).focusedComponent;
 	const rows = editor?.renderedVisibleLineCount;
-	if (typeof rows !== "number" || rows < 1) return { focused: false, rows: 1, autocomplete: 0 };
+	if (typeof rows !== "number" || rows < 1) return { focused: false, rows: 1, autocomplete: 0, width };
 	const autocomplete = editor?.renderedAutocompleteHeight;
 	return {
 		focused: true,
 		rows,
 		autocomplete: typeof autocomplete === "number" && autocomplete > 0 ? autocomplete : 0,
+		width,
 	};
 }
 
@@ -249,7 +250,7 @@ function installStatusStrips(
 	ctx: ExtensionContext,
 	getBranch: () => string,
 	showSides: boolean,
-): { tick: (tui: TUI) => void; dispose: () => void } {
+): { tick: (tui: TUI, width: number) => void; dispose: () => void } {
 	let disposed = false;
 	let focused = true;
 	let built: StripGeometry | undefined;
@@ -277,12 +278,13 @@ function installStatusStrips(
 	};
 
 	const create = (geometry: StripGeometry) => {
+		const width = geometry.width;
+		const half = Math.max(1, Math.floor((width - 1) / 2));
 		const bottom = -(FOOTER_ROWS + geometry.autocomplete);
 		const top = -(FOOTER_ROWS + 1 + geometry.autocomplete + geometry.rows);
 		const shared = {
 			margin: 0,
 			nonCapturing: true,
-			visible: (termWidth: number) => termWidth >= STRIP_MIN_TERM_WIDTH,
 		};
 		addStrip((_w, t) => renderEdge(t, ctx.thinkingLevel, "╭"), {
 			...shared,
@@ -307,27 +309,36 @@ function installStatusStrips(
 				width: EDGE_STRIP_WIDTH,
 			});
 		}
-		addStrip((w, t) => renderModelStrip(ctx, w, t), {
-			...shared,
-			anchor: "bottom-right",
-			offsetY: top,
-			offsetX: 0,
-			width: MODEL_STRIP_WIDTH,
-		});
-		addStrip((w, t) => renderBranchStrip(getBranch(), w, t, ctx.thinkingLevel), {
-			...shared,
-			anchor: "bottom-left",
-			offsetY: bottom,
-			offsetX: 0,
-			width: BRANCH_STRIP_WIDTH,
-		});
-		addStrip((w, t) => renderUsageStrip(ctx, w, t), {
-			...shared,
-			anchor: "bottom-right",
-			offsetY: bottom,
-			offsetX: 0,
-			width: USAGE_STRIP_WIDTH,
-		});
+		const modelWidth = Math.min(MODEL_STRIP_WIDTH, width - 1);
+		if (modelWidth >= MODEL_STRIP_MIN) {
+			addStrip((w, t) => renderModelStrip(ctx, w, t), {
+				...shared,
+				anchor: "bottom-right",
+				offsetY: top,
+				offsetX: 0,
+				width: modelWidth,
+			});
+		}
+		const branchWidth = Math.min(BRANCH_STRIP_WIDTH, half);
+		if (branchWidth >= BRANCH_STRIP_MIN) {
+			addStrip((w, t) => renderBranchStrip(getBranch(), w, t, ctx.thinkingLevel), {
+				...shared,
+				anchor: "bottom-left",
+				offsetY: bottom,
+				offsetX: 0,
+				width: branchWidth,
+			});
+		}
+		const usageWidth = Math.min(USAGE_STRIP_WIDTH, half);
+		if (usageWidth >= USAGE_STRIP_MIN) {
+			addStrip((w, t) => renderUsageStrip(ctx, w, t), {
+				...shared,
+				anchor: "bottom-right",
+				offsetY: bottom,
+				offsetX: 0,
+				width: usageWidth,
+			});
+		}
 		built = geometry;
 	};
 
@@ -338,15 +349,22 @@ function installStatusStrips(
 		create(geometry);
 	};
 
-	const tick = (tui: TUI) => {
+	const tick = (tui: TUI, width: number) => {
 		if (disposed) return;
-		const geometry = editorGeometry(tui);
+		const geometry = editorGeometry(tui, Math.max(1, Math.floor(width)));
 		if (geometry.focused !== focused) {
 			focused = geometry.focused;
 			for (const handle of handles) handle.setHidden(!focused);
 		}
 		if (!geometry.focused) return;
-		if (built && geometry.rows === built.rows && geometry.autocomplete === built.autocomplete) return;
+		if (
+			built &&
+			geometry.rows === built.rows &&
+			geometry.autocomplete === built.autocomplete &&
+			geometry.width === built.width
+		) {
+			return;
+		}
 		pending = geometry;
 		if (scheduled) return;
 		scheduled = true;
@@ -389,7 +407,7 @@ function installFooter(ctx: ExtensionContext): () => void {
 			},
 			invalidate() {},
 			render(width: number): string[] {
-				strips.tick(tui);
+				strips.tick(tui, width);
 
 				let left: string;
 				let right = "";
