@@ -234,6 +234,8 @@ input.input:focus, select.select:focus { outline: 2px solid var(--accent-soft); 
 }
 .newdata:hover { filter: brightness(1.08); }
 .chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.chartctl { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.legendrow { margin-top: 8px; }
 .chip {
 	display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
 	border: 1px solid var(--border); border-radius: 999px; font-size: 11.5px; color: var(--muted); cursor: pointer; background: var(--panel);

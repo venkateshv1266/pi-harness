@@ -157,6 +157,39 @@ export function overview(db: Database, range: Range) {
 		)
 		.all(range.from, range.to);
 
+	// Per-model daily breakdown for the Overview chart: the same top-5 + other
+	// grouping the Models tab uses, plus harness overhead where a subsystem logs
+	// its own price. `cost` and `requests` carry the harness series; tokens do not,
+	// because decision events log no tokens.
+	const perModelDaily = db
+		.query<{ day: string; model: string; cost: number; tokens: number; calls: number }, [number, number]>(
+			`SELECT ${dayExpr} day, model, COALESCE(SUM(cost),0) cost, COALESCE(SUM(total_tokens),0) tokens, COUNT(*) calls
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL GROUP BY day, model`,
+		)
+		.all(range.from, range.to);
+	const dailyLabels = [...days.keys()].sort();
+	const dailyIndex = new Map(dailyLabels.map((day, i) => [day, i]));
+	const topFive = topModels.slice(0, 5).map((m) => m.model);
+	const modelMetricSeries = (pick: (row: (typeof perModelDaily)[number]) => number) => {
+		const series = [...topFive, "other"].map((name) => ({ name, values: new Array(dailyLabels.length).fill(0) as number[] }));
+		for (const row of perModelDaily) {
+			const i = dailyIndex.get(row.day);
+			if (i === undefined) continue;
+			const target = series.find((s) => s.name === (topFive.includes(row.model) ? row.model : "other"));
+			if (target) target.values[i] += pick(row);
+		}
+		return series;
+	};
+	const harnessDay = (name: string, pick: (day: { costHarness: number; events: number }) => number) => ({
+		name,
+		values: dailyLabels.map((day) => pick(days.get(day)!)),
+	});
+	const dailyMetrics = {
+		cost: [...modelMetricSeries((r) => r.cost), harnessDay("harness", (d) => d.costHarness)],
+		tokens: modelMetricSeries((r) => r.tokens),
+		requests: [...modelMetricSeries((r) => r.calls), harnessDay("harness decisions", (d) => d.events)],
+	};
+
 	const toRows = db
 		.query<EventRow, [number, number]>("SELECT * FROM events WHERE ts_ms BETWEEN ? AND ? AND severity IN ('warn','error') ORDER BY ts_ms DESC LIMIT 12")
 		.all(range.from, range.to);
@@ -255,6 +288,7 @@ export function overview(db: Database, range: Range) {
 			events: harness?.n ?? 0,
 		},
 		daily: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
+		dailyMetrics,
 		topModels,
 		bySystem,
 		leverage: {
@@ -1343,8 +1377,9 @@ export function models(db: Database, range: Range) {
 	});
 
 	const dailyRows = db
-		.query<{ day: string; model: string; cost: number }, [number, number]>(
-			`SELECT ${dayExpr} day, model, COALESCE(SUM(cost),0) cost FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL GROUP BY day, model`,
+		.query<{ day: string; model: string; cost: number; tokens: number; calls: number }, [number, number]>(
+			`SELECT ${dayExpr} day, model, COALESCE(SUM(cost),0) cost, COALESCE(SUM(total_tokens),0) tokens, COUNT(*) calls
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL GROUP BY day, model`,
 		)
 		.all(range.from, range.to);
 	const top = perModel.slice(0, 5).map((m) => m.model);
@@ -1358,14 +1393,18 @@ export function models(db: Database, range: Range) {
 		const i = labelIndex.get(row.day);
 		if (seriesForModel && i !== undefined) seriesForModel[i] += row.cost;
 	}
-	const series = [...top, "other"].map((name) => ({
-		name,
-		values: labels.map((day) => {
-			const rows = dailyRows.filter((r) => r.day === day);
-			if (name === "other") return rows.filter((r) => !top.includes(r.model)).reduce((a, r) => a + r.cost, 0);
-			return rows.filter((r) => r.model === name).reduce((a, r) => a + r.cost, 0);
-		}),
-	}));
+	const metricSeries = (pick: (row: (typeof dailyRows)[number]) => number) =>
+		[...top, "other"].map((name) => ({
+			name,
+			values: labels.map((day) => {
+				const rows = dailyRows.filter((r) => r.day === day);
+				if (name === "other") return rows.filter((r) => !top.includes(r.model)).reduce((a, r) => a + pick(r), 0);
+				return rows.filter((r) => r.model === name).reduce((a, r) => a + pick(r), 0);
+			}),
+		}));
+	const series = metricSeries((r) => r.cost);
+	// The chart's Cost / Tokens / Requests switch reads the same top-5 grouping.
+	const byMetric = { cost: series, tokens: metricSeries((r) => r.tokens), requests: metricSeries((r) => r.calls) };
 
 	const thinking = db
 		.query<{ level: string; calls: number; cost: number }, [number, number]>(
@@ -1376,7 +1415,7 @@ export function models(db: Database, range: Range) {
 	return {
 		byModel: perModel.map((model) => ({ ...model, trend: trendByModel.get(model.model) ?? [] })),
 		trendLabels: labels,
-		daily: { labels, series },
+		daily: { labels, series, byMetric },
 		thinking,
 		cache: { savingsUsd: cacheSavings, pricedCalls, unpricedCalls },
 	};
