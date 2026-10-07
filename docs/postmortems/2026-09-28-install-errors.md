@@ -118,6 +118,7 @@ Full matrix run after the fixes, on this branch:
 
 - **Cross-extension imports make the set non-decomposable.** `decision-tuner` imports `../decisions-report.ts` and `../../utils/*`; `delegate` imports `../subagent/*`, `../persistent-subagent/*`, and `../jev-memory/src/jev/client.ts`; `setup` imports `../model-router.ts`; `model-router` imports `./model-fallback.ts`; `persistent-subagent` imports `../subagent/agents.ts`. All resolve in a **full** install, but pi hard-aborts on any missing piece — so a user deleting one extension can brick pi startup entirely. Decouple (self-contained extensions or explicit install manifests), or document "install everything or nothing" as the contract?
 - Is cmux gone for good, or should the vendored `cmux-session.ts` be removed from the repo entirely rather than conditionally skipped at install time?
+  - **Resolved 2026-10-07** — removed from the repo entirely: cmux installs and upgrades `cmux-session.ts` in `~/.pi/agent/extensions/` itself; `sync.sh` and `install.sh` no longer touch it.
 
 ### Proposed follow-ups
 
