@@ -11,17 +11,20 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT="${HOME}/.pi/agent"
 
-# 1. Extensions (full sync except cmux-session.ts, which cmux manages in place)
+# 1. Extensions (full sync except: cmux-session.ts is managed by cmux in place,
+#    orca-* extensions are local-only, README.md docs are maintained in the repo)
 rsync -a --delete \
   --exclude='node_modules' \
   --exclude='.cmux-session.lock' \
   --exclude='.DS_Store' \
   --exclude='cmux-session.ts' \
+  --exclude='orca-*' \
+  --exclude='README.md' \
   "$AGENT/extensions/" "$REPO_DIR/extensions/"
 
 # 1b. Shared utils imported by extensions
 mkdir -p "$REPO_DIR/utils"
-rsync -a --delete --exclude='.DS_Store' "$AGENT/utils/" "$REPO_DIR/utils/"
+rsync -a --delete --exclude='.DS_Store' --exclude='README.md' "$AGENT/utils/" "$REPO_DIR/utils/"
 
 # 1c. Themes (allowlist-driven, per file)
 mkdir -p "$REPO_DIR/themes"
