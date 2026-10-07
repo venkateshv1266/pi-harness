@@ -170,7 +170,7 @@ const HELP = {
 	sessionImpact: {
 		title: "Session impact",
 		what: "One session's harness benefit, its quality signals and the specific things worth improving — the per-session view of what the Impact tab shows in aggregate.",
-		formula: "Same formulas as the Impact tab, scoped to this session: curator chars → tokens (carried across the session's remaining turns), cache discount from the models this session used, rule deliveries from ttsr records tagged with this session.",
+		formula: "Tokens condensed = Σ (source chars − extract chars) ÷ 4 at each trim: the text the curator replaced with an extract, counted once — this is the headline. Not re-read = each trim's saving counted again on every model call that followed it, summed over trims, so it is a flow rather than a size: one token can appear in it many times. Prompts ran smaller = that flow over itself plus the prompt tokens actually sent; the peak is the largest single prompt, with and without the trims. Worth ≈ the flow priced at the cache-read rate (input rate is the ceiling) — cents here, because a cached prefix is cheap to re-read. The carry assumes an extract stays in context, so a compaction that dropped it would end its carry.",
 		source: "This session's entries in ~/.pi/agent/sessions, plus decision records that carry its session id (curator ledgers, ttsr, router, course-check). Guard screens have no session id, so they are excluded here.",
 		action: "The hints are the actionable part: repeated reads, oversized items kept in full, model switches, corrections and drift each point at a different fix.",
 	},
@@ -1891,7 +1891,13 @@ async function sessionPage(view, ctx) {
 	const impactKpis = gridRegion((si) => {
 		const b = si.benefit;
 		return [
-			kpi({ label: "Context condensed", value: fmtCompact(b.curatorTokensCarried), sub: `${fmtInt(b.emits)} emits · ${fmtCompact(b.curatorTokensOneTime)} one-time`, valueClass: "good", help: HELP.sessionImpact }),
+			kpi({
+				label: "Tokens condensed",
+				value: fmtCompact(b.curatorTokensCondensed),
+				sub: `${fmtInt(b.emits)} trims · prompts ~${fmtPct(b.curatorPromptSavedPct, 1)} smaller (median ${fmtCompact(b.curatorOffsetMedian)}) · ≈${fmtCompact(b.curatorTokensNotResent)} not re-read · ≈${fmtCost(b.curatorUsdCached)} (${fmtPct(b.curatorUsdShare, 0)} of spend)`,
+				valueClass: "good",
+				help: HELP.sessionImpact,
+			}),
 			kpi({ label: "Cache discount", value: fmtCost(b.cacheDiscount), sub: b.cacheRate == null ? "no prompt tokens" : `${fmtPct(b.cacheRate, 0)} of prompt tokens cached` }),
 			kpi({ label: "Rule deliveries", value: fmtInt(b.rulesDelivered), sub: `${fmtCompact(b.rulesTokens)} tok injected · ${fmtInt(b.contextEdits)} context edits` }),
 			kpi({ label: "Cost per turn", value: b.costPerTurn == null ? "—" : fmtCost(b.costPerTurn), sub: `${fmtCost(si.session.cost)} over ${fmtInt(si.session.turns)} turns` }),
@@ -1944,7 +1950,7 @@ async function sessionPage(view, ctx) {
 		impactItems.patch((si.items ?? []).map((item, index) => ({ ...item, key: `${item.tool}|${item.turn ?? ""}|${index}` })));
 		const flags = (si.quality?.corrections ?? 0) + (si.quality?.errors ?? 0) + (si.quality?.offTrack ?? 0);
 		impactBadge.className = `pill ${(si.findings ?? []).some((f) => f.tone === "warn") ? "warn" : "accent"}`;
-		impactBadge.textContent = `${fmtCompact(si.benefit?.curatorTokensCarried ?? 0)} tok condensed${flags ? ` · ${fmtInt(flags)} flags` : ""}`;
+		impactBadge.textContent = `${fmtCompact(si.benefit?.curatorTokensCondensed ?? 0)} tok condensed${flags ? ` · ${fmtInt(flags)} flags` : ""}`;
 	}
 
 	// --- compare with another session (same numbers, side by side)
@@ -1966,7 +1972,10 @@ async function sessionPage(view, ctx) {
 				row("Calls", fmtInt(a.session.calls), fmtInt(b.session.calls)),
 				row("Turns", fmtInt(a.session.turns), fmtInt(b.session.turns)),
 				row("Cost / turn", fmtCost(a.benefit.costPerTurn ?? 0), fmtCost(b.benefit.costPerTurn ?? 0)),
-				row("Condensed (carried)", fmtCompact(a.benefit.curatorTokensCarried), fmtCompact(b.benefit.curatorTokensCarried)),
+				row("Tokens kept out", fmtCompact(a.benefit.curatorTokensKeptOut), fmtCompact(b.benefit.curatorTokensKeptOut)),
+				row("Tokens condensed", fmtCompact(a.benefit.curatorTokensCondensed), fmtCompact(b.benefit.curatorTokensCondensed)),
+				row("Not re-read over the session", fmtCompact(a.benefit.curatorTokensNotResent), fmtCompact(b.benefit.curatorTokensNotResent)),
+				row("…worth at cache rates", fmtCost(a.benefit.curatorUsdCached), fmtCost(b.benefit.curatorUsdCached)),
 				row("Cache discount", fmtCost(a.benefit.cacheDiscount), fmtCost(b.benefit.cacheDiscount)),
 				row("Context edits", fmtInt(a.benefit.contextEdits), fmtInt(b.benefit.contextEdits)),
 				row("Rule deliveries", fmtInt(a.benefit.rulesDelivered), fmtInt(b.benefit.rulesDelivered)),

@@ -2660,9 +2660,9 @@ export function sessionImpact(db: Database, sessionId: string) {
 
 	// benefit side
 	const rows = db
-		.query<{ ts: string; turn: number | null; data: string }, [string]>("SELECT ts, turn, data FROM events WHERE session_id = ? AND kind = 'curator.ledger' ORDER BY ts_ms LIMIT 4000")
+		.query<{ ts: string; ts_ms: number; turn: number | null; data: string }, [string]>("SELECT ts, ts_ms, turn, data FROM events WHERE session_id = ? AND kind = 'curator.ledger' ORDER BY ts_ms LIMIT 4000")
 		.all(sessionId);
-	const items: Array<{ tool: string; sourceType: string; verdict: string; role: string; chars: number; extractChars: number | null; turn: number | null; path: string | null }> = [];
+	const items: Array<{ tool: string; sourceType: string; verdict: string; role: string; chars: number; extractChars: number | null; turn: number | null; tsMs: number; path: string | null }> = [];
 	for (const row of rows) {
 		const data = parseData(row);
 		for (const rawItem of Array.isArray(data.items) ? data.items : []) {
@@ -2677,22 +2677,62 @@ export function sessionImpact(db: Database, sessionId: string) {
 				chars: typeof item.chars === "number" ? item.chars : 0,
 				extractChars: typeof item.extractChars === "number" ? item.extractChars : null,
 				turn: typeof item.turn === "number" ? item.turn : row.turn,
+				tsMs: row.ts_ms,
 				path: pathMatch ? pathMatch[1] : null,
 			});
 		}
 	}
-	let curatorCharsOneTime = 0;
-	let curatorCharsCarried = 0;
+	let curatorCharsKeptOut = 0;
 	let emits = 0;
+	// Context rides on model calls, not turns: remember when each condensation happened
+	// so the calls that followed it can be counted below.
+	const condensations: Array<{ tsMs: number; tokens: number }> = [];
 	for (const item of items) {
 		const condensed = item.verdict === "useExtract" || item.verdict === "indexOnly";
 		if (!condensed || item.extractChars == null) continue;
 		const delta = Math.max(0, item.chars - item.extractChars);
 		if (delta === 0) continue;
 		emits += 1;
-		curatorCharsOneTime += delta;
-		curatorCharsCarried += delta * Math.max(0, session.turns - (item.turn ?? 0));
+		curatorCharsKeptOut += delta;
+		condensations.push({ tsMs: item.tsMs, tokens: delta / 4 });
 	}
+
+	// The counterfactual, measured rather than extrapolated: for every model call, the
+	// tokens kept out by each condensation that preceded it are what that prompt would
+	// have carried had the sources stayed in context. A turn is many calls, so counting
+	// turns (or worse, a turn index) multiplies the wrong number.
+	const sessionCalls = db
+		.query<{ ts_ms: number; prompt: number; model: string | null }, [string]>(
+			"SELECT ts_ms, COALESCE(input,0) + COALESCE(cache_read,0) + COALESCE(cache_write,0) prompt, model FROM model_calls WHERE session_id = ? ORDER BY ts_ms",
+		)
+		.all(sessionId);
+	let callPromptTokens = 0;
+	let tokensNotResent = 0;
+	let callsCarrying = 0;
+	let peakPrompt = 0;
+	let peakPromptWithout = 0;
+	let usdCached = 0;
+	let usdInput = 0;
+	const offsets: number[] = [];
+	for (const call of sessionCalls) {
+		const offset = condensations.reduce((a, c) => a + (c.tsMs < call.ts_ms ? c.tokens : 0), 0);
+		callPromptTokens += call.prompt;
+		tokensNotResent += offset;
+		offsets.push(offset);
+		if (offset > 0) callsCarrying += 1;
+		peakPrompt = Math.max(peakPrompt, call.prompt);
+		peakPromptWithout = Math.max(peakPromptWithout, call.prompt + offset);
+		// Priced at the rates the app already uses elsewhere: what those tokens would have
+		// cost as cached prompt reads, and as fresh input if nothing were cached.
+		const price = call.model ? priceFor(priceList, call.model) : null;
+		if (price?.cache_read != null) usdCached += (offset * price.cache_read) / 1_000_000;
+		if (price?.input != null) usdInput += (offset * price.input) / 1_000_000;
+	}
+	const carrying = offsets.filter((o) => o > 0).sort((a, b) => a - b);
+	const offsetMedian = carrying.length ? carrying[Math.floor(carrying.length / 2)] : 0;
+	// Share of the prompt the model would have read with nothing condensed. Token counts,
+	// not dollars: a cached prefix makes the money effect much smaller than this ratio.
+	const promptSavedPct = callPromptTokens + tokensNotResent > 0 ? tokensNotResent / (callPromptTokens + tokensNotResent) : null;
 	const perModel = db
 		.query<{ model: string | null; calls: number; cache_read: number; cost: number; errors: number }, [string]>(
 			`SELECT model, COUNT(*) calls, COALESCE(SUM(cache_read),0) cache_read, COALESCE(SUM(cost),0) cost,
@@ -2757,8 +2797,17 @@ export function sessionImpact(db: Database, sessionId: string) {
 		session,
 		benefit: {
 			emits,
-			curatorTokensOneTime: Math.round(curatorCharsOneTime / 4),
-			curatorTokensCarried: Math.round(curatorCharsCarried / 4),
+			curatorTokensCondensed: Math.round(curatorCharsKeptOut / 4),
+			curatorTokensNotResent: Math.round(tokensNotResent),
+			curatorPromptTokens: Math.round(callPromptTokens),
+			curatorPromptSavedPct: promptSavedPct,
+			curatorCallsCarrying: callsCarrying,
+			curatorOffsetMedian: Math.round(offsetMedian),
+			curatorPromptPeak: peakPrompt,
+			curatorPromptPeakWithout: peakPromptWithout,
+			curatorUsdCached: usdCached,
+			curatorUsdInput: usdInput,
+			curatorUsdShare: (session?.cost ?? 0) > 0 ? usdCached / (session?.cost ?? 1) : null,
 			cacheDiscount,
 			rulesDelivered: delivered,
 			rulesTokens: Math.round(deliveredChars / 4),
