@@ -411,14 +411,14 @@ function guardrailsSection(): SetupSection {
 	return {
 		id: "guardrails",
 		title: "Guardrails",
-		detail: "Spend limits for the OpenRouter guardrail banner.",
+		detail: "Spend limits for the OpenRouter guardrails shown in the footer.",
 		items: [
 			{
 				id: "guardrails:daily",
 				label: "Daily limit (USD)",
-				detail: "Approximate daily OpenRouter spend where the guardrail header starts warning you.",
+				detail: "Approximate daily OpenRouter spend where the footer guardrails start warning you.",
 				effect: "next request",
-				owner: "openrouter-guardrail-header",
+				owner: "custom-footer",
 				kind: "number",
 				min: 0,
 				max: 100000,
@@ -436,9 +436,9 @@ function guardrailsSection(): SetupSection {
 			{
 				id: "guardrails:monthly",
 				label: "Monthly limit (USD)",
-				detail: "Approximate monthly OpenRouter spend where the guardrail header starts warning you.",
+				detail: "Approximate monthly OpenRouter spend where the footer guardrails start warning you.",
 				effect: "next request",
-				owner: "openrouter-guardrail-header",
+				owner: "custom-footer",
 				kind: "number",
 				min: 0,
 				max: 1000000,

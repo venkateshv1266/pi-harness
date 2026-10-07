@@ -16,7 +16,7 @@ Outside the TUI (`ctx.mode !== "tui"`), `/setup` prints every section and curren
 | Roles | `@smol`/`@slow`/`@plan`/`@task`/`@designer` role models | [model-roles](../model-roles.ts) · `/roles` |
 | Router | Enable, prefer-roles, complexity threshold, probe timeout, fast/mid/deep tiers | [model-router](../model-router.ts) · `/route` |
 | Fallbacks | Primary → fallback failover pairs, failure threshold | [model-fallback](../model-fallback.ts) · `/fallback` |
-| Guardrails | OpenRouter daily/monthly spend limits | [openrouter-guardrail-header](../openrouter-guardrail-header.ts) |
+| Guardrails | OpenRouter daily/monthly spend limits | [custom-footer](../custom-footer.ts) |
 | Appearance | Theme, TUI mode | pi core · `/theme`, `/settings` |
 | Core | Project trust, steering, follow-ups, double-escape, quiet startup, thinking blocks, skill commands, HTTP idle timeout | pi core · `/settings` |
 | Packages | Installed pi packages and marketplace plugins | pi core packages · `/plugins` |
