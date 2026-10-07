@@ -75,8 +75,41 @@ interface Price {
 	cache_write: number | null;
 }
 
-export function prices(db: Database): Price[] {
+/** The sheet exactly as ingested — one current row per model, no billed correction. */
+export function sheetPrices(db: Database): Price[] {
 	return db.query<Price, []>("SELECT model, input, output, cache_read, cache_write FROM prices").all();
+}
+
+/**
+ * The sheet corrected by what was actually billed. The sheet holds one current row per
+ * model, so a range spanning a price change would otherwise be priced at today's rates —
+ * z-ai/glm-5.3 billed 4.8x its row in August and 1.0x in October. Each row is scaled by
+ * billed ÷ sheet-priced cost over that model's calls, which is all a range aggregate can
+ * know without carrying a period. Per-day precision lives in rateBook().
+ */
+export function prices(db: Database): Price[] {
+	const list = sheetPrices(db);
+	const scale = new Map<string, number>();
+	for (const row of db
+		.query<{ model: string; cost: number; input: number; cache_read: number; cache_write: number; output: number }, []>(
+			`SELECT model, COALESCE(SUM(cost),0) cost, COALESCE(SUM(input),0) input, COALESCE(SUM(cache_read),0) cache_read,
+			        COALESCE(SUM(cache_write),0) cache_write, COALESCE(SUM(output),0) output
+			 FROM model_calls WHERE model IS NOT NULL AND cost > 0 GROUP BY model`,
+		)
+		.all()) {
+		const sheet = priceFor(list, row.model);
+		if (!sheet) continue;
+		const expected =
+			(row.input * (sheet.input ?? 0) + row.cache_read * (sheet.cache_read ?? 0) + row.cache_write * (sheet.cache_write ?? 0) + row.output * (sheet.output ?? 0)) / 1_000_000;
+		if (!(expected > 0) || !(row.cost > 0)) continue;
+		scale.set(row.model, Math.min(50, Math.max(0.05, row.cost / expected)));
+	}
+	return list.map((row) => {
+		const factor = scale.get(row.model) ?? 1;
+		if (factor === 1) return row;
+		const mul = (value: number | null) => (value == null ? null : value * factor);
+		return { ...row, input: mul(row.input), output: mul(row.output), cache_read: mul(row.cache_read), cache_write: mul(row.cache_write) };
+	});
 }
 
 function priceFor(list: Price[], model: string): Price | null {
@@ -88,6 +121,192 @@ function priceFor(list: Price[], model: string): Price | null {
 		list.find((p) => bare.endsWith(p.model.replace(/^~/, "")) || p.model.replace(/^~/, "").endsWith(bare)) ??
 		null
 	);
+}
+
+export interface CuratorMetrics {
+	trims: number;
+	tokensCondensed: number;
+	tokensNotResent: number;
+	promptTokensSent: number;
+	promptSavedPct: number | null;
+	offsetMedian: number;
+	peakPrompt: number;
+	peakPromptWithout: number;
+	usdCached: number;
+	usdInput: number;
+	callsCarrying: number;
+	bySource: Record<string, number>;
+}
+
+/**
+ * The one place curator savings are computed. Every view — session card, Curator tab,
+ * Impact harness benefit — reads these fields, so the same work cannot be reported two
+ * ways. Condensed is the text removed at each trim, counted once; not-resent is that same
+ * saving counted again on every model call that followed it, summed over trims; money is
+ * priced per call at the rate that call was billed at.
+ */
+export function curatorMetrics(db: Database, scope: { sessionId: string } | { range: Range }): CuratorMetrics {
+	const sessionId = "sessionId" in scope ? scope.sessionId : null;
+	const from = "range" in scope ? scope.range.from : 0;
+	const to = "range" in scope ? scope.range.to : Number.MAX_SAFE_INTEGER;
+	const ledger = db
+		.query<{ ts_ms: number; session_id: string | null; data: string }, Array<string | number>>(
+			sessionId
+				? "SELECT ts_ms, session_id, data FROM events WHERE session_id = ? AND kind = 'curator.ledger'"
+				: "SELECT ts_ms, session_id, data FROM events WHERE kind = 'curator.ledger' AND ts_ms BETWEEN ? AND ?",
+		)
+		.all(...(sessionId ? [sessionId] : [from, to]));
+
+	const bySession = new Map<string, Array<{ tsMs: number; tokens: number }>>();
+	const bySource: Record<string, number> = {};
+	let condensedTokens = 0;
+	let trims = 0;
+	for (const row of ledger) {
+		let data: Record<string, unknown> = {};
+		try {
+			data = JSON.parse(row.data) as Record<string, unknown>;
+		} catch {
+			continue;
+		}
+		for (const raw of Array.isArray(data.items) ? data.items : []) {
+			const item = (raw ?? {}) as Record<string, unknown>;
+			const chars = typeof item.chars === "number" ? item.chars : null;
+			const extract = typeof item.extractChars === "number" ? item.extractChars : null;
+			const verdict = typeof item.verdict === "string" ? item.verdict : null;
+			if (chars == null || extract == null || (verdict !== "useExtract" && verdict !== "indexOnly")) continue;
+			const delta = Math.max(0, chars - extract);
+			if (delta === 0) continue;
+			trims += 1;
+			condensedTokens += delta / 4;
+			const sourceType = typeof item.sourceType === "string" ? item.sourceType : "other";
+			bySource[sourceType] = (bySource[sourceType] ?? 0) + delta;
+			const key = row.session_id ?? "";
+			const list = bySession.get(key) ?? [];
+			list.push({ tsMs: row.ts_ms, tokens: delta / 4 });
+			bySession.set(key, list);
+		}
+	}
+
+	const book = rateBook(db, from, to);
+	const calls = db
+		.query<{ session_id: string; ts_ms: number; prompt: number; cache_read: number; model: string | null }, Array<string | number>>(
+			`SELECT session_id, ts_ms, COALESCE(input,0) + COALESCE(cache_read,0) + COALESCE(cache_write,0) prompt, COALESCE(cache_read,0) cache_read, model
+			 FROM model_calls WHERE ${sessionId ? "session_id = ?" : "ts_ms BETWEEN ? AND ?"} ORDER BY ts_ms`,
+		)
+		.all(...(sessionId ? [sessionId] : [from, to]));
+
+	let promptTokensSent = 0;
+	let tokensNotResent = 0;
+	let callsCarrying = 0;
+	let peakPrompt = 0;
+	let peakPromptWithout = 0;
+	let usdCached = 0;
+	let usdInput = 0;
+	const offsets: number[] = [];
+	for (const call of calls) {
+		const own = bySession.get(call.session_id) ?? [];
+		const offset = own.reduce((a, t) => a + (t.tsMs < call.ts_ms ? t.tokens : 0), 0);
+		promptTokensSent += call.prompt;
+		tokensNotResent += offset;
+		offsets.push(offset);
+		if (offset > 0) callsCarrying += 1;
+		peakPrompt = Math.max(peakPrompt, call.prompt);
+		peakPromptWithout = Math.max(peakPromptWithout, call.prompt + offset);
+		const rate = call.model ? book.rateFor(call.model, call.ts_ms) : null;
+		if (rate?.cache_read != null) usdCached += (offset * rate.cache_read) / 1_000_000;
+		if (rate?.input != null) usdInput += (offset * rate.input) / 1_000_000;
+	}
+	const carrying = offsets.filter((o) => o > 0).sort((a, b) => a - b);
+	return {
+		trims,
+		tokensCondensed: Math.round(condensedTokens),
+		tokensNotResent: Math.round(tokensNotResent),
+		promptTokensSent: Math.round(promptTokensSent),
+		promptSavedPct: promptTokensSent + tokensNotResent > 0 ? tokensNotResent / (promptTokensSent + tokensNotResent) : null,
+		offsetMedian: carrying.length ? Math.round(carrying[Math.floor(carrying.length / 2)]) : 0,
+		peakPrompt,
+		peakPromptWithout,
+		usdCached,
+		usdInput,
+		callsCarrying,
+		bySource,
+	};
+}
+
+export interface BilledRate extends Price {
+	scale: number;
+	source: "observed" | "store";
+}
+
+/**
+ * Rates fitted to the invoices. The price sheet holds one row per model, current as of
+ * ingest, so pricing an older call with it understates that call — z-ai/glm-5.3 billed
+ * 4.8x its sheet row in August and exactly its sheet row in October. This scales the
+ * sheet into the period a call was billed in, using the only ground truth there is: what
+ * the provider actually charged.
+ *
+ * The scale is per (model, local day) where the day has calls, else per model, else 1.
+ * Divergences are reported so a stale sheet surfaces instead of quietly mispricing.
+ */
+export function rateBook(db: Database, from = 0, to = Number.MAX_SAFE_INTEGER) {
+	const list = sheetPrices(db);
+	const dayOf = (tsMs: number) => {
+		const d = new Date(tsMs);
+		return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+	};
+	const rows = db
+		.query<{ model: string; day: string; cost: number; input: number; cache_read: number; cache_write: number; output: number; calls: number }, [number, number]>(
+			`SELECT model, strftime('%Y-%m-%d', ts_ms / 1000, 'unixepoch', 'localtime') day,
+			        COALESCE(SUM(cost),0) cost, COALESCE(SUM(input),0) input, COALESCE(SUM(cache_read),0) cache_read,
+			        COALESCE(SUM(cache_write),0) cache_write, COALESCE(SUM(output),0) output, COUNT(*) calls
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL AND cost > 0 GROUP BY model, day`,
+		)
+		.all(from, to);
+
+	type Acc = { billed: number; expected: number; calls: number };
+	const byDay = new Map<string, Acc>();
+	const byModel = new Map<string, Acc>();
+	for (const row of rows) {
+		const sheet = priceFor(list, row.model);
+		if (!sheet) continue;
+		const expected =
+			(row.input * (sheet.input ?? 0) + row.cache_read * (sheet.cache_read ?? 0) + row.cache_write * (sheet.cache_write ?? 0) + row.output * (sheet.output ?? 0)) / 1_000_000;
+		if (!(expected > 0) || !(row.cost > 0)) continue;
+		const day = byDay.get(`${row.model}|${row.day}`) ?? { billed: 0, expected: 0, calls: 0 };
+		day.billed += row.cost;
+		day.expected += expected;
+		day.calls += row.calls;
+		byDay.set(`${row.model}|${row.day}`, day);
+		const model = byModel.get(row.model) ?? { billed: 0, expected: 0, calls: 0 };
+		model.billed += row.cost;
+		model.expected += expected;
+		model.calls += row.calls;
+		byModel.set(row.model, model);
+	}
+	// A scale far outside this band means the sheet row is for a different model, not a
+	// price change, so it is left alone rather than applied.
+	const scaleOf = (acc: Acc | undefined) => (acc && acc.expected > 0 ? Math.min(50, Math.max(0.05, acc.billed / acc.expected)) : 1);
+
+	const divergences = [...byDay.entries()]
+		.map(([key, acc]) => {
+			const [model, day] = key.split("|");
+			return { model, day, scale: scaleOf(acc), billed: acc.billed, calls: acc.calls };
+		})
+		.filter((row) => Math.abs(row.scale - 1) > 0.15 && row.billed > 0.1)
+		.sort((a, b) => b.billed - a.billed);
+
+	const rateFor = (model: string | null, tsMs?: number): BilledRate | null => {
+		if (!model) return null;
+		const sheet = priceFor(list, model);
+		if (!sheet) return null;
+		const dayAcc = tsMs != null ? byDay.get(`${model}|${dayOf(tsMs)}`) : undefined;
+		const acc = dayAcc ?? byModel.get(model);
+		const scale = scaleOf(acc);
+		const source: "observed" | "store" = acc && acc.expected > 0 ? "observed" : "store";
+		const scaled = (value: number | null) => (value == null ? null : value * scale);
+		return { ...sheet, input: scaled(sheet.input), output: scaled(sheet.output), cache_read: scaled(sheet.cache_read), cache_write: scaled(sheet.cache_write), scale, source };
+	};
+	return { rateFor, divergences };
 }
 
 // ------------------------------------------------------------------ overview
@@ -344,9 +563,10 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	let cacheReadTokens = 0;
 	let pricedCalls = 0;
 	let unpricedCalls = 0;
+	const book = rateBook(db, range.from, range.to);
 	for (const row of modelRows) {
 		totalInputTokens += row.input;
-		const price = priceFor(priceList, row.model);
+		const price = book.rateFor(row.model);
 		if (price?.input != null) {
 			pricedInputTokens += row.input;
 			pricedInputCost += (row.input * price.input) / 1_000_000;
@@ -369,11 +589,22 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	// Saved tokens would mostly have been re-sent from cache, so they are worth
 	// the cache rate far more often than the full input rate. Pricing them at the
 	// input rate would overstate the saving.
-	const effectiveRate =
+	// Preference order: what the invoices actually charged per token across this range,
+	// then the sheet-blended rate. The sheet is a current snapshot, so a range spanning a
+	// price change would otherwise price saved tokens at today's rate.
+	const billedRange = db
+		.query<{ cost: number; tokens: number }, [number, number]>(
+			"SELECT COALESCE(SUM(cost),0) cost, COALESCE(SUM(input + cache_read + cache_write + output),0) tokens FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND cost > 0",
+		)
+		.get(range.from, range.to);
+	const invoiceRate = billedRange && billedRange.tokens > 0 && billedRange.cost > 0 ? billedRange.cost / billedRange.tokens : null;
+	const blendedRate =
 		blendedInputRate != null && blendedCacheRate != null ? cacheHitRate * blendedCacheRate + (1 - cacheHitRate) * blendedInputRate : blendedInputRate;
+	const effectiveRate = invoiceRate ?? blendedRate;
 
 	// -------- curator condensation
 	// Classification counts come from the decision log…
+	const rangeMetrics = curatorMetrics(db, { range });
 	const curatorRows = db
 		.query<{ kind: string; data: string }, [number, number]>("SELECT kind, data FROM events WHERE system = 'curator' AND ts_ms BETWEEN ? AND ? LIMIT 40000")
 		.all(range.from, range.to);
@@ -432,7 +663,6 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 
 	let curatorEmits = 0;
 	let savedCharsOneTime = 0;
-	let savedCharsCarried = 0;
 	const savedBySource: Record<string, number> = {};
 	for (const row of ledgerRows) {
 		const data = parseData(row);
@@ -450,10 +680,8 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 			curatorItemsTotal += 1;
 			if (itemModel != null) curatorItemsAttributed += 1;
 			if (model && itemModel !== model) continue;
-			const remaining = Math.max(0, (turnCounts.get(row.session_id) ?? 0) - turn);
 			curatorEmits += 1;
 			savedCharsOneTime += delta;
-			savedCharsCarried += delta * remaining;
 			const sourceType = typeof item.sourceType === "string" ? item.sourceType : "other";
 			savedBySource[sourceType] = (savedBySource[sourceType] ?? 0) + delta;
 		}
@@ -470,13 +698,21 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 				const delta = Math.max(0, chars - extract.length);
 				curatorEmits += 1;
 				savedCharsOneTime += delta;
-				savedCharsCarried += delta;
 			}
 		}
 	}
-	const savedTokensOneTime = Math.round(savedCharsOneTime / 4);
-	const savedTokensEst = Math.round(savedCharsCarried / 4);
-	const savedUsdEst = effectiveRate != null ? savedTokensEst * effectiveRate : null;
+	// Both figures here are the shared computation: condensed is the text removed at each
+	// trim, not-resent is that saving counted again on every call that followed, priced at
+	// the rate each call was billed at.
+	const savedTokensOneTime = rangeMetrics.tokensCondensed;
+	const savedTokensEst = rangeMetrics.tokensNotResent;
+	const savedUsdEst = rangeMetrics.usdCached;
+	const savedPromptPct = rangeMetrics.promptSavedPct;
+	const savedOffsetMedian = rangeMetrics.offsetMedian;
+	const savedPeakPrompt = rangeMetrics.peakPrompt;
+	const savedPeakPromptWithout = rangeMetrics.peakPromptWithout;
+	const savedUsdInput = rangeMetrics.usdInput;
+	const savedCallsCarrying = rangeMetrics.callsCarrying;
 
 	// -------- harness overhead that the logs actually price
 	const overheadRows = db
@@ -635,10 +871,15 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 			emits: curatorEmits,
 			retainFull: curatorRetain,
 			savedCharsOneTime,
-			savedCharsCarried,
 			savedTokensOneTime,
 			savedTokensEst,
 			savedUsdEst,
+			savedPromptPct,
+			savedOffsetMedian,
+			savedPeakPrompt,
+			savedPeakPromptWithout,
+			savedUsdInput,
+			savedCallsCarrying,
 			savedBySource,
 		},
 		cache: { savingsUsd: cacheSavingsUsd, cacheReadTokens, pricedCalls, unpricedCalls },
@@ -2650,7 +2891,12 @@ export function trends(db: Database, range: Range) {
 
 /** One session's benefit, quality signal and improvement hints — the drill-down view. */
 export function sessionImpact(db: Database, sessionId: string) {
-	const priceList = prices(db);
+	// The divergence check below compares billed against the sheet as ingested, so it needs
+	// the uncorrected rows; everything else in the view prices through the rate book.
+	const priceList = sheetPrices(db);
+	// Money in this view is priced at the rate the session was actually billed at, not at
+	// today's sheet: the sheet is a current snapshot and older calls were billed higher.
+	const sessionRates = rateBook(db);
 	const session = db
 		.query<{ session_id: string; project: string; title: string | null; turns: number; calls: number; cost: number; total_tokens: number; cache_read: number; input: number; output: number; errors: number }, [string]>(
 			"SELECT session_id, project, title, turns, calls, cost, total_tokens, cache_read, input, output, errors FROM sessions WHERE session_id = ?",
@@ -2702,8 +2948,8 @@ export function sessionImpact(db: Database, sessionId: string) {
 	// have carried had the sources stayed in context. A turn is many calls, so counting
 	// turns (or worse, a turn index) multiplies the wrong number.
 	const sessionCalls = db
-		.query<{ ts_ms: number; prompt: number; model: string | null }, [string]>(
-			"SELECT ts_ms, COALESCE(input,0) + COALESCE(cache_read,0) + COALESCE(cache_write,0) prompt, model FROM model_calls WHERE session_id = ? ORDER BY ts_ms",
+		.query<{ ts_ms: number; prompt: number; cache_read: number; model: string | null }, [string]>(
+			"SELECT ts_ms, COALESCE(input,0) + COALESCE(cache_read,0) + COALESCE(cache_write,0) prompt, COALESCE(cache_read,0) cache_read, model FROM model_calls WHERE session_id = ? ORDER BY ts_ms",
 		)
 		.all(sessionId);
 	let callPromptTokens = 0;
@@ -2713,6 +2959,7 @@ export function sessionImpact(db: Database, sessionId: string) {
 	let peakPromptWithout = 0;
 	let usdCached = 0;
 	let usdInput = 0;
+	let cacheDiscount = 0;
 	const offsets: number[] = [];
 	for (const call of sessionCalls) {
 		const offset = condensations.reduce((a, c) => a + (c.tsMs < call.ts_ms ? c.tokens : 0), 0);
@@ -2722,11 +2969,14 @@ export function sessionImpact(db: Database, sessionId: string) {
 		if (offset > 0) callsCarrying += 1;
 		peakPrompt = Math.max(peakPrompt, call.prompt);
 		peakPromptWithout = Math.max(peakPromptWithout, call.prompt + offset);
-		// Priced at the rates the app already uses elsewhere: what those tokens would have
-		// cost as cached prompt reads, and as fresh input if nothing were cached.
-		const price = call.model ? priceFor(priceList, call.model) : null;
+		// Priced at the rate this call was billed at, not today's sheet: what those tokens
+		// would have cost as cached prompt reads, and as fresh input if nothing were cached.
+		// The cache discount rides the same rate per call, so a session spanning a price
+		// change is priced period by period rather than by a blend.
+		const price = call.model ? sessionRates.rateFor(call.model, call.ts_ms) : null;
 		if (price?.cache_read != null) usdCached += (offset * price.cache_read) / 1_000_000;
 		if (price?.input != null) usdInput += (offset * price.input) / 1_000_000;
+		if (price?.input != null && price.cache_read != null) cacheDiscount += (call.cache_read * (price.input - price.cache_read)) / 1_000_000;
 	}
 	const carrying = offsets.filter((o) => o > 0).sort((a, b) => a - b);
 	const offsetMedian = carrying.length ? carrying[Math.floor(carrying.length / 2)] : 0;
@@ -2740,11 +2990,6 @@ export function sessionImpact(db: Database, sessionId: string) {
 			 FROM model_calls WHERE session_id = ? AND model IS NOT NULL GROUP BY model ORDER BY cost DESC`,
 		)
 		.all(sessionId);
-	let cacheDiscount = 0;
-	for (const row of perModel) {
-		const price = row.model ? priceFor(priceList, row.model) : null;
-		if (price?.input != null && price.cache_read != null) cacheDiscount += (row.cache_read * (price.input - price.cache_read)) / 1_000_000;
-	}
 	const rules = ruleSizes();
 	let delivered = 0;
 	let ruleGood = 0;
@@ -2786,6 +3031,26 @@ export function sessionImpact(db: Database, sessionId: string) {
 	const bigItems = items.filter((item) => item.chars >= 25000 && (item.verdict === "retainFull" || item.verdict === "?"));
 	if (bigItems.length) {
 		findings.push({ tone: "warn", label: `${bigItems.length} oversized item(s) kept in full`, detail: bigItems.slice(0, 3).map((item) => `${item.tool} ${(item.chars / 1000).toFixed(0)}k`).join(" · ") });
+	}
+	// A stale price sheet is worth surfacing here: this view prices derived dollars at the
+	// billed rate, so state the gap when there is one. Measured over the session's own calls,
+	// not per model, so a session the sheet prices correctly stays quiet.
+	for (const row of db
+		.query<{ model: string; cost: number; input: number; cache_read: number; cache_write: number; output: number }, [string]>(
+			`SELECT model, COALESCE(SUM(cost),0) cost, COALESCE(SUM(input),0) input, COALESCE(SUM(cache_read),0) cache_read,
+			        COALESCE(SUM(cache_write),0) cache_write, COALESCE(SUM(output),0) output
+			 FROM model_calls WHERE session_id = ? AND model IS NOT NULL AND cost > 0 GROUP BY model`,
+		)
+		.all(sessionId)) {
+		const sheet = priceFor(priceList, row.model);
+		if (!sheet) continue;
+		const expected =
+			(row.input * (sheet.input ?? 0) + row.cache_read * (sheet.cache_read ?? 0) + row.cache_write * (sheet.cache_write ?? 0) + row.output * (sheet.output ?? 0)) / 1_000_000;
+		if (!(expected > 0) || row.cost < 0.1) continue;
+		const ratio = row.cost / expected;
+		if (Math.abs(ratio - 1) > 0.15) {
+			findings.push({ tone: "info", label: `billed ${ratio.toFixed(1)}× today's sheet`, detail: `${row.model} cost more than the current sheet implies — money here is priced at the billed rate` });
+		}
 	}
 	if (switches >= 2) findings.push({ tone: "info", label: `${switches} model switches`, detail: "each switch re-bills the prompt prefix uncached" });
 	if (session.errors > 0) findings.push({ tone: "warn", label: `${session.errors} errored call(s)`, detail: "billed work that produced nothing" });
@@ -2837,6 +3102,9 @@ export function sessionImpact(db: Database, sessionId: string) {
  * answers "what did it do here"; this answers "is the pipeline healthy".
  */
 export function curatorOverview(db: Database, range: Range) {
+	// Savings come from the one shared computation, so this tab cannot report a different
+	// figure from the session card for the same work.
+	const metrics = curatorMetrics(db, { range });
 	const priceList = prices(db);
 	const rows = db
 		.query<{ kind: string; data: string }, [number, number]>("SELECT kind, data FROM events WHERE system = 'curator' AND ts_ms BETWEEN ? AND ? LIMIT 40000")
@@ -2924,8 +3192,13 @@ export function curatorOverview(db: Database, range: Range) {
 		agreement: { samples: abSamples, hits: abAgree, rate: abSamples > 0 ? abAgree / abSamples : null },
 		verifierCost,
 		costPerEmit: emits > 0 ? verifierCost / emits : null,
-		tokensOneTime: Math.round(totals.oneTimeChars / 4),
-		tokensCarried: Math.round(totals.carriedChars / 4),
+		tokensOneTime: metrics.tokensCondensed,
+		tokensCarried: metrics.tokensNotResent,
+		tokensPromptPct: metrics.promptSavedPct,
+		tokensOffsetMedian: metrics.offsetMedian,
+		tokensUsd: metrics.usdCached,
+		tokensCallsCarrying: metrics.callsCarrying,
+		tokensBySource: metrics.bySource,
 		emittedItems: totals.items,
 	};
 }

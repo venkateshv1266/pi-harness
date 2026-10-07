@@ -30,7 +30,7 @@ const HELP = {
 	impactLedger: {
 		title: "Impact ledger",
 		what: "One row per mechanism, each with the exact basis used. Rows showing a dash are counted but deliberately not priced, because the logs carry no dollar figure for them.",
-		formula: "Per row, see the Basis column: curator saves source-minus-extract chars carried across turns; cache saves the read-rate delta; the router row shows the price delta of the model it switched to.",
+		formula: "Per row, see the Basis column: curator saves source-minus-extract chars, counted again on every call that followed; cache saves the read-rate delta; the router row shows the price delta of the model it switched to.",
 		source: "Sessions (model calls, curator ledgers) plus every decision log.",
 		action: "Work top-down: make the biggest positive row bigger, the biggest negative row smaller.",
 	},
@@ -127,8 +127,8 @@ const HELP = {
 	},
 	benefitCurator: {
 		title: "Context curator — tokens condensed",
-		what: "How much text the curator kept out of context, reported two ways: the tokens avoided on the turn an item was condensed (one-time), and that same saving carried across the turns the session had left — the figure the Curator page leads with.",
-		formula: "(source chars − extract chars) ÷ 4 for items delivered as an extract or index only. The one-time figure is exact; the carried figure multiplies it by the session's remaining turns, so it estimates what those chars would have cost on later turns. Items kept in full are counted, never priced.",
+		what: "How much text the curator kept out of context, reported two ways: the tokens removed at each trim, and that same saving counted again on every model call that followed it — the figure the Curator page leads with.",
+		formula: "(source chars − extract chars) ÷ 4 for items delivered as an extract or index only: condensed, counted once — a size. Not re-read counts each trim's saving again on every model call that followed, summed over trims — a flow, where one token can appear many times. Prompts ran smaller is that flow over itself plus the prompt tokens actually sent. Money prices the flow at the rate each call was billed at, not today's sheet. Items kept in full are counted, never priced.",
 		source: "~/.pi/agent/jev-decisions curator ledger items (chars, extractChars, verdict, turn) joined to each session's turn count, priced at the blended input rate.",
 		action: "If most items are kept in full, the curator is not the lever — cap the tool output at the source (head/tail/filter) so the bulk never enters context in the first place.",
 	},
@@ -233,7 +233,7 @@ const HELP = {
 	curatorRange: {
 		title: "Curator — all sessions in range",
 		what: "The curation pipeline aggregated over every session in the window: how many candidates were classified, how many became emits, how often the verifier escalated or repaired, and what all of it cost.",
-		formula: "Counts come from the curator decision log (shadow classifications, verifier batches, jev-verify, verifier-ab, emissions); condensed tokens come from ledger items (source chars − extract chars, carried across remaining turns) ÷ 4.",
+		formula: "Counts come from the curator decision log (shadow classifications, verifier batches, jev-verify, verifier-ab, emissions); condensed tokens come from ledger items (source chars − extract chars) ÷ 4, and the flow they avoid from counting each trim again on every call that followed.",
 		source: "~/.pi/agent/jev-decisions/jev-curator.jsonl plus curator ledger items in each session's log.",
 		action: "A low emit rate with heavy frontier escalation means verification is the bottleneck, not curation. A high repair rate means proposals are losing goal-relevant lines — watch that the repair pass stays a safety net rather than the norm.",
 	},
@@ -660,9 +660,9 @@ async function impactPage(view, ctx) {
 			mechanism: "Curator condensation",
 			trendKey: "curatorTokens",
 			volume: `${fmtInt(d.curator.emits)} emits · ${fmtInt(d.curator.retainFull)} retained full`,
-			tokens: `${fmtCompact(d.curator.savedTokensEst)} carried`,
+			tokens: `${fmtCompact(d.curator.savedTokensEst)} not re-read`,
 			usd: d.curator.savedUsdEst != null ? fmtCost(d.curator.savedUsdEst) : "—",
-			basis: "(source chars − extract chars) × remaining turns in that session, ÷4, × blended input rate",
+			basis: "(source chars − extract chars) ÷ 4 at each trim, counted again on every call that followed, priced at the rate each call was billed at",
 		},
 		{
 			key: "cache",
@@ -838,12 +838,12 @@ async function impactPage(view, ctx) {
 					mechanism: "Context curator",
 					trendKey: "curatorTokens",
 					now: `${fmtInt(c.emits)} condensed of ${fmtInt(c.candidates)} candidates · ${fmtInt(c.retainFull)} kept in full · verifier spend sits in the Jev row`,
-					alternative: `kept in context instead: ${fmtCompact(c.savedTokensOneTime)} tok one-time + carried across later turns = ${fmtCompact(c.savedTokensEst)} tok ≈ ${fmtCost(c.savedUsdEst ?? 0)}`,
+					alternative: `kept in context instead: ${fmtCompact(c.savedTokensOneTime)} tok condensed + ${fmtCompact(c.savedTokensEst)} tok not re-read across later calls ≈ ${fmtCost(c.savedUsdEst ?? 0)}`,
 					net:
 						c.savedUsdEst == null
 							? h("span", { class: "faint" }, "no rate")
 							: h("span", { style: { color: "var(--ok)", fontWeight: "650" } }, `${fmtCost(c.savedUsdEst)} saved`),
-					basis: `(source chars − extract chars) ÷ 4 for every item delivered as an extract or index only, priced at ${fmtCost((b.rates.effectivePerToken ?? 0) * 1_000_000)}/M and multiplied by the turns left in that session — exact for the chars condensed, an estimate for what they would have cost on later turns. Items kept in full are counted, not priced. The curator's own verifier calls are counted in the Jev row, not here.`,
+					basis: `(source chars − extract chars) ÷ 4 for every item delivered as an extract or index only, counted again on each model call that followed it, priced at the rate those calls were billed at (${fmtCost((b.rates.effectivePerToken ?? 0) * 1_000_000)}/M is the range average) — exact for the chars condensed, an estimate for what they would have cost on later calls. Items kept in full are counted, not priced. The curator's own verifier calls are counted in the Jev row, not here.`,
 				},
 				{
 					key: "baseline",
@@ -1620,7 +1620,7 @@ async function curatorPage(view, ctx) {
 		kpi({ label: "Candidates", value: fmtInt(d.candidates), sub: `${fmtInt(d.emittedItems)} condensed items` }),
 		kpi({ label: "Emits", value: fmtInt(d.emits), sub: `${fmtPct(d.emitRate, 0)} of candidates`, help: HELP.curatorRange }),
 		kpi({ label: "Retained full", value: fmtInt(d.retainFull), sub: `${fmtPct(d.retainShare, 0)} of candidates kept whole` }),
-		kpi({ label: "Tokens condensed", value: fmtCompact(d.tokensCarried), sub: `${fmtCompact(d.tokensOneTime)} one-time · carried across turns`, valueClass: "good" }),
+		kpi({ label: "Tokens condensed", value: fmtCompact(d.tokensOneTime), sub: `≈${fmtCompact(d.tokensCarried)} not re-read over later calls${d.tokensPromptPct != null ? ` · prompts ${fmtPct(d.tokensPromptPct, 1)} smaller` : ""}`, valueClass: "good" }),
 		kpi({ label: "Frontier escalations", value: fmtInt(d.escalations), sub: `${fmtPct(d.escalationRate, 1)} of candidates needed a frontier check` }),
 		kpi({ label: "Repairs", value: `${fmtInt(d.repairs.repaired)}/${fmtInt(d.repairs.verified)}`, sub: `${fmtInt(d.repairs.lostLines)} goal-relevant lines recovered` }),
 		kpi({ label: "Verifier agreement", value: fmtPct(d.agreement.rate, 0), sub: `${fmtInt(d.agreement.hits)}/${fmtInt(d.agreement.samples)} frontier samples agreed` }),
@@ -1757,7 +1757,7 @@ async function sessionsPage(view, ctx) {
 			{ label: "Calls", right: true, width: "60px", render: (row) => fmtInt(row.calls) },
 			{ label: "$ / call", right: true, width: "74px", render: (row) => (row.costPerCall == null ? "—" : fmtCost(row.costPerCall)) },
 			{ label: "Cost", right: true, width: "74px", render: (row) => fmtCost(row.cost) },
-			{ label: "Condensed", right: true, width: "86px", render: (row) => h("span", { "data-tip": `${fmtCompact(row.curatorTokens)} tokens kept out of context, carried across this session's remaining turns` }, fmtCompact(row.curatorTokens)) },
+				{ label: "Condensed", right: true, width: "86px", render: (row) => h("span", { "data-tip": `${fmtCompact(row.curatorTokens)} tokens condensed away at each trim — open the session for the flow they avoided on later calls` }, fmtCompact(row.curatorTokens)) },
 			{ label: "Cache saved", right: true, width: "92px", render: (row) => h("span", { "data-tip": "provider cache discount on this session's cached prompt tokens" }, fmtCost(row.cacheDiscount)) },
 			{
 				label: "Problems",
