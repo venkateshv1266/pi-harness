@@ -1618,8 +1618,7 @@ export function ledger(db: Database, filters: LedgerFilters) {
 			labels: dailyLabels,
 			bySystem: [...dailyBySystem.entries()]
 				.map(([system, values]) => ({ system, values, total: values.reduce((a, b) => a + b, 0) }))
-				.sort((a, b) => b.total - a.total)
-				.slice(0, 8),
+				.sort((a, b) => b.total - a.total),
 		},
 		rows: rows.map((row) => ({
 			id: row.id,

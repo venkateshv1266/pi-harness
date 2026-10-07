@@ -64,6 +64,71 @@ export function areaChart({ labels, series, height = 190, stacked = false, value
 }
 
 /**
+ * One line per series, no fill — for comparing many subsystems at once. `focusIndex`
+ * isolates one: it paints last and thicker, the rest fade back, and the axis rescales
+ * to the focused series so its own shape is readable instead of flattened by the leader.
+ */
+export function lineChart({ labels, series, height = 210, valueFmt = fmtCompact, focusIndex = null }) {
+	const n = labels.length;
+	if (!n || !series.length) return '<div class="empty">No data in range</div>';
+	const padL = 48;
+	const padR = 14;
+	const padT = 12;
+	const padB = 24;
+	const iw = VIEW_W - padL - padR;
+	const ih = height - padT - padB;
+	const focused = focusIndex != null ? series[focusIndex] : null;
+	const max = Math.max(...(focused ? focused.values : series.flatMap((s) => s.values)), 1e-9);
+	const x = (i) => padL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
+	const y = (v) => padT + ih - (v / max) * ih;
+	const grid = [0, 0.25, 0.5, 0.75, 1]
+		.map((f) => {
+			const yy = padT + ih * (1 - f);
+			return `<line class="gridline" x1="${padL}" x2="${VIEW_W - padR}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" /><text x="${padL - 7}" y="${(yy + 3).toFixed(1)}" text-anchor="end">${esc(valueFmt(max * f))}</text>`;
+		})
+		.join("");
+
+	// Selecting one system hides the rest rather than dimming them: the axis rescales
+	// to the selected system, so a busier line would paint many times above the plot and
+	// spill over the card. The clip is the belt to that braces — nothing drawn here can
+	// escape the plot area.
+	const clipId = `lc${Math.random().toString(36).slice(2, 8)}`;
+	const lines = series
+		.map((s, i) => ({ s, i }))
+		.filter(({ i }) => focusIndex == null || i === focusIndex)
+		.sort((a, b) => (a.i === focusIndex ? 1 : 0) - (b.i === focusIndex ? 1 : 0))
+		.map(({ s, i }) => {
+			const d = s.values.map((v, j) => `${j ? "L" : "M"}${x(j).toFixed(1)},${y(v ?? 0).toFixed(1)}`).join("");
+			return `<path d="${d}" fill="none" stroke="${seriesColor(i)}" stroke-width="${focusIndex === i ? 2.6 : 1.5}" stroke-opacity="0.95" stroke-linejoin="round" stroke-linecap="round" />`;
+		})
+		.join("");
+
+	const sliceW = n > 1 ? iw / (n - 1) : iw;
+	const MAX_TIP_ROWS = 10;
+	const slices = labels
+		.map((label, i) => {
+			const rows = focused
+				? [focused]
+				: series.filter((s) => (s.values[i] ?? 0) > 0).sort((a, b) => (b.values[i] ?? 0) - (a.values[i] ?? 0));
+			const shown = rows.slice(0, MAX_TIP_ROWS);
+			const extra = rows.length - shown.length;
+			const tip = rows.length
+				? [label, ...shown.map((s) => `${s.name}: ${valueFmt(s.values[i] ?? 0)}`), extra > 0 ? `+${extra} more system${extra === 1 ? "" : "s"}` : null].filter(Boolean).join("\n")
+				: `${label}: no decisions`;
+			const start = Math.max(padL, x(i) - sliceW / 2);
+			const width = Math.min(sliceW, VIEW_W - padR - start);
+			return `<rect x="${start.toFixed(1)}" y="${padT}" width="${width.toFixed(1)}" height="${ih}" fill="transparent" data-tip="${esc(tip)}" />`;
+		})
+		.join("");
+
+	const ticks = labels
+		.map((label, i) => (i === 0 || i === n - 1 || i === Math.floor((n - 1) / 2) ? `<text x="${x(i).toFixed(1)}" y="${height - 7}" text-anchor="middle">${esc(shortDate(label))}</text>` : ""))
+		.join("");
+
+	return `<svg class="chart" viewBox="0 0 ${VIEW_W} ${height}" style="width:100%;height:auto" role="img"><defs><clipPath id="${clipId}"><rect x="${padL}" y="${padT}" width="${iw}" height="${ih}" /></clipPath></defs>${grid}<g clip-path="url(#${clipId})">${lines}</g>${slices}${ticks}</svg>`;
+}
+
+/**
  * Vertical bars, optionally stacked. Same frame as areaChart, for a daily volume
  * where the total for a day is the reading rather than the shape between days.
  */
