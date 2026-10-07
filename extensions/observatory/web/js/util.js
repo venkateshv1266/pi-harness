@@ -101,7 +101,10 @@ export function shortDate(label) {
 	return label;
 }
 
-const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--s7)", "var(--s8)"];
+const SERIES = [
+	"var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--s7)", "var(--s8)",
+	"var(--s9)", "var(--s10)", "var(--s11)", "var(--s12)", "var(--s13)", "var(--s14)", "var(--s15)", "var(--s16)",
+];
 export function seriesColor(index) {
 	return SERIES[index % SERIES.length];
 }

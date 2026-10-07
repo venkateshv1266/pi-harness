@@ -141,6 +141,12 @@ export function bars(items, { valueFmt = fmtCompact, max = null } = {}) {
 	);
 }
 
+/** Rounded shares must not print a 0% row: a subsystem with four decisions is <1%, not nothing. */
+export const shareLabel = (part, whole) => {
+	const share = part / whole;
+	return share > 0 && share < 0.005 ? "<1%" : `${Math.round(share * 100)}%`;
+};
+
 /** Lane strip: rows = [{ label, ticks: [{ start, end, color, tip }] }], bounds in ms. */
 export function lanes(rows, { from, to }) {
 	const span = Math.max(1, to - from);

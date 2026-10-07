@@ -2,13 +2,14 @@
 // in-place refresher (`ctx.onAutoRefresh`) that re-fetches and patches only the
 // regions whose data changed — no page rebuilds, no scroll jumps.
 import { api, post, h, clear, fmtCompact, fmtCost, fmtInt, fmtPct, fmtMs, fmtClock, fmtDateTime, timeAgo, toneForSeverity, toneForVerdict, openDrawer, toast, seriesColor, debounce } from "./util.js";
-import { areaChart, barChart, spark, histogram, sankey } from "./charts.js";
-import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, banner, emptyState, lanes, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
+import { areaChart, barChart, lineChart, spark, histogram, sankey } from "./charts.js";
+import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, shareLabel, banner, emptyState, lanes, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
 
 export const state = {
 	range: localStorage.getItem("observatory-range") || "7d",
 	dailyMetric: localStorage.getItem("observatory-daily-metric") || "cost",
 	ledgerSystem: null,
+	ledgerFocus: null,
 	ledgerSeverity: null,
 	ledgerQuery: "",
 	ledgerOffset: 0,
@@ -179,6 +180,13 @@ const HELP = {
 		formula: "Source size in chars reported by the curator ledger; 'retainFull' means it stayed in context whole, condensed verdicts replaced it with an extract.",
 		source: "Curator ledger items stored in this session's log.",
 		action: "A big item marked retainFull is the clearest avoidable cost in the session — cap that command at the source, or check why the verifier refused the extract.",
+	},
+	ledgerVolume: {
+		title: "Decision volume per system",
+		what: "Every subsystem's decisions as one line per system over the days in range, each in its own colour. Click a system to isolate it.",
+		formula: "each line is that subsystem's decisions per day; isolating one rescales the axis to it, so its own shape is readable instead of flattened by the busiest line. The subtitle then reports that system's range total, share of all logged decisions, and busiest day.",
+		source: "observatory.db — events grouped by system and day (localtime).",
+		action: "A line that climbs while the others stay flat is a subsystem doing more work than it used to. Isolate it and read the count before calling that progress — volume is not value.",
 	},
 	perDay: {
 		title: "Per day",
@@ -1398,23 +1406,55 @@ async function ledgerPage(view, ctx) {
 		onRowClick: (row) => openEventDrawer(row),
 		maxHeight: "560px",
 	});
+	let volumeData = null;
+	let volumeSub = null;
 	const volumeBySystem = nodeRegion((data) => {
+		volumeData = data;
+		const labels = data.daily?.labels ?? [];
 		const systems = (data.daily?.bySystem ?? []).filter((entry) => entry.values.some((value) => value > 0));
-		if (!systems.length) return emptyState("No decisions in this range.");
+		if (!systems.length) {
+			if (volumeSub) volumeSub.textContent = "one line per subsystem — click one to isolate it";
+			return emptyState("No decisions in this range.");
+		}
+		const grand = systems.reduce((a, entry) => a + entry.total, 0);
+		const focus = systems.findIndex((entry) => entry.system === state.ledgerFocus);
+		const focused = focus >= 0 ? systems[focus] : null;
+		if (volumeSub) {
+			if (focused) {
+				const peak = focused.values.reduce((best, value, i) => (value > best.value ? { value, day: labels[i] } : best), { value: 0, day: null });
+				volumeSub.textContent = `${focused.system} — ${fmtCompact(focused.total)} decisions · ${shareLabel(focused.total, grand)} of logged · busiest ${peak.day} (${fmtCompact(peak.value)})`;
+			} else {
+				volumeSub.textContent = "one line per subsystem — click one to isolate it";
+			}
+		}
 		return h(
 			"div",
-			{ class: "bar-list" },
-			...systems.map((entry) =>
-				h(
-					"div",
-					{ style: { display: "grid", gridTemplateColumns: "150px 1fr 64px", gap: "10px", alignItems: "center" } },
-					h("span", { class: "small" }, entry.system),
-					h("div", { html: spark(entry.values, { height: 22, color: "var(--s5)" }) }),
-					h("span", { class: "small muted", style: { textAlign: "right" } }, fmtCompact(entry.total)),
+			{},
+			h(
+				"div",
+				{ class: "chiprow systems-row" },
+				h("button", { class: `chip${focused ? "" : " active"}`, onclick: () => { state.ledgerFocus = null; volumeBySystem.render(volumeData); } }, "all systems"),
+				...systems.map((entry, i) =>
+					h(
+						"button",
+						{
+							class: `chip${focused?.system === entry.system ? " active" : ""}`,
+							onclick: () => {
+								state.ledgerFocus = focused?.system === entry.system ? null : entry.system;
+								volumeBySystem.render(volumeData);
+							},
+						},
+						h("i", { class: "dot", style: { background: seriesColor(i) } }),
+						entry.system,
+						h("span", { class: "n" }, fmtCompact(entry.total)),
+					),
 				),
 			),
+			h("div", { html: lineChart({ labels, series: systems.map((entry) => ({ name: entry.system, values: entry.values })), height: 240, valueFmt: fmtCompact, focusIndex: focused ? focus : null }) }),
 		);
 	});
+	const volumeCard = card({ title: "Decision volume per system", sub: "one line per subsystem — click one to isolate it", body: volumeBySystem.node, help: HELP.ledgerVolume });
+	volumeSub = volumeCard.querySelector(".cardhead .sub");
 	const pager = nodeRegion((data) =>
 		h(
 			"div",
@@ -1539,7 +1579,7 @@ async function ledgerPage(view, ctx) {
 			h("div", { class: "cardbody flush" }, rows),
 			h("div", { class: "cardbody" }, pager.node),
 		),
-		card({ title: "Decision volume per system", sub: "how busy each subsystem is, day by day", body: volumeBySystem.node }),
+		volumeCard,
 		h("div", { class: "card" }, h("div", { class: "cardhead" }, h("h3", {}, "Effectiveness"), h("div", { class: "grow" }), h("div", { class: "seg" }, ...segButtons)), effectPanel),
 	);
 
