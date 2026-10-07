@@ -87,7 +87,7 @@ copy stays behind in `~/.pi/agent/extensions/` — delete it manually and
 
 ## Optional components
 
-- **YubiKey alerts for Git in cmux** — `./scripts/install-yubikey-notifications.sh`
+- **YubiKey alerts for Git in cmux and Orca** — `./scripts/install-yubikey-notifications.sh`
   wraps SSH and GPG so a hardware touch alerts. Behavior, sound override, and
   revert steps: [scripts/README.md](scripts/README.md).
 - **Usage dashboard** — `/stats [port]` launches the omp-stats dashboard after a

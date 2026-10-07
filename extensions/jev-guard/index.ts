@@ -106,16 +106,33 @@ function spawnDetached(command: string, args: string[]): void {
 	}
 }
 
-// Same alert pattern as bin/git-*-yubikey-notify: notify + flash + sound, in cmux only.
+// Same alert pattern as bin/git-*-yubikey-notify: notify + flash + sound, in cmux or Orca.
+function appleScriptQuoted(text: string): string {
+	// AppleScript string literals cannot contain raw newlines or unescaped quotes.
+	return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ")}"`;
+}
+
 function notifyApproval(command: string, why: string): void {
-	if (!process.env.CMUX_SOCKET_PATH && !process.env.CMUX_SOCKET) return;
-	const cmux = process.env.CMUX_PI_CMUX_BIN || "cmux";
+	const inCmux = !!(process.env.CMUX_SOCKET_PATH || process.env.CMUX_SOCKET);
+	const inOrca = process.env.TERM_PROGRAM === "Orca" || !!process.env.ORCA_WORKTREE_ID;
+	if (!inCmux && !inOrca) return;
+	const title = "jev-guard: approval needed";
+	const body = `${scrubSecrets(command).slice(0, 160)}\n${why}`;
+	if (inCmux) {
+		const cmux = process.env.CMUX_PI_CMUX_BIN || "cmux";
+		spawnDetached(cmux, ["notify", "--title", title, "--body", body]);
+		spawnDetached(cmux, ["trigger-flash"]);
+	}
+	if (inOrca) {
+		const orca = process.env.ORCA_CLI_COMMAND || "orca";
+		const worktree = process.env.ORCA_WORKTREE_ID ? `id:${process.env.ORCA_WORKTREE_ID}` : "active";
+		spawnDetached(orca, ["worktree", "set", "--worktree", worktree, "--unread"]);
+		spawnDetached("osascript", ["-e", `display notification ${appleScriptQuoted(body)} with title ${appleScriptQuoted(title)}`]);
+	}
 	const sound =
 		process.env.PI_JEV_GUARD_NOTIFICATION_SOUND ??
 		process.env.PI_YUBIKEY_NOTIFICATION_SOUND ??
 		join(homedir(), ".pi", "agent", "sounds", "yubikey-alert-2-beep.wav");
-	spawnDetached(cmux, ["notify", "--title", "jev-guard: approval needed", "--body", `${scrubSecrets(command).slice(0, 160)}\n${why}`]);
-	spawnDetached(cmux, ["trigger-flash"]);
 	spawnDetached("afplay", [existsSync(sound) ? sound : SOUND_FALLBACK]);
 }
 
