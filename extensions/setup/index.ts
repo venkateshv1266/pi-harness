@@ -94,9 +94,10 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 
+			let setupWindow: SetupWindow | undefined;
 			const changes = await ctx.ui.custom<string[]>(
-				(tui, theme, keybindings, done) =>
-					new SetupWindow({
+				(tui, theme, keybindings, done) => {
+					setupWindow = new SetupWindow({
 						tui,
 						theme,
 						keybindings,
@@ -105,8 +106,14 @@ export default function (pi: ExtensionAPI): void {
 						refresh,
 						onDone: done,
 						initialActive: match >= 0 ? match : undefined,
-					}),
-				{ overlay: true, overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 } },
+					});
+					return setupWindow;
+				},
+				{
+					overlay: true,
+					overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 },
+					onHandle: (handle) => setupWindow?.setOverlayHandle(handle),
+				},
 			);
 
 			if (changes && changes.length > 0) {

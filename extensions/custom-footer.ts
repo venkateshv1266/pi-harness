@@ -25,12 +25,8 @@ const API_BASE = "https://openrouter.ai/api/v1";
 const SETTINGS_PATH = nodePath.join(os.homedir(), ".pi", "agent", "settings.json");
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-const MODEL_STRIP_WIDTH = 72;
-const BRANCH_STRIP_WIDTH = 30;
-const USAGE_STRIP_WIDTH = 28;
-const MODEL_STRIP_MIN = 20;
 const BRANCH_STRIP_MIN = 12;
-const USAGE_STRIP_MIN = 20;
+const USAGE_STRIP_MIN = 15;
 const EDGE_STRIP_WIDTH = 1;
 const FOOTER_ROWS = 2;
 
@@ -64,7 +60,8 @@ type ApiError = {
 	error?: { message?: string };
 };
 
-type StripGeometry = { focused: boolean; rows: number; autocomplete: number; width: number };
+type EditorGeometry = { focused: boolean; rows: number; autocomplete: number };
+type StripGeometry = EditorGeometry & { width: number; modelWidth: number; branchWidth: number; usageWidth: number };
 
 async function getJson<T>(url: string, apiKey: string): Promise<T> {
 	const response = await fetch(url, {
@@ -229,20 +226,68 @@ function renderEdge(theme: Theme, level: ExtensionContext["thinkingLevel"], glyp
 	return Array.from({ length: Math.max(1, rows) }, () => line);
 }
 
-function editorGeometry(tui: TUI, width: number): StripGeometry {
+function modelContentWidth(ctx: ExtensionContext): number {
+	const thinking = ctx.thinkingLevel ? ` (${ctx.thinkingLevel})` : "";
+	return (
+		visibleWidth("─ ") +
+		visibleWidth("🤖 ") +
+		visibleWidth(ctx.model?.id || "no-model") +
+		visibleWidth(thinking) +
+		visibleWidth(" ─╮")
+	);
+}
+
+function branchContentWidth(branch: string): number {
+	return visibleWidth("╰─ ") + visibleWidth("🌿 ") + visibleWidth(branch) + visibleWidth(" ─");
+}
+
+function usageContentWidth(ctx: ExtensionContext, withMax: boolean): number {
+	const usage = ctx.getContextUsage();
+	const ctxMax = ctx.model?.contextWindow ?? 0;
+	const pct = ctxMax > 0 ? Math.min(100, Math.round(((usage?.tokens ?? 0) / ctxMax) * 100)) : 0;
+	const maxPart = withMax ? visibleWidth(` (${fmtCtx(ctxMax)})`) : 0;
+	return (
+		visibleWidth("─ ") +
+		visibleWidth(`${pct}%`) +
+		maxPart +
+		visibleWidth(` $${sessionCost(ctx).toFixed(3)}`) +
+		visibleWidth(" ─╯")
+	);
+}
+
+function stripWidths(ctx: ExtensionContext, branch: string, width: number): { model: number; branch: number; usage: number } {
+	const available = Math.max(0, width - 1);
+	const thinking = ctx.thinkingLevel ? ` (${ctx.thinkingLevel})` : "";
+	const modelMin = visibleWidth("─ ") + visibleWidth("🤖 ") + visibleWidth(thinking) + visibleWidth(" ─╮") + 4;
+	const model = available < modelMin ? 0 : Math.min(modelContentWidth(ctx), available);
+	let branchWidth = Math.min(branchContentWidth(branch), available);
+	let usage = Math.min(usageContentWidth(ctx, true), available);
+	if (branchWidth + usage > available) usage = Math.min(usage, usageContentWidth(ctx, false));
+	if (branchWidth + usage > available) {
+		const over = branchWidth + usage - available;
+		const usageCut = Math.min(over, Math.max(0, usage - USAGE_STRIP_MIN));
+		usage -= usageCut;
+		branchWidth -= Math.min(over - usageCut, Math.max(0, branchWidth - BRANCH_STRIP_MIN));
+	}
+	if (branchWidth + usage > available) branchWidth = 0;
+	if (usage < USAGE_STRIP_MIN) usage = 0;
+	if (branchWidth < BRANCH_STRIP_MIN) branchWidth = 0;
+	return { model, branch: branchWidth, usage };
+}
+
+function editorGeometry(tui: TUI): EditorGeometry {
 	const editor = (
 		tui as unknown as {
 			focusedComponent?: { renderedVisibleLineCount?: number; renderedAutocompleteHeight?: number };
 		}
 	).focusedComponent;
 	const rows = editor?.renderedVisibleLineCount;
-	if (typeof rows !== "number" || rows < 1) return { focused: false, rows: 1, autocomplete: 0, width };
+	if (typeof rows !== "number" || rows < 1) return { focused: false, rows: 1, autocomplete: 0 };
 	const autocomplete = editor?.renderedAutocompleteHeight;
 	return {
 		focused: true,
 		rows,
 		autocomplete: typeof autocomplete === "number" && autocomplete > 0 ? autocomplete : 0,
-		width,
 	};
 }
 
@@ -253,7 +298,7 @@ function installStatusStrips(
 ): { tick: (tui: TUI, width: number) => void; dispose: () => void } {
 	let disposed = false;
 	let focused = true;
-	let built: StripGeometry | undefined;
+	let builtKey: string | undefined;
 	let handles: OverlayHandle[] = [];
 	let scheduled = false;
 	let pending: StripGeometry | undefined;
@@ -270,7 +315,7 @@ function installStatusStrips(
 					overlayOptions: options,
 					onHandle: (handle) => {
 						handles.push(handle);
-						if (!focused) handle.setHidden(true);
+						if (!focused) handle.hide();
 					},
 				},
 			)
@@ -278,8 +323,6 @@ function installStatusStrips(
 	};
 
 	const create = (geometry: StripGeometry) => {
-		const width = geometry.width;
-		const half = Math.max(1, Math.floor((width - 1) / 2));
 		const bottom = -(FOOTER_ROWS + geometry.autocomplete);
 		const top = -(FOOTER_ROWS + 1 + geometry.autocomplete + geometry.rows);
 		const shared = {
@@ -309,62 +352,78 @@ function installStatusStrips(
 				width: EDGE_STRIP_WIDTH,
 			});
 		}
-		const modelWidth = Math.min(MODEL_STRIP_WIDTH, width - 1);
-		if (modelWidth >= MODEL_STRIP_MIN) {
+		if (geometry.modelWidth > 0) {
 			addStrip((w, t) => renderModelStrip(ctx, w, t), {
 				...shared,
 				anchor: "bottom-right",
 				offsetY: top,
 				offsetX: 0,
-				width: modelWidth,
+				width: geometry.modelWidth,
 			});
 		}
-		const branchWidth = Math.min(BRANCH_STRIP_WIDTH, half);
-		if (branchWidth >= BRANCH_STRIP_MIN) {
+		if (geometry.branchWidth > 0) {
 			addStrip((w, t) => renderBranchStrip(getBranch(), w, t, ctx.thinkingLevel), {
 				...shared,
 				anchor: "bottom-left",
 				offsetY: bottom,
 				offsetX: 0,
-				width: branchWidth,
+				width: geometry.branchWidth,
 			});
 		}
-		const usageWidth = Math.min(USAGE_STRIP_WIDTH, half);
-		if (usageWidth >= USAGE_STRIP_MIN) {
+		if (geometry.usageWidth > 0) {
 			addStrip((w, t) => renderUsageStrip(ctx, w, t), {
 				...shared,
 				anchor: "bottom-right",
 				offsetY: bottom,
 				offsetX: 0,
-				width: usageWidth,
+				width: geometry.usageWidth,
 			});
 		}
-		built = geometry;
 	};
 
 	const rebuild = (geometry: StripGeometry) => {
 		if (disposed) return;
 		for (const handle of handles) handle.hide();
 		handles = [];
+		if (!focused) {
+			builtKey = undefined;
+			return;
+		}
 		create(geometry);
 	};
 
 	const tick = (tui: TUI, width: number) => {
 		if (disposed) return;
-		const geometry = editorGeometry(tui, Math.max(1, Math.floor(width)));
-		if (geometry.focused !== focused) {
-			focused = geometry.focused;
-			for (const handle of handles) handle.setHidden(!focused);
+		const base = editorGeometry(tui);
+		if (base.focused !== focused) {
+			focused = base.focused;
+			if (!focused) {
+				// hidden-but-stacked strips make hideOverlay() pop the wrong entry for overlays opened later
+				for (const handle of handles) handle.hide();
+				handles = [];
+				builtKey = undefined;
+			}
 		}
-		if (!geometry.focused) return;
-		if (
-			built &&
-			geometry.rows === built.rows &&
-			geometry.autocomplete === built.autocomplete &&
-			geometry.width === built.width
-		) {
-			return;
-		}
+		if (!base.focused) return;
+		const effectiveWidth = Math.max(1, Math.floor(width));
+		const widths = stripWidths(ctx, getBranch(), effectiveWidth);
+		const geometry: StripGeometry = {
+			...base,
+			width: effectiveWidth,
+			modelWidth: widths.model,
+			branchWidth: widths.branch,
+			usageWidth: widths.usage,
+		};
+		const key = [
+			geometry.rows,
+			geometry.autocomplete,
+			geometry.width,
+			geometry.modelWidth,
+			geometry.branchWidth,
+			geometry.usageWidth,
+		].join(":");
+		if (key === builtKey) return;
+		builtKey = key;
 		pending = geometry;
 		if (scheduled) return;
 		scheduled = true;
