@@ -1,7 +1,7 @@
 ---
 name: security-auditor
 description: Dedicated security lens for code-review fan-outs. Threat-models every new entry point for authn/authz bypasses, IDOR, tenant leakage, injection (SQL/NoSQL/cmd/SSRF), secrets, unsafe deserialization, and PII. Spawned by the reviewer agent on any non-trivial diff; also usable standalone for a security-only pass on a diff or file set.
-tools: read, bash, grep, find, ls, ask_jev_file_bool, ask_jev_files, pick_first_file
+tools: read, bash, grep, find, ls, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@slow"
 thinking: high
 ---

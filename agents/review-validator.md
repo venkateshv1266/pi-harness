@@ -1,7 +1,7 @@
 ---
 name: review-validator
 description: Fact-checker for code-review findings. Independently verifies each finding from a review fan-out by opening the cited files and reading the surrounding implementation; classifies each as CONFIRMED, DOWNGRADE, REFUTED, or UNVERIFIABLE. Never generates new findings. Spawned by the reviewer agent as its mandatory validation pass; also usable standalone to sanity-check any prioritized findings list.
-tools: read, bash, grep, find, ls, ask_jev_file_bool, ask_jev_files
+tools: read, bash, grep, find, ls, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@slow"
 thinking: xhigh
 ---

@@ -1,7 +1,7 @@
 ---
 name: concurrency-auditor
 description: Dedicated concurrency & state lens for code-review fan-outs. Hunts transaction/isolation gaps, idempotency violations, read-then-write races, message ordering and at-least-once duplication, lock ordering, deadlocks, outbox/dual-write, and saga rollback gaps. Spawned by the reviewer agent on diffs touching state, queues, or money paths; also usable standalone on a diff or file set.
-tools: read, bash, grep, find, ls, ask_jev_file_bool, ask_jev_files, pick_first_file
+tools: read, bash, grep, find, ls, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@slow"
 thinking: high
 ---

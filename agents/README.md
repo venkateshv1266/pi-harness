@@ -22,12 +22,15 @@ The three dedicated lens/validator agents are read-only (no `subagent` tool)
 and are spawned by `reviewer` as depth-2 leaves; they also work standalone for
 a single-lens pass on a diff.
 
-## Jev in the review stack
+## Jev in the agent stack
 
-The review agents use the ask-jev tools (`ask_jev_files`, `ask_jev_file_bool`,
-`pick_first_file`, `triage_log` — see
-[`../extensions/ask-jev/README.md`](../extensions/ask-jev/README.md)) as a cheap
-routing layer between diff gathering and the expensive lens/validator passes:
+Every agent ships the full ask-jev toolset (`ask_jev`, `ask_jev_file_bool`,
+`ask_jev_file_choice`, `ask_jev_file_score`, `ask_jev_files`, `pick_first_file`,
+`triage_log` — see
+[`../extensions/ask-jev/README.md`](../extensions/ask-jev/README.md)) so any
+spawned child can buy cheap file judgments before spending context on reads. In
+the review stack they act as a routing layer between diff gathering and the
+expensive lens/validator passes:
 
 - `reviewer` runs one `ask_jev_files` triage over the changed files — entry
   points, state writes, authz surface, irreversible external effects, per-file
@@ -40,6 +43,11 @@ routing layer between diff gathering and the expensive lens/validator passes:
 - `review-validator` may ask one-hop behavioral questions (e.g. "does the
   caller validate this before passing it in?") to decide how much surrounding
   code to read before ruling; pure existence checks stay grep-based.
+
+Outside review, `explorer`, `research`, `writer`, `verifier`, and `task` use
+them the same way: rank where to start in an unfamiliar tree, check an
+assumption about a file before opening it, and triage large logs or command
+output before pulling it into context.
 
 The invariant that makes this safe (from a 59-verdict A/B test of Jev as a
 sole verifier): **Jev answers only add scrutiny.** They order reads and

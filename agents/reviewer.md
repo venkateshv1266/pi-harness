@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Backend code review agent. Reviews a diff or a set of files for bugs, regressions, concurrency issues, security, and ops concerns. Orchestrates parallel lens sub-agents plus a Validator pass, then synthesizes a prioritized findings list. Use after a writer agent produces a change, or to sanity-check existing code.
-tools: read, bash, grep, find, ls, subagent, ask_jev_files, ask_jev_file_bool, ask_jev_file_score, pick_first_file, triage_log
+tools: read, bash, grep, find, ls, subagent, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@slow"
 thinking: high
 spawns: ["security-auditor", "concurrency-auditor", "review-validator", "research", "explorer"]
