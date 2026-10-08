@@ -79,7 +79,7 @@ Kill switch: `JEVCURATOR=0` makes the curator fully inert; `/curator off` disabl
 | `JEV_MODEL` | `jev-latest` | Shared Jev classifier model. |
 | `JEV_API_KEY` → `OPENROUTER_API_KEY` → `auth.json` | unset | Key chain for Jev calls; falls back to the OpenRouter key in `~/.pi/agent/auth.json`. No key → every verdict degrades to keep (fail-open). |
 
-Session state (custom entries, all append-only): `jev-curator-goal` (goal pins; latest wins), `jev-curator-goalspec` (full spec; latest wins on resume), `jev-curator-ledger` (emitted evidence items, union-hydrated), `jev-curator-registry` (every classified or capped source, union-hydrated, in-memory cap `REGISTRY_CAP`), `jev-curator-stubs` (V2 batch emission audit).
+Session state (custom entries, all append-only): `jev-curator-goal` (goal pins; latest wins), `jev-curator-goalspec` (full spec; v1 is the seed, written at the session's first boundary even with no amendment, later versions bump per amendment; latest wins on resume), `jev-curator-ledger` (emitted evidence items, union-hydrated), `jev-curator-registry` (every classified or capped source, union-hydrated, in-memory cap `REGISTRY_CAP`), `jev-curator-stubs` (V2 batch emission audit).
 
 Audit logs in `~/.pi/agent/jev-decisions/`: `jev-curator-v2.jsonl` (V2 verdicts, batch hold/emit, and post-emit cache-cost probes) and `jev-curator.jsonl` (V3 shadow verdicts, `jev-verify` coverage decisions, verifier batches and `verifier-ab` frontier-agreement samples, breaker/overflow events, emissions and skips, GoalSpec amendments, compaction, `curator_find` queries, recall outcomes).
 
@@ -97,7 +97,9 @@ Audit logs in `~/.pi/agent/jev-decisions/`: `jev-curator-v2.jsonl` (V2 verdicts,
 
 **Auto-trigger:** at ≥ `AUTO_COMPACT_PCT` usage, or when usage keeps climbing while in the critical tier (the ladder in `tiering.ts`: soft ≥50% prunes early, floor ≥70% lowers the truncate gate, critical ≥85% zeroes the batch floor), the extension triggers compaction itself at the turn boundary. An in-flight flag blocks stacked triggers, failures start a cooldown, and success resets the usage history the slope detector reads.
 
-**GoalSpec lifecycle:** seeded from the user's first prompt verbatim (that prompt is the immutable `userObjective`); `pin_goal` adds refinements, `amend_goalspec` adds criteria/constraints/plan/facts/questions, and only `/goal` with args replaces the objective. The curator is inert until a goal exists.
+**GoalSpec lifecycle:** seeded from the user's first prompt verbatim (that prompt is the immutable `userObjective`); the seed is persisted as the session's first `jev-curator-goalspec` entry (v1) at the first turn boundary, so every session carries a goal record from turn 1 even if nothing is ever amended; `pin_goal` adds refinements, `amend_goalspec` adds criteria/constraints/plan/facts/questions, and only `/goal` with args replaces the objective. The curator is inert until a goal exists.
+
+**Session isolation:** pi caches an extension module per cwd, so the module outlives a session; a `session_start` handler resets every session-scoped store (goal, GoalSpec, ledger, registry, batches, counters, auto-compact history), so each session seeds and judges against its own goal instead of inheriting the previous session's.
 
 ## Caveats
 
