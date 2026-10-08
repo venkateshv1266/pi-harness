@@ -1665,7 +1665,7 @@ async function curatorPage(view, ctx) {
 						"div",
 						{},
 						h("div", { class: "rowtitle" }, shortTitle(row.title) ?? row.project ?? row.sessionId.slice(0, 8)),
-						h("div", { class: "rowsub" }, `${row.project ?? "—"} · ${fmtInt(row.candidates)} candidates · ${fmtInt(row.emits)} emits · ${timeAgo(row.lastTs)}${row.specSnapshots ? ` · GoalSpec v${row.specVersion}${row.specSeeded ? " seeded" : " (pre-seed)"}` : row.goalPins ? " · goal pinned" : ""}`),
+						h("div", { class: "rowsub" }, `${row.project ?? "—"} · ${fmtInt(row.candidates)} candidates · ${fmtInt(row.emits)} emits · ${timeAgo(row.lastTs)}${row.specSnapshots ? ` · GoalSpec v${row.specVersion}${row.specSeeded ? " seeded" : " (pre-seed)"}` : row.goalPins ? " · goal pinned" : row.specReconstructed ? " · GoalSpec reconstructed" : ""}`),
 					),
 			},
 		],
@@ -1838,6 +1838,7 @@ async function sessionsPage(view, ctx) {
 /** One line describing what a GoalSpec entry changed. */
 function goalspecChangeText(entry) {
 	if (entry.kind === "pin") return "objective pinned";
+	if (entry.reconstructed) return "reconstructed seed (never recorded)";
 	const d = entry.delta;
 	if (!d) return entry.version === 1 ? "seeded from first prompt" : "initial snapshot";
 	const parts = [];
@@ -1855,6 +1856,7 @@ function goalspecChangeText(entry) {
 /** The added items themselves, capped, so the feed shows what actually changed. */
 function goalspecDetailText(entry) {
 	if (entry.kind === "pin") return entry.goal ? `“${entry.goal}”` : "";
+	if (entry.reconstructed) return "the curator judged against this seed, but it was never persisted — rebuilt from the session's first prompt";
 	if (!entry.delta) {
 		const counts = entry.counts ?? {};
 		const labels = { refinements: "refinements", criteria: "success criteria", constraints: "constraints", plan: "plan steps", facts: "known facts", questions: "open questions" };
@@ -1969,15 +1971,21 @@ async function sessionPage(view, ctx) {
 						...items.map((text, index) => h("div", { class: "spec-item" }, h("span", { class: "spec-n" }, `${prefix}${index + 1}.`), h("span", {}, text))),
 					)
 				: h("span", { class: "faint" }, "—");
-		return kv([
-			["Objective", h("div", {}, spec.objective || "—")],
-			["Refinements", list(spec.refinements, "r")],
-			["Success criteria", list(spec.criteria, "c")],
-			["Constraints", list(spec.constraints, "k")],
-			["Plan", list(spec.plan, "p")],
-			["Known facts", list((spec.facts ?? []).map((fact) => fact.fact), "f")],
-			["Open questions", list(spec.questions, "q")],
-		]);
+		const reconstructed = (d.goalspec?.timeline ?? []).some((entry) => entry.reconstructed);
+		return h(
+			"div",
+			{},
+			reconstructed ? h("div", { class: "small muted", style: { marginBottom: "8px" } }, "Reconstructed from the session's first prompt — the curator judged against this seed but never recorded it.") : null,
+			kv([
+				["Objective", h("div", {}, spec.objective || "—")],
+				["Refinements", list(spec.refinements, "r")],
+				["Success criteria", list(spec.criteria, "c")],
+				["Constraints", list(spec.constraints, "k")],
+				["Plan", list(spec.plan, "p")],
+				["Known facts", list((spec.facts ?? []).map((fact) => fact.fact), "f")],
+				["Open questions", list(spec.questions, "q")],
+			]),
+		);
 	});
 	const goalspecSection = collapsible({
 		id: "session-goalspec",
@@ -2066,10 +2074,11 @@ async function sessionPage(view, ctx) {
 		goalspecCurrent.render(d);
 		goalspecFeed.patch(goalspecFeedItems(timeline));
 		const current = d.goalspec?.current;
+		const reconstructed = timeline.some((entry) => entry.reconstructed);
 		const seeded = timeline.some((entry) => entry.kind === "spec" && entry.version === 1);
 		const updates = timeline.filter((entry) => entry.kind === "spec" && entry.version !== 1).length;
-		goalspecBadge.className = `pill ${current ? "accent" : "neutral"}`;
-		goalspecBadge.textContent = current ? `v${current.version} · ${seeded ? "seeded" : "no seed"} · ${updates} update${updates === 1 ? "" : "s"}` : `${timeline.length} pins`;
+		goalspecBadge.className = `pill ${reconstructed ? "warn" : current ? "accent" : "neutral"}`;
+		goalspecBadge.textContent = reconstructed ? "v1 · reconstructed" : current ? `v${current.version} · ${seeded ? "seeded" : "no seed"} · ${updates} update${updates === 1 ? "" : "s"}` : `${timeline.length} pins`;
 	}
 
 	// --- compare with another session (same numbers, side by side)
