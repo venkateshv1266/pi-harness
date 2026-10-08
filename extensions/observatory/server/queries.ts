@@ -1984,6 +1984,14 @@ export function curatorSessions(db: Database) {
 			 GROUP BY e.session_id`,
 		)
 		.all();
+	const v3Rows = db
+		.query<{ session_id: string; project: string | null; title: string | null; lastTs: string | null }, []>(
+			`SELECT e.session_id, s.project, s.title, MAX(e.ts) lastTs
+			 FROM events e LEFT JOIN sessions s ON s.session_id = e.session_id
+			 WHERE e.kind IN ('harness.jev-curator-registry','curator.ledger') AND e.session_id IS NOT NULL
+			 GROUP BY e.session_id`,
+		)
+		.all();
 
 	interface Aggregate {
 		sessionId: string;
@@ -1999,13 +2007,14 @@ export function curatorSessions(db: Database) {
 		specVersion: number;
 		specSnapshots: number;
 		specSeeded: boolean;
+		specReconstructed: boolean;
 		goalPins: number;
 	}
 	const bySession = new Map<string, Aggregate>();
 	const ensure = (sessionId: string, project: string | null, title: string | null, ts: string | null): Aggregate => {
 		let entry = bySession.get(sessionId);
 		if (!entry) {
-			entry = { sessionId, project, title, events: 0, candidates: 0, emits: 0, retainFull: 0, chars: 0, edits: 0, lastTs: ts, specVersion: 0, specSnapshots: 0, specSeeded: false, goalPins: 0 };
+			entry = { sessionId, project, title, events: 0, candidates: 0, emits: 0, retainFull: 0, chars: 0, edits: 0, lastTs: ts, specVersion: 0, specSnapshots: 0, specSeeded: false, specReconstructed: false, goalPins: 0 };
 			bySession.set(sessionId, entry);
 		}
 		return entry;
@@ -2038,6 +2047,10 @@ export function curatorSessions(db: Database) {
 	for (const row of pinRows) {
 		const entry = ensure(row.session_id, row.project, row.title, row.lastTs);
 		entry.goalPins = row.pins;
+	}
+	for (const row of v3Rows) {
+		const entry = ensure(row.session_id, row.project, row.title, row.lastTs);
+		if (entry.specSnapshots === 0 && entry.goalPins === 0) entry.specReconstructed = true;
 	}
 
 	return { sessions: [...bySession.values()].sort((a, b) => (b.lastTs ?? "").localeCompare(a.lastTs ?? "")).slice(0, 200) };
@@ -2110,7 +2123,8 @@ export function curatorDetail(db: Database, sessionId: string) {
 			"SELECT ts, ts_ms, turn, kind, data FROM events WHERE session_id = ? AND kind IN ('harness.jev-curator-goalspec','harness.jev-curator-goal') ORDER BY ts_ms LIMIT 400",
 		)
 		.all(sessionId);
-	const goalspec = goalspecOfRows(goalspecRows);
+	const recorded = goalspecOfRows(goalspecRows);
+	const goalspec = recorded.timeline.length ? recorded : reconstructedGoalspec(db, sessionId);
 
 	return {
 		timeline,
@@ -2137,7 +2151,7 @@ export function curatorDetail(db: Database, sessionId: string) {
 			roles,
 			sourceTypes,
 		},
-		goalspec: goalspec.timeline.length ? goalspec : null,
+		goalspec,
 		hasData: rows.length > 0,
 	};
 }
@@ -2346,6 +2360,8 @@ interface GoalspecEntry {
 	goal: string | null;
 	counts: GoalspecCounts;
 	delta: GoalspecDelta | null;
+	/** True when the entry was rebuilt from the first prompt: no snapshot was ever recorded. */
+	reconstructed?: boolean;
 }
 
 function textList(value: unknown, limit: number): string[] {
@@ -2431,6 +2447,43 @@ function goalspecOfRows(rows: GoalspecRow[]): { current: GoalspecSnapshot | null
 	return { current, timeline };
 }
 
+/**
+ * Sessions that ran the V3 curator before seeds were persisted have no
+ * goalspec snapshot, but their registry/ledger entries prove the spec existed.
+ * Rebuild the seed the curator held: the first prompt, nothing else.
+ */
+function reconstructedGoalspec(db: Database, sessionId: string): { current: GoalspecSnapshot; timeline: GoalspecEntry[] } | null {
+	const signal = db
+		.query<{ n: number }, [string]>(
+			"SELECT COUNT(*) n FROM events WHERE session_id = ? AND kind IN ('harness.jev-curator-registry','curator.ledger')",
+		)
+		.get(sessionId);
+	if (!signal || signal.n === 0) return null;
+	const first = db
+		.query<{ ts_ms: number; preview: string }, [string]>(
+			"SELECT ts_ms, preview FROM messages WHERE session_id = ? AND role = 'user' ORDER BY ts_ms LIMIT 1",
+		)
+		.get(sessionId);
+	if (!first) return null;
+	const snapshot: GoalspecSnapshot = {
+		ts: new Date(first.ts_ms).toISOString(),
+		ts_ms: first.ts_ms,
+		turn: 1,
+		version: 1,
+		objective: first.preview,
+		refinements: [],
+		criteria: [],
+		constraints: [],
+		plan: [],
+		facts: [],
+		questions: [],
+	};
+	return {
+		current: snapshot,
+		timeline: [{ ts: snapshot.ts, ts_ms: snapshot.ts_ms, turn: 1, version: 1, kind: "spec", goal: null, counts: countsOf(snapshot), delta: null, reconstructed: true }],
+	};
+}
+
 export function sessionDetail(db: Database, sessionId: string) {
 	const session = db
 		.query<
@@ -2502,7 +2555,8 @@ export function sessionDetail(db: Database, sessionId: string) {
 			"SELECT ts, ts_ms, turn, kind, data FROM events WHERE session_id = ? AND kind IN ('harness.jev-curator-goalspec','harness.jev-curator-goal') ORDER BY ts_ms LIMIT 400",
 		)
 		.all(sessionId);
-	const goalspec = goalspecOfRows(goalspecRows);
+	const recorded = goalspecOfRows(goalspecRows);
+	const goalspec = recorded.timeline.length ? recorded : reconstructedGoalspec(db, sessionId);
 
 	const models = db
 		.query<{ model: string; calls: number; cost: number; tokens: number }, [string]>(
@@ -2519,7 +2573,7 @@ export function sessionDetail(db: Database, sessionId: string) {
 		messages,
 		events,
 		models,
-		goalspec: goalspec.timeline.length ? goalspec : null,
+		goalspec,
 	};
 }
 
