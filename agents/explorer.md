@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: Fast read-only codebase exploration agent. Locates definitions, call sites, and file structure, and returns a compressed map suitable for handoff to another agent. Use for "where is X?", "who calls Y?", "what files implement Z?" lookups.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls, bash, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@smol"
 thinking: low
 ---

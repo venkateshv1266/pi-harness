@@ -1,7 +1,7 @@
 ---
 name: research
 description: Research agent for open-ended investigation across files, logs, and docs. Returns a structured written summary with citations to file paths and line numbers. Use when the orchestrator needs a thorough briefing on a topic, design, or bug landscape.
-tools: read, bash, grep, find, ls, web_search, web_fetch
+tools: read, bash, grep, find, ls, web_search, web_fetch, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@smol"
 thinking: medium
 ---

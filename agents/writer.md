@@ -1,7 +1,7 @@
 ---
 name: writer
 description: Cost-efficient code-typing executor running on the @smol model role. Receives a frozen, fully-decided implementation spec and produces the code edit — nothing more. Does NOT make architectural decisions. The cheap-model worker slot in the cascade routing pattern; the verifier (@slow at xhigh reasoning) grades its output. Use for scaffolding, implementations, refactors, test generation, and fix-application where the plan is already decided.
-tools: read, bash, edit, write, grep, find, ls
+tools: read, bash, edit, write, grep, find, ls, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@smol"
 thinking: medium
 ---

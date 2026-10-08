@@ -1,7 +1,7 @@
 ---
 name: task
 description: General-purpose worker agent with a broad tool allowlist (read, bash, edit, write, grep, find, ls) PLUS the subagent tool, so it can delegate to nested subagents when a task benefits from fan-out or isolation. Use as a flexible "do the thing" agent when no specialized agent fits — implementation, multi-step fixes, investigations that may need to spawn children.
-tools: read, bash, edit, write, grep, find, ls, subagent
+tools: read, bash, edit, write, grep, find, ls, subagent, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@task"
 spawns: "*"
 ---

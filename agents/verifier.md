@@ -1,7 +1,7 @@
 ---
 name: verifier
 description: Code-verification gate running on the @slow model role at xhigh reasoning effort. Reviews a writer agent's diff against the frozen implementation spec and the project harness (lint/typecheck/tests). Returns a structured findings list the orchestrator routes back to the writer for fixes. The verification slot in the cascade routing pattern; quality gate that makes the cheap writer safe to ship. Read-only over the working tree; does not edit.
-tools: read, bash, grep, find, ls
+tools: read, bash, grep, find, ls, ask_jev, ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, triage_log
 model: "@slow"
 thinking: xhigh
 ---
