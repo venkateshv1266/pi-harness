@@ -259,9 +259,12 @@ const SPEC_CAPS = { refinements: 20, criteria: 30, constraints: 30, plan: 25, fa
 let spec: GoalSpec | null = null;
 // amendment applied in-memory by a tool, flushed to a GOALSPEC_TYPE entry at the next turn_end
 let specDirty = false;
+// a freshly seeded spec has no persisted snapshot yet: its first flush keeps version 1
+let specSeedPending = false;
 const shadowJudged = new Set<string>();
 
-const shadowStats = { classified: 0, roles: { active: 0, evidence: 0, background: 0, irrelevant: 0 }, retainFull: 0, useExtract: 0, indexOnly: 0, repaired: 0, escalated: 0, shadowAb: 0, degraded: 0 };
+const emptyShadowStats = () => ({ classified: 0, roles: { active: 0, evidence: 0, background: 0, irrelevant: 0 }, retainFull: 0, useExtract: 0, indexOnly: 0, repaired: 0, escalated: 0, shadowAb: 0, degraded: 0 });
+let shadowStats = emptyShadowStats();
 
 function trimList<T>(list: T[], cap: number): T[] {
 	return list.length > cap ? list.slice(list.length - cap) : list;
@@ -325,6 +328,10 @@ function ensureGoalSpec(ctx: ExtensionContext) {
 		openQuestions: [],
 		version: 1,
 	};
+	// every session carries a GoalSpec record from its first boundary, even if
+	// nothing is ever amended
+	specDirty = true;
+	specSeedPending = true;
 }
 
 function amendSpec(fn: (s: GoalSpec) => void): void {
@@ -2010,6 +2017,41 @@ const recallToolRenderers: ToolRenderers = {
 // ─── Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	// Pi caches an extension module per cwd, so this module outlives a session:
+	// every session-scoped store must restart with the session, or the next one
+	// inherits the previous session's goal and spec (and their hydrators never
+	// re-read the new session's entries).
+	pi.on("session_start", () => {
+		goal = null;
+		pendingGoal = null;
+		spec = null;
+		specDirty = false;
+		specSeedPending = false;
+		shadowJudged.clear();
+		shadowStats = emptyShadowStats();
+		ledger.clear();
+		ledgerHydrated = false;
+		pending.clear();
+		judged.clear();
+		curated.length = 0;
+		ready.clear();
+		rawStore.clear();
+		toolInputs.clear();
+		recentTools.length = 0;
+		costProbeTurn = null;
+		registry.clear();
+		registryHydrated = false;
+		overflowQueue.length = 0;
+		jevFailStreak = 0;
+		jevBreakerOpen = false;
+		methodStats.clear();
+		condensedRecalls = 0;
+		pctHistory.length = 0;
+		autoCompactInFlight = false;
+		autoCompactCooldownUntil = 0;
+		lastBoundaryTurn = 0;
+	});
+
 	pi.on("turn_start", (_event, ctx) => {
 		ensureGoal(ctx);
 	});
@@ -2191,7 +2233,9 @@ ${goalspecSummary()}` }],
 			// amendments applied in-memory by tools; persisted here — appendEntry
 			// is command-only, so the GoalSpec flushes like the goal pin
 			if (specDirty && spec) {
-				spec.version++;
+				// the seed flushes as v1; every later flush is an amendment bump
+				if (!specSeedPending) spec.version++;
+				specSeedPending = false;
 				drafts.push({ type: "custom", customType: GOALSPEC_TYPE, data: { ...spec } });
 				specDirty = false;
 			}
@@ -2652,7 +2696,9 @@ ${goalspecSummary()}` }],
 				ensureGoalSpec(ctx);
 				if (spec) {
 					spec.userObjective = text;
-					spec.version++;
+					// the user's objective replaces a pending seed: still v1
+					if (specSeedPending) specSeedPending = false;
+					else spec.version++;
 					specDirty = false;
 					pi.appendEntry(GOALSPEC_TYPE, { ...spec });
 				}
