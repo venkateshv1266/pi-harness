@@ -67,5 +67,7 @@ cp "$AGENT/skills/add-rule/scripts/validate-rule.js" "$REPO_DIR/skills/add-rule/
 cp "$AGENT/skills/add-agent/SKILL.md" "$REPO_DIR/skills/add-agent/SKILL.md"
 cp "${HOME}/.pi/agent/skills/add-mcp-server/SKILL.md" "$REPO_DIR/skills/add-mcp-server/SKILL.md"
 cp "$AGENT/skills/code-review/SKILL.md" "$REPO_DIR/skills/code-review/SKILL.md"
+mkdir -p "$REPO_DIR/skills/orchestrate"
+cp "$AGENT/skills/orchestrate/SKILL.md" "$REPO_DIR/skills/orchestrate/SKILL.md"
 
 echo "Synced. Review with 'git diff', then commit and push."
