@@ -51,6 +51,8 @@ installing, or override it with a same-named file in `~/.pi/agent/rules/`
 | `tests-validate-behavior-not-implementation` | snapshots or heavy mocks in test files | reminder to assert against known-good values |
 | `concurrency-retry-contract` | concurrency / idempotency / retry / in-flight semantics in text or thinking | aborts; Jev gate suppresses when the task is not changing concurrency semantics |
 | `kubectl-logs-via-jev` | an unbounded `kubectl` log dump | blocks; suggests saving to a file and using the Jev log-triage MCP tool; the Jev gate degrades to a reminder when Jev is unreachable |
+| `no-raw-log-dumps` | a raw log dump: `read`/`cat` of `.log`/`.out`/`.ndjson`/`.jsonl` files, `journalctl`/`dmesg`, `gh run --log` / `gh run watch` CI logs, or a `pi-mcp-spillover` file | blocks once; suggests `triage_log` (ask-jev) with the file path first; small bounded peeks are allowed through |
+| `ask-jev-for-file-judgments` | a read issued to answer a yes/no / which-one / how-risky question about a file | blocks the read; routes to `ask_jev_file_bool` / `ask_jev_file_choice` / `ask_jev_file_score`, `ask_jev_files` + `pick_first_file`, or `triage_log`; the Jev gate suppresses edit-prep reads and stays silent on Jev outage |
 | `no-respawn-after-failure` | re-spawn / re-run phrasing after a delegated subagent fails (`spawn a new <agent>`, re-run … from scratch) | aborts; reminds to resume the retained session (`subagent_wait` / `subagent_send`) — Jev gate suppresses doc/quote mentions, fires anyway on Jev outage |
 
 `kubectl-logs-via-jev` assumes a `jev` MCP server exposing its log-triage tool.
