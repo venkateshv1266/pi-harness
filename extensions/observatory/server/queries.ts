@@ -1967,6 +1967,23 @@ export function curatorSessions(db: Database) {
 			"SELECT session_id, COUNT(*) n FROM events WHERE kind = 'curator.context_edit' AND session_id IS NOT NULL GROUP BY session_id",
 		)
 		.all();
+	const specRows = db
+		.query<{ session_id: string; snapshots: number; version: number | null; firstVersion: number | null; project: string | null; title: string | null; lastTs: string | null }, []>(
+			`SELECT e.session_id, COUNT(*) snapshots, MAX(json_extract(e.data, '$.data.version')) version,
+			        MIN(json_extract(e.data, '$.data.version')) firstVersion, s.project, s.title, MAX(e.ts) lastTs
+			 FROM events e LEFT JOIN sessions s ON s.session_id = e.session_id
+			 WHERE e.kind = 'harness.jev-curator-goalspec' AND e.session_id IS NOT NULL
+			 GROUP BY e.session_id`,
+		)
+		.all();
+	const pinRows = db
+		.query<{ session_id: string; pins: number; project: string | null; title: string | null; lastTs: string | null }, []>(
+			`SELECT e.session_id, COUNT(*) pins, s.project, s.title, MAX(e.ts) lastTs
+			 FROM events e LEFT JOIN sessions s ON s.session_id = e.session_id
+			 WHERE e.kind = 'harness.jev-curator-goal' AND e.session_id IS NOT NULL
+			 GROUP BY e.session_id`,
+		)
+		.all();
 
 	interface Aggregate {
 		sessionId: string;
@@ -1979,12 +1996,16 @@ export function curatorSessions(db: Database) {
 		chars: number;
 		edits: number;
 		lastTs: string | null;
+		specVersion: number;
+		specSnapshots: number;
+		specSeeded: boolean;
+		goalPins: number;
 	}
 	const bySession = new Map<string, Aggregate>();
 	const ensure = (sessionId: string, project: string | null, title: string | null, ts: string | null): Aggregate => {
 		let entry = bySession.get(sessionId);
 		if (!entry) {
-			entry = { sessionId, project, title, events: 0, candidates: 0, emits: 0, retainFull: 0, chars: 0, edits: 0, lastTs: ts };
+			entry = { sessionId, project, title, events: 0, candidates: 0, emits: 0, retainFull: 0, chars: 0, edits: 0, lastTs: ts, specVersion: 0, specSnapshots: 0, specSeeded: false, goalPins: 0 };
 			bySession.set(sessionId, entry);
 		}
 		return entry;
@@ -2007,6 +2028,16 @@ export function curatorSessions(db: Database) {
 		const entry = ensure(row.session_id, null, null, null);
 		entry.edits = row.n;
 		entry.events += row.n;
+	}
+	for (const row of specRows) {
+		const entry = ensure(row.session_id, row.project, row.title, row.lastTs);
+		entry.specSnapshots = row.snapshots;
+		entry.specVersion = row.version ?? 0;
+		entry.specSeeded = row.firstVersion === 1;
+	}
+	for (const row of pinRows) {
+		const entry = ensure(row.session_id, row.project, row.title, row.lastTs);
+		entry.goalPins = row.pins;
 	}
 
 	return { sessions: [...bySession.values()].sort((a, b) => (b.lastTs ?? "").localeCompare(a.lastTs ?? "")).slice(0, 200) };
@@ -2073,9 +2104,13 @@ export function curatorDetail(db: Database, sessionId: string) {
 		bump(`role|${role}|verdict|${verdict}`);
 	}
 
-	const goalspec = rows
-		.filter((row) => row.kind === "goalspec-amended")
-		.map((row) => ({ ts: row.ts, summary: row.summary, ref: row.ref }));
+	// GoalSpec entries are harness-tagged, not curator-tagged, so they are not in `rows`.
+	const goalspecRows = db
+		.query<GoalspecRow, [string]>(
+			"SELECT ts, ts_ms, turn, kind, data FROM events WHERE session_id = ? AND kind IN ('harness.jev-curator-goalspec','harness.jev-curator-goal') ORDER BY ts_ms LIMIT 400",
+		)
+		.all(sessionId);
+	const goalspec = goalspecOfRows(goalspecRows);
 
 	return {
 		timeline,
@@ -2102,7 +2137,7 @@ export function curatorDetail(db: Database, sessionId: string) {
 			roles,
 			sourceTypes,
 		},
-		goalspec,
+		goalspec: goalspec.timeline.length ? goalspec : null,
 		hasData: rows.length > 0,
 	};
 }
@@ -2246,6 +2281,156 @@ function safeJsonArray(value: string): string[] {
 	}
 }
 
+// ------------------------------------------------------------------ goalspec
+
+/**
+ * Replays the session GoalSpec from the curator's custom entries. Every entry
+ * is a full spec snapshot, so consecutive versions diff into exactly what the
+ * agent added; the `goalspec-amended` decision lines carry no session id, so
+ * the entries are the only per-session source.
+ */
+
+interface GoalspecRow {
+	ts: string;
+	ts_ms: number;
+	turn: number | null;
+	kind: string;
+	data: string;
+}
+
+interface GoalspecFact {
+	fact: string;
+	sourceIds: string[];
+}
+
+interface GoalspecSnapshot {
+	ts: string;
+	ts_ms: number;
+	turn: number | null;
+	version: number;
+	objective: string;
+	refinements: string[];
+	criteria: string[];
+	constraints: string[];
+	plan: string[];
+	facts: GoalspecFact[];
+	questions: string[];
+}
+
+interface GoalspecDelta {
+	refinements: string[];
+	criteria: string[];
+	constraints: string[];
+	plan: string[];
+	planReplaced: boolean;
+	facts: string[];
+	questions: string[];
+	resolved: string[];
+}
+
+interface GoalspecCounts {
+	refinements: number;
+	criteria: number;
+	constraints: number;
+	plan: number;
+	facts: number;
+	questions: number;
+}
+
+interface GoalspecEntry {
+	ts: string;
+	ts_ms: number;
+	turn: number | null;
+	version: number;
+	kind: "pin" | "spec";
+	goal: string | null;
+	counts: GoalspecCounts;
+	delta: GoalspecDelta | null;
+}
+
+function textList(value: unknown, limit: number): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, limit);
+}
+
+function factList(value: unknown, limit: number): GoalspecFact[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((item) => (item ?? {}) as Record<string, unknown>)
+		.filter((item) => typeof item.fact === "string" && (item.fact as string).trim().length > 0)
+		.map((item) => ({ fact: item.fact as string, sourceIds: textList(item.sourceIds, 6) }))
+		.slice(0, limit);
+}
+
+function addedIn(previous: string[], next: string[]): string[] {
+	const seen = new Set(previous);
+	return next.filter((item) => !seen.has(item));
+}
+
+function countsOf(snapshot: GoalspecSnapshot | null): GoalspecCounts {
+	return {
+		refinements: snapshot?.refinements.length ?? 0,
+		criteria: snapshot?.criteria.length ?? 0,
+		constraints: snapshot?.constraints.length ?? 0,
+		plan: snapshot?.plan.length ?? 0,
+		facts: snapshot?.facts.length ?? 0,
+		questions: snapshot?.questions.length ?? 0,
+	};
+}
+
+function diffGoalspec(previous: GoalspecSnapshot, next: GoalspecSnapshot): GoalspecDelta {
+	const knownFacts = new Set(previous.facts.map((fact) => fact.fact));
+	// A plan that still starts with the previous steps was appended to; any
+	// other change came from set_plan, so all its steps read as new.
+	const appended = previous.plan.length > 0 && previous.plan.every((step, index) => next.plan[index] === step);
+	return {
+		refinements: addedIn(previous.refinements, next.refinements),
+		criteria: addedIn(previous.criteria, next.criteria),
+		constraints: addedIn(previous.constraints, next.constraints),
+		plan: appended ? next.plan.slice(previous.plan.length) : next.plan,
+		planReplaced: !appended && next.plan.length > 0,
+		facts: next.facts.filter((fact) => !knownFacts.has(fact.fact)).map((fact) => fact.fact),
+		questions: addedIn(previous.questions, next.questions),
+		resolved: previous.questions.filter((question) => !next.questions.includes(question)),
+	};
+}
+
+function goalspecOfRows(rows: GoalspecRow[]): { current: GoalspecSnapshot | null; timeline: GoalspecEntry[] } {
+	let current: GoalspecSnapshot | null = null;
+	const timeline: GoalspecEntry[] = [];
+	for (const row of rows) {
+		let entry: Record<string, unknown>;
+		try {
+			entry = JSON.parse(row.data) as Record<string, unknown>;
+		} catch {
+			continue;
+		}
+		const payload = (entry.data ?? {}) as Record<string, unknown>;
+		if (row.kind.endsWith("-goal")) {
+			const goal = typeof payload.goal === "string" ? payload.goal : null;
+			if (goal) timeline.push({ ts: row.ts, ts_ms: row.ts_ms, turn: row.turn, version: current?.version ?? 0, kind: "pin", goal, counts: countsOf(current), delta: null });
+			continue;
+		}
+		const next: GoalspecSnapshot = {
+			ts: row.ts,
+			ts_ms: row.ts_ms,
+			turn: row.turn,
+			// `version` is authoritative when present; older entries may predate it.
+			version: typeof payload.version === "number" ? payload.version : (current?.version ?? 0) + 1,
+			objective: typeof payload.userObjective === "string" ? payload.userObjective : (current?.objective ?? ""),
+			refinements: textList(payload.objectiveRefinements, 20),
+			criteria: textList(payload.successCriteria, 30),
+			constraints: textList(payload.constraints, 30),
+			plan: textList(payload.currentPlan, 25),
+			facts: factList(payload.knownFacts, 50),
+			questions: textList(payload.openQuestions, 25),
+		};
+		timeline.push({ ts: next.ts, ts_ms: next.ts_ms, turn: next.turn, version: next.version, kind: "spec", goal: null, counts: countsOf(next), delta: current ? diffGoalspec(current, next) : null });
+		current = next;
+	}
+	return { current, timeline };
+}
+
 export function sessionDetail(db: Database, sessionId: string) {
 	const session = db
 		.query<
@@ -2272,7 +2457,7 @@ export function sessionDetail(db: Database, sessionId: string) {
 			[string]
 		>("SELECT * FROM sessions WHERE session_id = ?")
 		.get(sessionId);
-	if (!session) return { session: null, calls: [], messages: [], events: [], models: [] };
+	if (!session) return { session: null, calls: [], messages: [], events: [], models: [], goalspec: null };
 
 	const calls = db
 		.query<
@@ -2312,6 +2497,13 @@ export function sessionDetail(db: Database, sessionId: string) {
 		>("SELECT ts, ts_ms, system, kind, severity, turn, title, summary, ref FROM events WHERE session_id = ? ORDER BY ts_ms LIMIT 800")
 		.all(sessionId);
 
+	const goalspecRows = db
+		.query<GoalspecRow, [string]>(
+			"SELECT ts, ts_ms, turn, kind, data FROM events WHERE session_id = ? AND kind IN ('harness.jev-curator-goalspec','harness.jev-curator-goal') ORDER BY ts_ms LIMIT 400",
+		)
+		.all(sessionId);
+	const goalspec = goalspecOfRows(goalspecRows);
+
 	const models = db
 		.query<{ model: string; calls: number; cost: number; tokens: number }, [string]>(
 			"SELECT model, COUNT(*) calls, COALESCE(SUM(cost),0) cost, COALESCE(SUM(total_tokens),0) tokens FROM model_calls WHERE session_id = ? AND model IS NOT NULL GROUP BY model ORDER BY cost DESC",
@@ -2327,6 +2519,7 @@ export function sessionDetail(db: Database, sessionId: string) {
 		messages,
 		events,
 		models,
+		goalspec: goalspec.timeline.length ? goalspec : null,
 	};
 }
 

@@ -367,6 +367,9 @@ pre.json { background: var(--panel-2); border: 1px solid var(--border); border-r
 .kv { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 5px 12px; font-size: 12.5px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
+.spec-list { display: flex; flex-direction: column; gap: 3px; }
+.spec-item { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; align-items: baseline; }
+.spec-n { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
 
 /* ---------------- quality meters ---------------- */
 .section-title { display: flex; align-items: baseline; gap: 10px; margin: 8px 2px -4px; }

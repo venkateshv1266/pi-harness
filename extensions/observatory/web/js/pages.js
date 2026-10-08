@@ -1665,7 +1665,7 @@ async function curatorPage(view, ctx) {
 						"div",
 						{},
 						h("div", { class: "rowtitle" }, shortTitle(row.title) ?? row.project ?? row.sessionId.slice(0, 8)),
-						h("div", { class: "rowsub" }, `${row.project ?? "—"} · ${fmtInt(row.candidates)} candidates · ${fmtInt(row.emits)} emits · ${timeAgo(row.lastTs)}`),
+						h("div", { class: "rowsub" }, `${row.project ?? "—"} · ${fmtInt(row.candidates)} candidates · ${fmtInt(row.emits)} emits · ${timeAgo(row.lastTs)}${row.specSnapshots ? ` · GoalSpec v${row.specVersion}${row.specSeeded ? " seeded" : " (pre-seed)"}` : row.goalPins ? " · goal pinned" : ""}`),
 					),
 			},
 		],
@@ -1709,24 +1709,27 @@ async function curatorPage(view, ctx) {
 	// every ingest would reset inner scroll and flicker.
 	const sankeyCard = card({ title: "Candidate flow", sub: "source type → role → verifier verdict", body: sankeyRegion.node });
 	const itemsCard = card({ title: "Ledger items", flush: true, body: itemsTable });
-	const goalspecCard = card({ title: "GoalSpec amendments", flush: true, body: goalspec });
+	const goalspecCard = card({ title: "GoalSpec", sub: "seeded from the session's first prompt, then every amendment", flush: true, body: goalspec });
 	const emptyNote = emptyState("No curator activity in this session.");
 	detail.append(kpis.node, sankeyCard, itemsCard, goalspecCard, emptyNote);
 
 	async function loadDetail() {
 		const d = await api("/api/curator", { session: state.curatorSession });
 		const has = Boolean(d.hasData);
+		const hasSpec = Boolean(d.goalspec?.timeline?.length);
 		for (const node of [kpis.node, sankeyCard, itemsCard]) node.hidden = !has;
-		emptyNote.hidden = has;
-		if (!has) {
+		goalspecCard.hidden = !hasSpec;
+		emptyNote.hidden = has || hasSpec;
+		if (!has && !hasSpec) {
 			ctx.setStatus(`Curator · ${state.curatorSession.slice(0, 8)} · no activity`);
 			return;
 		}
-		kpis.render(d);
-		sankeyRegion.render(d);
-		itemsTable.patch((d.items ?? []).slice().reverse().map((item, index) => ({ ...item, key: item.entryId ?? `${item.ts}-${item.tool ?? ""}-${index}` })));
-		goalspec.patch((d.goalspec ?? []).map((row) => ({ key: `${row.ts}|${row.ref ?? ""}`, ts: row.ts, tone: "info", title: row.summary ?? "amendment", sub: row.ref ?? "" })));
-		goalspecCard.hidden = !(d.goalspec ?? []).length;
+		if (has) {
+			kpis.render(d);
+			sankeyRegion.render(d);
+			itemsTable.patch((d.items ?? []).slice().reverse().map((item, index) => ({ ...item, key: item.entryId ?? `${item.ts}-${item.tool ?? ""}-${index}` })));
+		}
+		goalspec.patch(goalspecFeedItems(d.goalspec?.timeline));
 		ctx.setStatus(`Curator · ${state.curatorSession.slice(0, 8)} · ${fmtInt(d.stats.candidates)} candidates`);
 	}
 	await loadDetail();
@@ -1832,6 +1835,69 @@ async function sessionsPage(view, ctx) {
 
 // ------------------------------------------------------------------ session detail
 
+/** One line describing what a GoalSpec entry changed. */
+function goalspecChangeText(entry) {
+	if (entry.kind === "pin") return "objective pinned";
+	const d = entry.delta;
+	if (!d) return entry.version === 1 ? "seeded from first prompt" : "initial snapshot";
+	const parts = [];
+	if (d.refinements.length) parts.push(`+${d.refinements.length} refinement${d.refinements.length === 1 ? "" : "s"}`);
+	if (d.criteria.length) parts.push(`+${d.criteria.length} criteri${d.criteria.length === 1 ? "on" : "a"}`);
+	if (d.constraints.length) parts.push(`+${d.constraints.length} constraint${d.constraints.length === 1 ? "" : "s"}`);
+	if (d.planReplaced) parts.push(`plan set · ${d.plan.length} step${d.plan.length === 1 ? "" : "s"}`);
+	else if (d.plan.length) parts.push(`+${d.plan.length} plan step${d.plan.length === 1 ? "" : "s"}`);
+	if (d.facts.length) parts.push(`+${d.facts.length} fact${d.facts.length === 1 ? "" : "s"}`);
+	if (d.questions.length) parts.push(`+${d.questions.length} question${d.questions.length === 1 ? "" : "s"}`);
+	if (d.resolved.length) parts.push(`−${d.resolved.length} resolved`);
+	return parts.join(" · ");
+}
+
+/** The added items themselves, capped, so the feed shows what actually changed. */
+function goalspecDetailText(entry) {
+	if (entry.kind === "pin") return entry.goal ? `“${entry.goal}”` : "";
+	if (!entry.delta) {
+		const counts = entry.counts ?? {};
+		const labels = { refinements: "refinements", criteria: "success criteria", constraints: "constraints", plan: "plan steps", facts: "known facts", questions: "open questions" };
+		const summary = Object.entries(labels).map(([key, label]) => (counts[key] ? `${counts[key]} ${label}` : "")).filter(Boolean).join(" · ");
+		return summary || "objective recorded; no criteria, constraints, plan, facts or questions yet";
+	}
+	const d = entry.delta;
+	const items = [
+		...d.criteria.map((text) => `c: ${text}`),
+		...d.constraints.map((text) => `k: ${text}`),
+		...d.plan.map((text) => `p: ${text}`),
+		...d.facts.map((text) => `f: ${text}`),
+		...d.questions.map((text) => `q: ${text}`),
+		...d.resolved.map((text) => `resolved: ${text}`),
+		...d.refinements.map((text) => `refined: ${text}`),
+	];
+	if (!items.length) return "no list changes";
+	const shown = items.slice(0, 3).map((text) => (text.length > 200 ? `${text.slice(0, 199)}…` : text));
+	return shown.join("  ·  ") + (items.length > shown.length ? `  ·  +${items.length - shown.length} more` : "");
+}
+
+function goalspecGap(ms) {
+	if (ms >= 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+	if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`;
+	return `${Math.max(1, Math.round(ms / 1000))}s`;
+}
+
+/** Feed items for a GoalSpec timeline; shared by the session and curator pages. */
+function goalspecFeedItems(timeline) {
+	return (timeline ?? []).map((entry, index, all) => {
+		const gap = index > 0 && entry.ts_ms && all[index - 1].ts_ms ? entry.ts_ms - all[index - 1].ts_ms : null;
+		const change = goalspecChangeText(entry);
+		return {
+			key: `${entry.ts_ms}|${entry.kind}|${entry.version}`,
+			ts: entry.ts,
+			tone: entry.kind === "pin" ? "warn" : "info",
+			title: entry.kind === "pin" ? "objective pinned" : `v${entry.version}${change ? ` · ${change}` : ""}`,
+			sub: goalspecDetailText(entry),
+			right: h("span", { class: "small faint" }, `${entry.turn != null ? `turn ${entry.turn}` : ""}${gap != null ? `${entry.turn != null ? " · " : ""}+${goalspecGap(gap)}` : ""}`),
+		};
+	});
+}
+
 async function sessionPage(view, ctx) {
 	clear(view);
 	if (!state.sessionId) {
@@ -1853,6 +1919,7 @@ async function sessionPage(view, ctx) {
 		const msgLane = (d.messages ?? []).map((m) => ({ start: m.ts_ms - 60_000, end: m.ts_ms + 60_000, color: m.role === "user" ? "var(--accent)" : "var(--s2)", tip: `${m.role} · turn ${m.turn}\n${m.preview?.slice(0, 160) ?? ""}` }));
 		const eventLane = (d.events ?? []).map((e) => ({ start: e.ts_ms - 60_000, end: e.ts_ms + 60_000, color: e.severity === "error" ? "var(--err)" : e.severity === "warn" ? "var(--warn)" : e.system === "curator" ? "var(--s5)" : "var(--s6)", tip: `${e.system} · ${e.kind}\n${e.title ?? ""}${e.summary ? `\n${e.summary}` : ""}` }));
 		const modelLane = calls.map((call, index) => ({ start: call.ts_ms - 60_000, end: call.ts_ms + 60_000, color: seriesColor(index % 8), tip: `${shortModel(call.model)} · turn ${call.turn}\n${fmtCompact(call.total_tokens)} tokens · ${fmtCost(call.cost)}` }));
+		const goalLane = (d.goalspec?.timeline ?? []).map((entry) => ({ start: entry.ts_ms - 60_000, end: entry.ts_ms + 60_000, color: entry.kind === "pin" ? "var(--s3)" : "var(--s10)", tip: `GoalSpec · ${goalspecChangeText(entry)}\nturn ${entry.turn ?? "—"}${entry.goal ? `\n${entry.goal.slice(0, 200)}` : ""}` }));
 		return h(
 			"div",
 			{},
@@ -1861,6 +1928,7 @@ async function sessionPage(view, ctx) {
 				[
 					{ label: "messages", ticks: msgLane },
 					{ label: "harness", ticks: eventLane },
+					{ label: "goalspec", ticks: goalLane },
 					{ label: "models", ticks: modelLane },
 				],
 				{ from: first - 90_000, to: last + 90_000 },
@@ -1885,6 +1953,45 @@ async function sessionPage(view, ctx) {
 	const modelsBars = nodeRegion((d) => bars((d.models ?? []).map((row) => ({ label: shortModel(row.model), value: row.cost, tip: `${row.model}\n${fmtInt(row.calls)} calls · ${fmtCompact(row.tokens)} tokens` })), { valueFmt: fmtCost }));
 	const eventsFeed = feed([], { clock: fmtClock });
 	const messagesFeed = feed([], { clock: fmtClock });
+
+	// GoalSpec: the spec the curator judged evidence against at each point, and
+	// what each amendment added — the per-session record of how the goal moved.
+	const goalspecBadge = h("span", { class: "pill" }, "…");
+	const goalspecFeed = feed([], { clock: fmtClock });
+	const goalspecCurrent = nodeRegion((d) => {
+		const spec = d.goalspec?.current;
+		if (!spec) return emptyState("No GoalSpec snapshot yet — the curator records one per turn once it runs.");
+		const list = (items, prefix) =>
+			items.length
+				? h(
+						"div",
+						{ class: "spec-list" },
+						...items.map((text, index) => h("div", { class: "spec-item" }, h("span", { class: "spec-n" }, `${prefix}${index + 1}.`), h("span", {}, text))),
+					)
+				: h("span", { class: "faint" }, "—");
+		return kv([
+			["Objective", h("div", {}, spec.objective || "—")],
+			["Refinements", list(spec.refinements, "r")],
+			["Success criteria", list(spec.criteria, "c")],
+			["Constraints", list(spec.constraints, "k")],
+			["Plan", list(spec.plan, "p")],
+			["Known facts", list((spec.facts ?? []).map((fact) => fact.fact), "f")],
+			["Open questions", list(spec.questions, "q")],
+		]);
+	});
+	const goalspecSection = collapsible({
+		id: "session-goalspec",
+		title: "GoalSpec",
+		sub: "what this session was asked to do, and how the spec changed as the agent learned",
+		badge: goalspecBadge,
+		open: true,
+		body: h(
+			"div",
+			{ class: "split" },
+			card({ title: "Current spec", sub: "the state evidence relevance is judged against", body: goalspecCurrent.node }),
+			card({ title: "Evolution", sub: "each snapshot after an amendment, with the time and turn it landed", flush: true, body: goalspecFeed }),
+		),
+	});
 
 	// Session impact: benefit, quality and improvement hints for one session.
 	const impactBadge = h("span", { class: "pill accent" }, "…");
@@ -1953,6 +2060,18 @@ async function sessionPage(view, ctx) {
 		impactBadge.textContent = `${fmtCompact(si.benefit?.curatorTokensCondensed ?? 0)} tok condensed${flags ? ` · ${fmtInt(flags)} flags` : ""}`;
 	}
 
+	function renderGoalspec(d) {
+		const timeline = d.goalspec?.timeline ?? [];
+		goalspecSection.hidden = timeline.length === 0;
+		goalspecCurrent.render(d);
+		goalspecFeed.patch(goalspecFeedItems(timeline));
+		const current = d.goalspec?.current;
+		const seeded = timeline.some((entry) => entry.kind === "spec" && entry.version === 1);
+		const updates = timeline.filter((entry) => entry.kind === "spec" && entry.version !== 1).length;
+		goalspecBadge.className = `pill ${current ? "accent" : "neutral"}`;
+		goalspecBadge.textContent = current ? `v${current.version} · ${seeded ? "seeded" : "no seed"} · ${updates} update${updates === 1 ? "" : "s"}` : `${timeline.length} pins`;
+	}
+
 	// --- compare with another session (same numbers, side by side)
 	const compareOptions = (await api("/api/sessions?limit=30")).sessions.filter((session) => session.sessionId !== state.sessionId);
 	const compareState = { thisImpact: null, otherImpact: null };
@@ -2009,7 +2128,7 @@ async function sessionPage(view, ctx) {
 	const eventsCard = card({ title: "Harness events", sub: "curator, model switches, custom entries", flush: true, body: eventsFeed });
 	const messagesCard = card({ title: "Messages", flush: true, body: messagesFeed });
 	const lanesCard = card({ title: "Timeline", body: lanesRegion.node });
-	view.append(kpis.node, impactSection, lanesCard, h("div", { class: "split" }, callsCard, modelsCard), h("div", { class: "split" }, eventsCard, messagesCard), compareCard);
+	view.append(kpis.node, goalspecSection, impactSection, lanesCard, h("div", { class: "split" }, callsCard, modelsCard), h("div", { class: "split" }, eventsCard, messagesCard), compareCard);
 
 	async function refresh() {
 		const [d, si] = await Promise.all([api("/api/session", { id: state.sessionId }), api("/api/session/impact", { id: state.sessionId })]);
@@ -2019,6 +2138,7 @@ async function sessionPage(view, ctx) {
 			return;
 		}
 		kpis.render(d);
+		renderGoalspec(d);
 		renderSessionImpact(si);
 		compareState.thisImpact = si;
 		compareTable.render();
