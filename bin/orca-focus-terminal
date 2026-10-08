@@ -1,0 +1,30 @@
+#!/bin/sh
+# Focuses the Orca terminal an alert originated from, so a click on the
+# notification banner lands on the right session.
+# Usage: orca-focus-terminal [--no-open] <leafId|tabId>
+# --no-open switches the terminal inside Orca without raising the app window.
+open_app=1
+if [ "${1:-}" = "--no-open" ]; then open_app=0; shift; fi
+tab_id="${1:-}"
+[ -n "$tab_id" ] || exit 0
+orca="${ORCA_CLI_COMMAND:-}"
+if [ -z "$orca" ] || ! command -v "$orca" >/dev/null 2>&1; then
+  if command -v orca >/dev/null 2>&1; then orca=orca
+  elif [ -x "/Applications/Orca.app/Contents/Resources/bin/orca" ]; then orca="/Applications/Orca.app/Contents/Resources/bin/orca"
+  else exit 0
+  fi
+fi
+handle=$("$orca" terminal list --json 2>/dev/null | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+ts=d.get("result",{}).get("terminals") if isinstance(d,dict) else None
+if ts is None and isinstance(d,dict): ts=d.get("terminals")
+for t in ts or []:
+    if t.get("leafId")==sys.argv[1] or t.get("tabId")==sys.argv[1]:
+        print(t.get("handle",""))
+        break
+' "$tab_id" 2>/dev/null)
+[ -n "$handle" ] || exit 0
+[ "$open_app" -eq 1 ] && open -a Orca 2>/dev/null
+exec "$orca" terminal switch --terminal "$handle"
