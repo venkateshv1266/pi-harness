@@ -18,8 +18,21 @@ if [ "$in_cmux" -eq 1 ] || [ "$in_orca" -eq 1 ]; then
     nohup cmux trigger-flash >/dev/null 2>&1 </dev/null &
   fi
   if [ "$in_orca" -eq 1 ]; then
-    nohup osascript -e 'display notification "Git is starting SSH authentication — touch your YubiKey." with title "YubiKey touch needed"' >/dev/null 2>&1 </dev/null &
+    focus="$HOME/.pi/agent/bin/orca-focus-terminal"
+    pane_ref="${ORCA_AGENT_PANE##*:}"
+    [ -n "$pane_ref" ] || pane_ref="${ORCA_TAB_ID:-}"
+    [ -x "$focus" ] && [ -n "$pane_ref" ] && nohup "$focus" --no-open "$pane_ref" >/dev/null 2>&1 </dev/null &
     nohup "${ORCA_CLI_COMMAND:-orca}" worktree set --worktree "${ORCA_WORKTREE_ID:+id:}${ORCA_WORKTREE_ID:-active}" --unread >/dev/null 2>&1 </dev/null &
+    tn="$(command -v terminal-notifier 2>/dev/null || printf '%s' /opt/homebrew/bin/terminal-notifier)"
+    if [ -x "$tn" ]; then
+      nohup "$tn" -title "YubiKey touch needed" \
+        -message "Git is starting SSH authentication — touch your YubiKey." \
+        -sender com.stablyai.orca \
+        -execute "$focus $pane_ref" \
+        >/dev/null 2>&1 </dev/null &
+    else
+      nohup osascript -e 'display notification "Git is starting SSH authentication — touch your YubiKey." with title "YubiKey touch needed"' >/dev/null 2>&1 </dev/null &
+    fi
   fi
   sound="${PI_YUBIKEY_NOTIFICATION_SOUND:-$HOME/.pi/agent/sounds/yubikey-alert-2-beep.wav}"
   [ -f "$sound" ] || sound="/System/Library/Sounds/Sosumi.aiff"

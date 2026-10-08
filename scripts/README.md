@@ -10,6 +10,7 @@ migration that `./install.sh` runs for you.
 | `scripts/migrate-jev-memory-settings.mjs` | Removes the legacy `npm:pi-hermes-memory` entry from `~/.pi/agent/settings.json` (run automatically by `./install.sh`) |
 | `bin/git-gpg-yubikey-notify` | `gpg` wrapper that alerts before YubiKey signing operations |
 | `bin/git-ssh-yubikey-notify` | `ssh` wrapper that alerts before Git SSH authentication |
+| `bin/orca-focus-terminal` | Click-through helper: switches Orca to the exact terminal an alert came from |
 | `sounds/yubikey-alert-2-beep.wav` | Default alert sound — the one the installer copies |
 | `sounds/yubikey-alert-1-ascending.wav` | Alternate alert sound; not installed by any script — opt in via `PI_YUBIKEY_NOTIFICATION_SOUND` |
 
@@ -72,8 +73,14 @@ or `CMUX_SOCKET` non-empty) or Orca (`TERM_PROGRAM=Orca` or
 operation is never delayed. Inside cmux those actions are `cmux notify
 --title "YubiKey touch needed"` with an operation-specific body,
 `cmux trigger-flash`, and `afplay` on the configured sound. Inside Orca they
-are a macOS notification banner via `osascript`, the workspace's sidebar
-unread dot via `orca worktree set --unread`, and the same `afplay` sound.
+are the same `afplay` sound, the workspace's sidebar unread dot via
+`orca worktree set --unread`, and an Orca-branded banner via
+`terminal-notifier -sender com.stablyai.orca` — falling back to a plain
+`osascript` banner when terminal-notifier is not installed
+(`brew install terminal-notifier`). The wrapper also pre-focuses the exact alerting
+terminal inside Orca (`bin/orca-focus-terminal --no-open`, pane-level via
+`ORCA_AGENT_PANE`), so clicking the banner activates Orca on that session's
+terminal.
 
 ### Configuration
 
@@ -82,6 +89,7 @@ unread dot via `orca worktree set --unread`, and the same `afplay` sound.
 | `PI_YUBIKEY_NOTIFICATION_SOUND` | `$HOME/.pi/agent/sounds/yubikey-alert-2-beep.wav` | Sound file both wrappers play via `afplay` (macOS). If the file does not exist, they fall back to `/System/Library/Sounds/Sosumi.aiff`. |
 | `CMUX_SOCKET_PATH`, `CMUX_SOCKET` | unset | Presence (non-empty) is what enables cmux alerts. Expected to be provided by cmux inside its sessions; not meant to be set by hand. |
 | `TERM_PROGRAM=Orca`, `ORCA_WORKTREE_ID` | unset | Either one non-empty enables Orca alerts. Provided by Orca inside its terminals; not meant to be set by hand. |
+| `ORCA_AGENT_PANE`, `ORCA_TAB_ID` | unset | Orca's pane/tab ids, used to pre-focus the exact alerting terminal inside Orca. Provided by Orca automatically. |
 | `ORCA_CLI_COMMAND` | `orca` | Orca CLI binary the wrappers call for the unread dot; Orca exports it in some managed environments, otherwise `orca` from `PATH` is used. |
 
 ### Uninstall / revert

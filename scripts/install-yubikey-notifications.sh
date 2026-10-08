@@ -7,12 +7,14 @@ BIN="${AGENT}/bin"
 SOUNDS="${AGENT}/sounds"
 GPG_WRAPPER="${BIN}/git-gpg-yubikey-notify"
 SSH_WRAPPER="${BIN}/git-ssh-yubikey-notify"
+FOCUS_HELPER="${BIN}/orca-focus-terminal"
 
 mkdir -p "$BIN" "$SOUNDS"
 cp "$REPO_DIR/bin/git-gpg-yubikey-notify" "$GPG_WRAPPER"
 cp "$REPO_DIR/bin/git-ssh-yubikey-notify" "$SSH_WRAPPER"
+cp "$REPO_DIR/bin/orca-focus-terminal" "$FOCUS_HELPER"
 cp "$REPO_DIR/sounds/yubikey-alert-2-beep.wav" "$SOUNDS/yubikey-alert-2-beep.wav"
-chmod 755 "$GPG_WRAPPER" "$SSH_WRAPPER"
+chmod 755 "$GPG_WRAPPER" "$SSH_WRAPPER" "$FOCUS_HELPER"
 
 configure_git_value() {
   local key="$1"
@@ -33,3 +35,8 @@ printf 'Installed YubiKey Git notifications.\n'
 printf '  gpg.program=%s\n' "$(git config --global --get gpg.program)"
 printf '  core.sshCommand=%s\n' "$(git config --global --get core.sshCommand)"
 printf '  sound=%s\n' "$SOUNDS/yubikey-alert-2-beep.wav"
+printf '  focus-helper=%s\n' "$FOCUS_HELPER"
+if ! command -v terminal-notifier >/dev/null 2>&1; then
+  printf 'note: terminal-notifier is not installed — Orca alerts fall back to a plain banner.\n'
+  printf '      Install it with: brew install terminal-notifier\n'
+fi
