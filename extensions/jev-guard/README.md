@@ -8,9 +8,11 @@ The agent never knows this extension is here. Before a bash command runs, comman
 
 ## Configuration
 
+Both hooks can be toggled at runtime: `/jev-guard on|off` flips them (no arguments shows the current state plus session counters). The choice persists across sessions as `jevGuardEnabled` in `~/.pi/agent/settings.json`; the environment variable below still seeds every session off without rewriting that setting.
+
 | Env var | Default | Effect |
 |---|---|---|
-| `JEV_GUARD` | unset | `0` disables both hooks for the session. |
+| `JEV_GUARD` | unset | `0` seeds the session off; an in-session `/jev-guard on` overrides, and the env var wins again on the next session. |
 | `JEV_GUARD_TIMEOUT_MS` | `4000` | Per-call Jev timeout for gate and screen (gates must not stall a turn). |
 | `PI_JEV_GUARD_NOTIFICATION_SOUND` | `PI_YUBIKEY_NOTIFICATION_SOUND`, else `$HOME/.pi/agent/sounds/yubikey-alert-2-beep.wav` | Alert sound for the approval notification (cmux and Orca sessions); falls back to `/System/Library/Sounds/Sosumi.aiff` if the file is missing. |
 
