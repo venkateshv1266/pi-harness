@@ -11,19 +11,20 @@
  * once for instructions aimed at an AI agent; flagged results get a warning
  * banner prepended and the agent still sees the content, marked as data.
  *
- * Every decision logs to jev-decisions/jev-guard.jsonl. Kill switch: JEV_GUARD=0.
+ * Every decision logs to jev-decisions/jev-guard.jsonl. Toggle with /jev-guard
+ * on|off (persists via settings.json); JEV_GUARD=0 seeds the session off.
  */
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEndEvent, BeforeAgentStartEvent, ExtensionAPI, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { choiceOf, isReadonlyCommand, jevCall, noulOf, scrubSecrets, type Question } from "../../utils/jev-client.ts";
 import { logEvent } from "../../utils/jev-outcomes.ts";
 
-const KILL = process.env.JEV_GUARD === "0";
+const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 const GUARD_TIMEOUT_MS = Number(process.env.JEV_GUARD_TIMEOUT_MS ?? "4000");
 const BLOCK_NOTICE =
 	"This decision is final for this session — do not try to work around it; if the command is genuinely needed, ask the user to run it themselves.";
@@ -79,6 +80,30 @@ type Classification = {
 type Counts = { gated: number; allowed: number; confirmed: number; blocked: number; screened: number; flagged: number; costUsd: number };
 
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+
+// Precedence: JEV_GUARD=0 seeds the session off; /jev-guard on|off overrides at
+// runtime and persists, so a one-time env kill switch still wins next session.
+function loadEnabled(): boolean {
+	if (process.env.JEV_GUARD === "0") return false;
+	try {
+		const settings = JSON.parse(readFileSync(SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+		return settings.jevGuardEnabled !== false;
+	} catch {
+		return true;
+	}
+}
+
+function persistEnabled(value: boolean): void {
+	try {
+		const settings = existsSync(SETTINGS_PATH)
+			? (JSON.parse(readFileSync(SETTINGS_PATH, "utf8")) as Record<string, unknown>)
+			: {};
+		settings.jevGuardEnabled = value;
+		writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+	} catch {
+		// persistence is best-effort; the session toggle still applies
+	}
+}
 
 function classifyCommand(command: string): Promise<Classification | null> {
 	const state = `Shell command a coding agent wants to run:\n${command}`;
@@ -158,6 +183,25 @@ export default function (pi: ExtensionAPI) {
 	const screenSeen = new Set<string>();
 	const totals: Counts = { gated: 0, allowed: 0, confirmed: 0, blocked: 0, screened: 0, flagged: 0, costUsd: 0 };
 	let runStart: Counts = { ...totals };
+	let enabled = loadEnabled();
+
+	pi.registerCommand("jev-guard", {
+		description: "Show or toggle jev-guard: /jev-guard [on|off]",
+		handler: async (args, ctx) => {
+			const sub = args.trim().toLowerCase();
+			if (sub === "on" || sub === "off") {
+				enabled = sub === "on";
+				persistEnabled(enabled);
+				logEvent("jev-guard", "jev-guard.jsonl", { hook: "toggle", verdict: enabled ? "enabled" : "disabled" });
+			}
+			if (!ctx.hasUI) return;
+			ctx.ui.notify(
+				`jev-guard ${enabled ? "on" : "off"} · this session: ${totals.gated} gated, ${totals.allowed} allowed, ` +
+					`${totals.confirmed} confirmed, ${totals.blocked} blocked; screen ${totals.flagged}/${totals.screened} flagged`,
+				"info",
+			);
+		},
+	});
 
 	const cacheKey = (command: string) => {
 		if (classificationCache.size >= CACHE_CAP) {
@@ -188,7 +232,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
-		if (KILL || event.toolName !== "bash") return;
+		if (!enabled || event.toolName !== "bash") return;
 		try {
 			const command = typeof event.input?.command === "string" ? event.input.command : "";
 			if (!command.trim() || isReadonlyCommand(command)) return;
@@ -274,7 +318,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", async (event: ToolResultEvent) => {
-		if (KILL) return;
+		if (!enabled) return;
 		if (event.toolName !== "read" && event.toolName !== "bash" && event.toolName !== "web_fetch") return;
 		try {
 			const text = event.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");

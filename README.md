@@ -55,7 +55,8 @@ Common entry points:
   [persistent engine](extensions/persistent-subagent/README.md)
 - **Judgment and guardrails** — [ask-jev](extensions/ask-jev/README.md) (Jev
   tools: cheap file judgments, log triage, assumption validation),
-  [jev-guard](extensions/jev-guard/README.md) (bash command gate + injection screen)
+  [jev-guard](extensions/jev-guard/README.md) (bash command gate + injection screen,
+  `/jev-guard on|off` toggle)
 - **Memory and context** — [jev-memory](extensions/jev-memory/README.md),
   [jev-context-curator](extensions/jev-context-curator/README.md),
   [ttsr](extensions/ttsr/README.md), [recite](extensions/recite/README.md),
