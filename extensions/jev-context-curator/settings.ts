@@ -12,6 +12,7 @@ export interface CuratorConfig {
 	mode: string;
 	verifierMode: string;
 	verifierModel: string;
+	distillModel: string;
 	verifierTimeoutMs: number;
 	verifyRawCap: number;
 	covMin: number;
@@ -106,6 +107,15 @@ export const CURATOR_SETTING_SPECS: CuratorSettingSpec[] = [
 			"Frontier model for the losslessness gate and compaction summaries; empty = session model. Accepts provider/model:thinking (e.g. openrouter/z-ai/glm-5.3:max).",
 		defaultValue: "",
 	},
+	{
+		key: "distillModel",
+		env: "JEVCURATOR_DISTILL_MODEL",
+		kind: "model",
+		label: "Distill model",
+		detail:
+			"Writes the recited objective: the verbatim first prompt is rewritten once into a self-contained objective (<=320 chars) that recite shows unclipped. Empty = the @smol role model; unset role disables distillation. Accepts provider/model:thinking or @role.",
+		defaultValue: "",
+	},
 ];
 
 interface CuratorEnvSpec {
@@ -163,6 +173,18 @@ export function readCuratorSettings(): Record<string, unknown> {
 		return raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 	} catch {
 		return {};
+	}
+}
+
+/** Top-level settings.json string value, e.g. a model-role assignment (smolModel). */
+export function readTopLevelSetting(key: string): string | undefined {
+	try {
+		if (!fs.existsSync(SETTINGS_PATH)) return undefined;
+		const all = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+		const value = all[key];
+		return typeof value === "string" && value.trim() ? value.trim() : undefined;
+	} catch {
+		return undefined;
 	}
 }
 
