@@ -35,7 +35,7 @@ installing, or override it with a same-named file in `~/.pi/agent/rules/`
 | `no-ts-ignore` | ts-ignore / ts-nocheck directives or blanket eslint disables | blocks |
 | `no-empty-catch` | empty catch blocks (ast-grep) | blocks |
 | `no-guarded-cleartimeout` | a clearTimeout guarded by its own timer variable (ast-grep) | blocks |
-| `no-console-log-in-prod-code` | debug logging calls in TS/JS writes (ast-grep) | blocks |
+| `no-console-log-in-prod-code` | a `git commit` while changed code still contains `console.log` (Jev verify gate) | blocks; reminds to strip it or use the project logger |
 | `no-localhost-in-prod-code` | hardcoded loopback URLs with a port | reminder (non-interrupting) |
 | `no-temp-fixes` | hack/FIXME-temporary markers, "for now", or "quick fix" in prose or code | blocks |
 
