@@ -1,13 +1,14 @@
 # scripts/ and bin/
 
 Helpers that live outside the pi extensions: an opt-in installer for YubiKey
-Git alerts, the Git wrappers it installs, the alert sounds, and a settings
-migration that `./install.sh` runs for you.
+Git alerts, the Git wrappers it installs, the alert sounds, a settings
+migration that `./install.sh` runs for you, and an ask-jev adoption report.
 
 | Path | What it does |
 |---|---|
 | `scripts/install-yubikey-notifications.sh` | Installs the YubiKey alert wrappers and default sound, then points Git at them |
 | `scripts/migrate-jev-memory-settings.mjs` | Removes the legacy `npm:pi-hermes-memory` entry from `~/.pi/agent/settings.json` (run automatically by `./install.sh`) |
+| `scripts/ask-jev-adoption.mjs` | Ask-jev adoption report: per-tool Jev-call usage vs read-call volume from real session files — `node scripts/ask-jev-adoption.mjs [--days 7]` (details in the [ask-jev README](../extensions/ask-jev/README.md)) |
 | `bin/git-gpg-yubikey-notify` | `gpg` wrapper that alerts before YubiKey signing operations |
 | `bin/git-ssh-yubikey-notify` | `ssh` wrapper that alerts before Git SSH authentication |
 | `bin/orca-focus-terminal` | Click-through helper: switches Orca to the exact terminal an alert came from |
