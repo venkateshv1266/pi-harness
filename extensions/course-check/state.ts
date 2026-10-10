@@ -30,7 +30,7 @@ export interface SessionGoal {
 	plan: string[];
 }
 
-export type CourseVerdict = "on_track" | "off_track" | "goal_unclear" | "goal_met" | "blocked";
+export type CourseVerdict = "on_track" | "off_track" | "goal_unclear" | "goal_moved" | "goal_met" | "blocked";
 export type FailureMode = "none" | "scope_drift" | "rabbit_hole" | "tangents" | "wrong_solution" | "goal_met_overrun";
 
 export interface Verdict {
@@ -251,7 +251,7 @@ export function shouldCheck(turnIndex: number, lastCheckedTurn: number, cfg: Cou
 
 // ─── verdict ──────────────────────────────────────────────────────────
 
-const NUDGEABLE: ReadonlySet<CourseVerdict> = new Set(["off_track", "goal_unclear", "goal_met"]);
+const NUDGEABLE: ReadonlySet<CourseVerdict> = new Set(["off_track", "goal_unclear", "goal_moved", "goal_met"]);
 
 interface JevAnswer {
 	choice?: string;
@@ -320,7 +320,16 @@ export function nudgeText(v: Verdict, goal: SessionGoal, consecutive: number): s
 			``,
 			`SESSION GOAL: ${goal.objective}`,
 			``,
-			`The goal is too ambiguous to judge direction against. Stop guessing: ask the user 1-3 sharp clarifying questions about the intended outcome before doing further work.`,
+			`The goal is too ambiguous to judge direction against. Stop guessing: sharpen the goal state first — refine it via pin_goal or amend_goalspec (criteria/constraints/plan), or ask the user 1-3 sharp clarifying questions about the intended outcome before doing further work.`,
+		].join("\n");
+	}
+	if (v.verdict === "goal_moved") {
+		return [
+			head,
+			``,
+			`SESSION GOAL: ${goal.objective}`,
+			``,
+			`The user's recent messages redefine what they want — the session goal no longer matches their current ask. Update the goal state instead of steering back toward the old objective: call pin_goal with the refined objective, or amend_goalspec for new criteria/constraints/plan; ask the user to /goal if the replacement should come from them.`,
 		].join("\n");
 	}
 	if (v.verdict === "goal_met") {

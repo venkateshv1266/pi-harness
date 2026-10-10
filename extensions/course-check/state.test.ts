@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { Verdict } from "./state.ts";
 import {
 	buildNudgeDrafts,
 	composeState,
@@ -209,6 +210,26 @@ test("parseVerdict: degraded and malformed answers", () => {
 	assert.equal(topFallback?.verdict, "blocked");
 	assert.equal(topFallback?.p, 0.7);
 	assert.equal(topFallback?.why, "none");
+});
+
+test("parseVerdict: goal_moved is nudgeable at threshold", () => {
+	const moved = parseVerdict(
+		{ course: { choice: "goal_moved", probabilities: { goal_moved: 0.85, off_track: 0.1 }, confidence: 0.9 }, failure: { choice: "none" } },
+		0.7,
+	);
+	assert.equal(moved?.verdict, "goal_moved");
+	assert.equal(moved?.nudge, true);
+});
+
+test("nudgeText: goal_moved re-pin copy, goal_unclear names the goal tools", () => {
+	const goal = { objective: "old task", criteria: [], plan: [] };
+	const moved = nudgeText({ verdict: "goal_moved", p: 0.85, confidence: 1, why: "none", nudge: true }, goal, 1);
+	assert.match(moved, /pin_goal/);
+	assert.match(moved, /amend_goalspec/);
+	assert.match(moved, /redefine/i);
+	const unclear = nudgeText({ verdict: "goal_unclear", p: 0.8, confidence: 1, why: "none", nudge: true }, goal, 1);
+	assert.match(unclear, /pin_goal/);
+	assert.match(unclear, /amend_goalspec/);
 });
 
 // ─── nudge text and drafts ────────────────────────────────────────────

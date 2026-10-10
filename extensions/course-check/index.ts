@@ -5,7 +5,7 @@
  * session goal (the curator's goal pin / GoalSpec, falling back to the user's
  * first prompt) plus a one-line-per-message digest of recent activity, and asks
  * one question: is the agent on a path that plausibly reaches the goal?
- * Nudge verdicts (off_track / goal_unclear / goal_met, p ≥ threshold) inject a
+ * Nudge verdicts (off_track / goal_unclear / goal_moved / goal_met, p ≥ threshold) inject a
  * visible course-correction message telling the agent to rethink its approach;
  * on_track and blocked verdicts stay silent. At most one nudge is ever live in
  * context: each new check retires the previous message with a context_edit,
@@ -55,11 +55,12 @@ const QUESTIONS = {
 	course: {
 		type: "choice",
 		instructions:
-			"A supervisor periodically reviews an AI coding agent mid-session. Judging the RECENT ACTIVITY against the SESSION GOAL, is the agent on a path that plausibly reaches the goal? Judge direction, not effort or volume: a productive dead end that was abandoned is on track; repeating variations of a failing approach, working outside the goal's scope, polishing tangents while the goal's core is untouched, or continuing after the goal appears met are off track. Use blocked only when progress is impossible without the user (waiting on input, broken environment), and goal_unclear only when the stated goal is too vague to judge direction.",
+			"A supervisor periodically reviews an AI coding agent mid-session. Judging the RECENT ACTIVITY against the SESSION GOAL, is the agent on a path that plausibly reaches the goal? Judge direction, not effort or volume: a productive dead end that was abandoned is on track; repeating variations of a failing approach, working outside the goal's scope, polishing tangents while the goal's core is untouched, or continuing after the goal appears met are off track. Use blocked only when progress is impossible without the user (waiting on input, broken environment), goal_unclear only when the stated goal is too vague to judge direction, and goal_moved only when the user's recent messages redefine the objective so the SESSION GOAL no longer describes their current ask (a stale goal — not agent drift).",
 		criteria: {
 			on_track: "Recent actions map to the goal, plan, or success criteria — the trajectory plausibly reaches it",
 			off_track: "Recent actions do not progress the goal — wrong scope, repeated failing attempts, tangents, or busywork while the goal's core is untouched",
 			goal_unclear: "The stated goal is too ambiguous to judge direction; the agent should clarify with the user rather than guess",
+			goal_moved: "The user has redefined the objective — recent user messages ask for something the SESSION GOAL no longer describes; the goal state is stale, not the agent's path",
 			goal_met: "The goal appears already achieved; further activity is unnecessary",
 			blocked: "Progress is impossible without the user — waiting on input or a broken environment; not the agent's own drift",
 		},
