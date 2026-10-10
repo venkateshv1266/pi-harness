@@ -152,23 +152,29 @@ function notifyApproval(command: string, why: string): void {
 		const orca = process.env.ORCA_CLI_COMMAND || "orca";
 		const worktree = process.env.ORCA_WORKTREE_ID ? `id:${process.env.ORCA_WORKTREE_ID}` : "active";
 		spawnDetached(orca, ["worktree", "set", "--worktree", worktree, "--unread"]);
-		// Pre-focus the alerting terminal: clicking the Orca-branded banner activates Orca on it.
-		const focusHelper = join(homedir(), ".pi", "agent", "bin", "orca-focus-terminal");
+		// Pre-focus the alerting terminal so a click on the banner lands on it.
+		const binDir = join(homedir(), ".pi", "agent", "bin");
+		const focusHelper = join(binDir, "orca-focus-terminal");
 		const paneRef = (process.env.ORCA_AGENT_PANE ?? "").split(":").pop() || process.env.ORCA_TAB_ID || "";
 		const focusable = paneRef !== "" && existsSync(focusHelper);
 		if (focusable) spawnDetached(focusHelper, ["--no-open", paneRef]);
-		const notifier = ["/opt/homebrew/bin", "/usr/local/bin"]
-			.map((dir) => join(dir, "terminal-notifier"))
-			.find((p) => existsSync(p)) ?? "";
-		if (notifier !== "") {
-			spawnDetached(notifier, [
-				"-title", title,
-				"-message", body.replace(/\r?\n/g, " · ").slice(0, 200),
-				"-sender", "com.stablyai.orca",
-				...(focusable ? ["-execute", `${focusHelper} ${paneRef}`] : []),
-			]);
+		const bannerHelper = join(binDir, "orca-alert-banner");
+		if (existsSync(bannerHelper)) {
+			spawnDetached(bannerHelper, [title, body.replace(/\r?\n/g, " · ").slice(0, 200)]);
 		} else {
-			spawnDetached("osascript", ["-e", `display notification ${appleScriptQuoted(body)} with title ${appleScriptQuoted(title)}`]);
+			const notifier = ["/opt/homebrew/bin", "/usr/local/bin"]
+				.map((dir) => join(dir, "terminal-notifier"))
+				.find((p) => existsSync(p)) ?? "";
+			if (notifier !== "") {
+				spawnDetached(notifier, [
+					"-title", title,
+					"-message", body.replace(/\r?\n/g, " · ").slice(0, 200),
+					"-sender", "com.stablyai.orca",
+					...(focusable ? ["-execute", `${focusHelper} ${paneRef}`] : []),
+				]);
+			} else {
+				spawnDetached("osascript", ["-e", `display notification ${appleScriptQuoted(body)} with title ${appleScriptQuoted(title)}`]);
+			}
 		}
 	}
 	const sound =

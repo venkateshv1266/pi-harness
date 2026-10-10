@@ -4,7 +4,7 @@
 
 ## What it does
 
-The agent never knows this extension is here. Before a bash command runs, commands off the read-only fast path get one Jev call classifying their effect (readonly / reversible / irreversible) and destructive intent, both with confidence; clear destruction blocks, gray areas ask the user once — with a notification, attention signal, and alert sound when the session runs inside cmux or Orca (inside Orca the banner is app-branded and pre-focuses the exact terminal, so a click opens that session) — everything else passes silently. After `read`, `bash`, and `web_fetch` results, outputs are screened once for instructions aimed at an AI agent; flagged results get a warning banner prepended and the agent still sees the content, marked as untrusted data.
+The agent never knows this extension is here. Before a bash command runs, commands off the read-only fast path get one Jev call classifying their effect (readonly / reversible / irreversible) and destructive intent, both with confidence; clear destruction blocks, gray areas ask the user once — with a notification, attention signal, and alert sound when the session runs inside cmux or Orca (inside Orca the banner shows Orca's icon and name and pre-focuses the exact terminal, so a click opens that session) — everything else passes silently. After `read`, `bash`, and `web_fetch` results, outputs are screened once for instructions aimed at an AI agent; flagged results get a warning banner prepended and the agent still sees the content, marked as untrusted data.
 
 ## Configuration
 

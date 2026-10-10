@@ -1,0 +1,25 @@
+#!/bin/sh
+# Posts the Orca-branded alert banner; a click opens the exact session.
+# Usage: orca-alert-banner <title> <message>
+title="${1:-Alert}"
+message="${2:-}"
+focus="$HOME/.pi/agent/bin/orca-focus-terminal"
+pane_ref="${ORCA_AGENT_PANE##*:}"
+[ -n "$pane_ref" ] || pane_ref="${ORCA_TAB_ID:-}"
+
+app_notifier="/Applications/Orca-Notifier.app/Contents/MacOS/terminal-notifier"
+[ -x "$app_notifier" ] || app_notifier="$HOME/Applications/Orca-Notifier.app/Contents/MacOS/terminal-notifier"
+[ -x "$app_notifier" ] || app_notifier="$HOME/.pi/agent/bin/Orca-Notifier.app/Contents/MacOS/terminal-notifier"
+if [ -x "$app_notifier" ] && [ -n "$pane_ref" ] && [ -x "$focus" ]; then
+  exec "$app_notifier" -title "$title" -message "$message" -execute "$focus $pane_ref"
+fi
+
+plain_notifier="$(command -v terminal-notifier 2>/dev/null || printf '%s' /opt/homebrew/bin/terminal-notifier)"
+if [ -x "$plain_notifier" ]; then
+  # Click activates the real Orca app (sender bundle id); the caller pre-focuses the tab.
+  exec "$plain_notifier" -title "$title" -message "$message" -sender com.stablyai.orca
+fi
+
+esc_title=$(printf '%s' "$title" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' ')
+esc_message=$(printf '%s' "$message" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' ')
+exec osascript -e "display notification \"$esc_message\" with title \"$esc_title\"" 2>/dev/null
