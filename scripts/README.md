@@ -11,6 +11,7 @@ migration that `./install.sh` runs for you.
 | `bin/git-gpg-yubikey-notify` | `gpg` wrapper that alerts before YubiKey signing operations |
 | `bin/git-ssh-yubikey-notify` | `ssh` wrapper that alerts before Git SSH authentication |
 | `bin/orca-focus-terminal` | Click-through helper: switches Orca to the exact terminal an alert came from |
+| `bin/orca-alert-banner` | Posts the Orca-branded alert banner (via `Orca-Notifier.app`); click routes to the alerting session |
 | `sounds/yubikey-alert-2-beep.wav` | Default alert sound — the one the installer copies |
 | `sounds/yubikey-alert-1-ascending.wav` | Alternate alert sound; not installed by any script — opt in via `PI_YUBIKEY_NOTIFICATION_SOUND` |
 
@@ -74,13 +75,18 @@ operation is never delayed. Inside cmux those actions are `cmux notify
 --title "YubiKey touch needed"` with an operation-specific body,
 `cmux trigger-flash`, and `afplay` on the configured sound. Inside Orca they
 are the same `afplay` sound, the workspace's sidebar unread dot via
-`orca worktree set --unread`, and an Orca-branded banner via
-`terminal-notifier -sender com.stablyai.orca` — falling back to a plain
-`osascript` banner when terminal-notifier is not installed
-(`brew install terminal-notifier`). The wrapper also pre-focuses the exact alerting
-terminal inside Orca (`bin/orca-focus-terminal --no-open`, pane-level via
-`ORCA_AGENT_PANE`), so clicking the banner activates Orca on that session's
-terminal.
+`orca worktree set --unread`, and an Orca-branded banner posted by
+`bin/orca-alert-banner`. That helper prefers `Orca-Notifier.app` — a copy
+of terminal-notifier the installer builds with Orca's own icon and display
+name, installed into `/Applications` (or `~/.pi/agent/bin` when
+`/Applications` is not writable) so macOS grants notification permission
+reliably — allow the one-time permission prompt on first use. The banner
+shows Orca's icon and name, and a click runs `bin/orca-focus-terminal` to
+open Orca on the exact alerting terminal, which the wrapper pre-focuses
+pane-level via `ORCA_AGENT_PANE`. Without the app it falls back to
+`terminal-notifier -sender com.stablyai.orca` (click activates Orca on the
+pre-focused tab), and finally to a plain `osascript` banner when
+terminal-notifier is not installed (`brew install terminal-notifier`).
 
 ### Configuration
 
