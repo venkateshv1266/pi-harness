@@ -1649,7 +1649,7 @@ function registerResults(results: ShadowResult[], v2Outcome: Map<string, string>
 
 // Seed-objective distillation: recite composes OBJECTIVE from GoalSpec.userObjective
 // and clips at 320 chars, so a long verbatim first prompt loses its operative tail.
-// The seed is rewritten once by a small model, fire-and-forget; the digest flushes as
+// The seed is rewritten once by the @slow role model, fire-and-forget; the digest flushes as
 // the next version bump. Any failure leaves the verbatim in place (fail-open).
 
 const DISTILL_MAX_CHARS = 320; // recite's OBJECTIVE per-item cap
@@ -1687,18 +1687,20 @@ function openRouterModelId(ref: string): string {
 	return bare.startsWith("openrouter/") ? bare.slice("openrouter/".length) : bare;
 }
 
-async function distillSeedObjective(): Promise<void> {
+async function distillSeedObjective(sessionId?: string): Promise<void> {
 	if (distillAttempted || !spec || spec.objectiveSource) return;
 	distillAttempted = true;
 	const verbatim = spec.userObjective;
 	if (verbatim.length <= DISTILL_MAX_CHARS) {
 		distillOutcome = "skipped";
+		logShadowLine({ kind: "distill", outcome: distillOutcome, session: sessionId, verbatimChars: verbatim.length });
 		return;
 	}
 	const modelRef = distillModelRef();
 	const key = jevKey();
 	if (!modelRef || !key) {
 		distillOutcome = "disabled";
+		logShadowLine({ kind: "distill", outcome: distillOutcome, session: sessionId });
 		return;
 	}
 	try {
@@ -1720,12 +1722,14 @@ async function distillSeedObjective(): Promise<void> {
 		});
 		if (!res.ok) {
 			distillOutcome = "failed";
+			logShadowLine({ kind: "distill", outcome: distillOutcome, session: sessionId, model: modelRef, verbatimChars: verbatim.length });
 			return;
 		}
 		const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
 		const digest = json.choices?.[0]?.message?.content?.trim();
 		if (!digest || !spec || spec.objectiveSource) {
 			distillOutcome = "failed";
+			logShadowLine({ kind: "distill", outcome: distillOutcome, session: sessionId, model: modelRef, verbatimChars: verbatim.length });
 			return;
 		}
 		spec.userObjective = clipObjective(digest, DISTILL_MAX_CHARS);
@@ -1733,9 +1737,11 @@ async function distillSeedObjective(): Promise<void> {
 		specDirty = true;
 		distillOutcome = "ok";
 		distillModelUsed = modelRef;
+		logShadowLine({ kind: "distill", outcome: "ok", session: sessionId, model: modelRef, verbatimChars: verbatim.length, digestChars: digest.length });
 	} catch {
 		// network/provider failure: verbatim objective stays (fail-open)
 		distillOutcome = "failed";
+		logShadowLine({ kind: "distill", outcome: "failed", session: sessionId, model: modelRef, verbatimChars: verbatim.length });
 	}
 }
 
@@ -2330,7 +2336,7 @@ ${goalspecSummary()}` }],
 				// the seed flushes as v1; every later flush is an amendment bump
 				if (!specSeedPending) spec.version++;
 				specSeedPending = false;
-				void distillSeedObjective();
+				void distillSeedObjective(ctx.sessionManager.getSessionId());
 				drafts.push({ type: "custom", customType: GOALSPEC_TYPE, data: { ...spec } });
 				specDirty = false;
 			}

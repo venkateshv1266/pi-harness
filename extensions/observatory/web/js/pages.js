@@ -1842,6 +1842,7 @@ function goalspecChangeText(entry) {
 	const d = entry.delta;
 	if (!d) return entry.version === 1 ? "seeded from first prompt" : "initial snapshot";
 	const parts = [];
+	if (entry.distilled) parts.push("objective distilled from the verbatim seed");
 	if (d.refinements.length) parts.push(`+${d.refinements.length} refinement${d.refinements.length === 1 ? "" : "s"}`);
 	if (d.criteria.length) parts.push(`+${d.criteria.length} criteri${d.criteria.length === 1 ? "on" : "a"}`);
 	if (d.constraints.length) parts.push(`+${d.constraints.length} constraint${d.constraints.length === 1 ? "" : "s"}`);
@@ -1857,6 +1858,12 @@ function goalspecChangeText(entry) {
 function goalspecDetailText(entry) {
 	if (entry.kind === "pin") return entry.goal ? `“${entry.goal}”` : "";
 	if (entry.reconstructed) return "the curator judged against this seed, but it was never persisted — rebuilt from the session's first prompt";
+	if (entry.distilled) {
+		const src = entry.objectiveSource;
+		const lines = [entry.goal ? `objective: "${entry.goal}"` : ""];
+		if (src) lines.push(`distilled from the verbatim seed (${src.length} chars) — the full text stays in the spec's objectiveSource and the raw entry`);
+		return lines.filter(Boolean).join("\n");
+	}
 	if (!entry.delta) {
 		const counts = entry.counts ?? {};
 		const labels = { refinements: "refinements", criteria: "success criteria", constraints: "constraints", plan: "plan steps", facts: "known facts", questions: "open questions" };
@@ -1896,6 +1903,31 @@ function goalspecFeedItems(timeline) {
 			title: entry.kind === "pin" ? "objective pinned" : `v${entry.version}${change ? ` · ${change}` : ""}`,
 			sub: goalspecDetailText(entry),
 			right: h("span", { class: "small faint" }, `${entry.turn != null ? `turn ${entry.turn}` : ""}${gap != null ? `${entry.turn != null ? " · " : ""}+${goalspecGap(gap)}` : ""}`),
+		};
+	});
+}
+
+function courseFeedItems(events) {
+	return (events ?? []).map((e) => {
+		if (e.kind === "course.outcome") {
+			const tone = e.outcome === "recovered" ? "ok" : e.outcome === "still_off_track" ? "bad" : "warn";
+			return {
+				key: `co:${e.ts_ms}`,
+				ts: e.ts,
+				tone,
+				title: `outcome: ${e.outcome ?? "?"}`,
+				sub: [e.verdict ? `verdict ${e.verdict}` : null, e.userSteered ? "user steered in between" : null].filter(Boolean).join(" · ") || "resolved at the next supervision check",
+				right: e.turn != null ? `turn ${e.turn}` : "",
+			};
+		}
+		const tone = e.verdict === "goal_moved" ? "warn" : "bad";
+		return {
+			key: `cd:${e.ts_ms}`,
+			ts: e.ts,
+			tone,
+			title: `${e.verdict ?? "?"} · p ${e.p ?? "?"}`,
+			sub: [e.why && e.why !== "none" ? `mode: ${e.why}` : null, e.consecutive > 1 ? `${e.consecutive} consecutive` : null].filter(Boolean).join(" · ") || "nudge injected at the turn boundary",
+			right: e.turn != null ? `turn ${e.turn}` : "",
 		};
 	});
 }
@@ -2000,6 +2032,16 @@ async function sessionPage(view, ctx) {
 			card({ title: "Evolution", sub: "each snapshot after an amendment, with the time and turn it landed", flush: true, body: goalspecFeed }),
 		),
 	});
+	const courseBadge = h("span", { class: "pill" }, "…");
+	const courseFeed = feed([], { clock: fmtClock });
+	const courseSection = collapsible({
+		id: "session-course",
+		title: "Course check",
+		sub: "Jev supervision of the trajectory against the session goal",
+		badge: courseBadge,
+		open: true,
+		body: courseFeed,
+	});
 
 	// Session impact: benefit, quality and improvement hints for one session.
 	const impactBadge = h("span", { class: "pill accent" }, "…");
@@ -2081,6 +2123,16 @@ async function sessionPage(view, ctx) {
 		goalspecBadge.textContent = reconstructed ? "v1 · reconstructed" : current ? `v${current.version} · ${seeded ? "seeded" : "no seed"} · ${updates} update${updates === 1 ? "" : "s"}` : `${timeline.length} pins`;
 	}
 
+	function renderCourse(d) {
+		const events = d.course ?? [];
+		courseSection.hidden = events.length === 0;
+		const nudges = events.filter((e) => e.kind === "course.decision").length;
+		const warns = events.some((e) => e.kind === "course.decision" && e.verdict !== "goal_met");
+		courseBadge.className = `pill ${warns ? "warn" : "neutral"}`;
+		courseBadge.textContent = nudges ? `${nudges} nudge${nudges === 1 ? "" : "s"}` : "no nudges";
+		courseFeed.patch(courseFeedItems(events));
+	}
+
 	// --- compare with another session (same numbers, side by side)
 	const compareOptions = (await api("/api/sessions?limit=30")).sessions.filter((session) => session.sessionId !== state.sessionId);
 	const compareState = { thisImpact: null, otherImpact: null };
@@ -2137,7 +2189,7 @@ async function sessionPage(view, ctx) {
 	const eventsCard = card({ title: "Harness events", sub: "curator, model switches, custom entries", flush: true, body: eventsFeed });
 	const messagesCard = card({ title: "Messages", flush: true, body: messagesFeed });
 	const lanesCard = card({ title: "Timeline", body: lanesRegion.node });
-	view.append(kpis.node, goalspecSection, impactSection, lanesCard, h("div", { class: "split" }, callsCard, modelsCard), h("div", { class: "split" }, eventsCard, messagesCard), compareCard);
+	view.append(kpis.node, goalspecSection, courseSection, impactSection, lanesCard, h("div", { class: "split" }, callsCard, modelsCard), h("div", { class: "split" }, eventsCard, messagesCard), compareCard);
 
 	async function refresh() {
 		const [d, si] = await Promise.all([api("/api/session", { id: state.sessionId }), api("/api/session/impact", { id: state.sessionId })]);
@@ -2148,6 +2200,7 @@ async function sessionPage(view, ctx) {
 		}
 		kpis.render(d);
 		renderGoalspec(d);
+		renderCourse(d);
 		renderSessionImpact(si);
 		compareState.thisImpact = si;
 		compareTable.render();

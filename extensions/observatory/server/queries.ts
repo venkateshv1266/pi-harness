@@ -2323,6 +2323,7 @@ interface GoalspecSnapshot {
 	turn: number | null;
 	version: number;
 	objective: string;
+	objectiveSource: string | null;
 	refinements: string[];
 	criteria: string[];
 	constraints: string[];
@@ -2358,6 +2359,8 @@ interface GoalspecEntry {
 	version: number;
 	kind: "pin" | "spec";
 	goal: string | null;
+	distilled: boolean;
+	objectiveSource: string | null;
 	counts: GoalspecCounts;
 	delta: GoalspecDelta | null;
 	/** True when the entry was rebuilt from the first prompt: no snapshot was ever recorded. */
@@ -2424,7 +2427,7 @@ function goalspecOfRows(rows: GoalspecRow[]): { current: GoalspecSnapshot | null
 		const payload = (entry.data ?? {}) as Record<string, unknown>;
 		if (row.kind.endsWith("-goal")) {
 			const goal = typeof payload.goal === "string" ? payload.goal : null;
-			if (goal) timeline.push({ ts: row.ts, ts_ms: row.ts_ms, turn: row.turn, version: current?.version ?? 0, kind: "pin", goal, counts: countsOf(current), delta: null });
+			if (goal) timeline.push({ ts: row.ts, ts_ms: row.ts_ms, turn: row.turn, version: current?.version ?? 0, kind: "pin", goal, distilled: false, objectiveSource: null, counts: countsOf(current), delta: null });
 			continue;
 		}
 		const next: GoalspecSnapshot = {
@@ -2434,6 +2437,7 @@ function goalspecOfRows(rows: GoalspecRow[]): { current: GoalspecSnapshot | null
 			// `version` is authoritative when present; older entries may predate it.
 			version: typeof payload.version === "number" ? payload.version : (current?.version ?? 0) + 1,
 			objective: typeof payload.userObjective === "string" ? payload.userObjective : (current?.objective ?? ""),
+			objectiveSource: typeof payload.objectiveSource === "string" && payload.objectiveSource.trim() ? payload.objectiveSource : null,
 			refinements: textList(payload.objectiveRefinements, 20),
 			criteria: textList(payload.successCriteria, 30),
 			constraints: textList(payload.constraints, 30),
@@ -2441,7 +2445,8 @@ function goalspecOfRows(rows: GoalspecRow[]): { current: GoalspecSnapshot | null
 			facts: factList(payload.knownFacts, 50),
 			questions: textList(payload.openQuestions, 25),
 		};
-		timeline.push({ ts: next.ts, ts_ms: next.ts_ms, turn: next.turn, version: next.version, kind: "spec", goal: null, counts: countsOf(next), delta: current ? diffGoalspec(current, next) : null });
+		const distilled = Boolean(next.objectiveSource) && next.objectiveSource !== next.objective;
+		timeline.push({ ts: next.ts, ts_ms: next.ts_ms, turn: next.turn, version: next.version, kind: "spec", goal: distilled ? next.objective : null, distilled, objectiveSource: distilled ? next.objectiveSource : null, counts: countsOf(next), delta: current ? diffGoalspec(current, next) : null });
 		current = next;
 	}
 	return { current, timeline };
@@ -2471,6 +2476,7 @@ function reconstructedGoalspec(db: Database, sessionId: string): { current: Goal
 		turn: 1,
 		version: 1,
 		objective: first.preview,
+		objectiveSource: null,
 		refinements: [],
 		criteria: [],
 		constraints: [],
@@ -2480,7 +2486,7 @@ function reconstructedGoalspec(db: Database, sessionId: string): { current: Goal
 	};
 	return {
 		current: snapshot,
-		timeline: [{ ts: snapshot.ts, ts_ms: snapshot.ts_ms, turn: 1, version: 1, kind: "spec", goal: null, counts: countsOf(snapshot), delta: null, reconstructed: true }],
+		timeline: [{ ts: snapshot.ts, ts_ms: snapshot.ts_ms, turn: 1, version: 1, kind: "spec", goal: null, distilled: false, objectiveSource: null, counts: countsOf(snapshot), delta: null, reconstructed: true }],
 	};
 }
 
@@ -2557,6 +2563,27 @@ export function sessionDetail(db: Database, sessionId: string) {
 		.all(sessionId);
 	const recorded = goalspecOfRows(goalspecRows);
 	const goalspec = recorded.timeline.length ? recorded : reconstructedGoalspec(db, sessionId);
+	const courseRows = db
+		.query<GoalspecRow, [string]>(
+			"SELECT ts, ts_ms, turn, kind, data FROM events WHERE session_id = ? AND kind IN ('course.decision','course.outcome') ORDER BY ts_ms LIMIT 200",
+		)
+		.all(sessionId);
+	const course = courseRows.map((row) => {
+		const d = parseData(row);
+		const detail = (d.detail ?? {}) as Record<string, unknown>;
+		return {
+			ts: row.ts,
+			ts_ms: row.ts_ms,
+			turn: row.turn,
+			kind: row.kind,
+			verdict: typeof d.verdict === "string" ? d.verdict : null,
+			p: typeof d.p === "number" ? d.p : null,
+			why: typeof d.why === "string" ? d.why : null,
+			consecutive: typeof d.consecutive === "number" ? d.consecutive : null,
+			outcome: typeof d.outcome === "string" ? d.outcome : null,
+			userSteered: detail.userSteered === true,
+		};
+	});
 
 	const models = db
 		.query<{ model: string; calls: number; cost: number; tokens: number }, [string]>(
@@ -2574,6 +2601,7 @@ export function sessionDetail(db: Database, sessionId: string) {
 		events,
 		models,
 		goalspec,
+		course,
 	};
 }
 

@@ -53,7 +53,7 @@ function draft(base: Base, kind: string, severity: Severity, data: RawRecord, ti
 // ---------------------------------------------------------------- curator
 
 const curatorMap = (o: RawRecord): EventDraft => {
-	const b = o as Base & { decision?: string; tool?: string; sourceType?: string; role?: string; verifierVerdict?: string; verifierReason?: string; chars?: number; turn?: number; entryId?: string; contextPct?: number; goalspecVersion?: number };
+	const b = o as Base & { decision?: string; tool?: string; sourceType?: string; role?: string; verifierVerdict?: string; verifierReason?: string; chars?: number; turn?: number; entryId?: string; contextPct?: number; goalspecVersion?: number; outcome?: string; model?: string };
 	const decision = b.decision ?? b.kind ?? "event";
 	const verdict = info(b.verifierVerdict);
 	const severity: Severity = verdict === "retainFull" ? "info" : verdict ? "ok" : "info";
@@ -62,7 +62,9 @@ const curatorMap = (o: RawRecord): EventDraft => {
 			? `${b.tool ?? "?"} · ${b.sourceType ?? "?"} → ${b.role ?? "?"}`
 			: decision === "verifier-batch"
 				? `verifier batch ×${num((o as RawRecord).count) ?? "?"}`
-				: decision;
+				: decision === "distill"
+					? `seed distill · ${b.outcome ?? "?"}${b.model ? ` · ${b.model}` : ""}`
+					: decision;
 	const summaryParts = [
 		verdict ? `verdict ${verdict}` : null,
 		num(b.chars) !== undefined ? `${b.chars} chars` : null,
