@@ -113,7 +113,7 @@ export const CURATOR_SETTING_SPECS: CuratorSettingSpec[] = [
 		kind: "model",
 		label: "Distill model",
 		detail:
-			"Writes the recited objective: the verbatim first prompt is rewritten once into a self-contained objective (<=320 chars) that recite shows unclipped. Empty = the @smol role model; unset role disables distillation. Accepts provider/model:thinking or @role.",
+			"Writes the recited objective: the verbatim first prompt is rewritten once into a self-contained objective (<=320 chars) that recite shows unclipped. Empty = the @slow role model; unset role disables distillation. Accepts provider/model:thinking or @role.",
 		defaultValue: "",
 	},
 ];

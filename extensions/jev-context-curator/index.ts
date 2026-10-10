@@ -1669,7 +1669,7 @@ const ROLE_KEYS: Record<string, string> = {
 
 function distillModelRef(): string | undefined {
 	const explicit = resolveCuratorConfig().distillModel.trim();
-	const ref = explicit || readTopLevelSetting("smolModel") || "";
+	const ref = explicit || readTopLevelSetting("slowModel") || "";
 	if (!ref) return undefined;
 	const roleKey = ROLE_KEYS[ref.toLowerCase()];
 	if (!roleKey) return ref;
@@ -1707,15 +1707,13 @@ async function distillSeedObjective(): Promise<void> {
 			headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
 			body: JSON.stringify({
 				model: openRouterModelId(modelRef),
-				max_tokens: 1500,
-				// smolModel roles can be hybrid-reasoning; left on, the burn eats max_tokens and content returns null
-				reasoning: { enabled: false },
+				// no max_tokens, reasoning left on: a one-per-session write must never truncate mid-reasoning
 				messages: [
 					{ role: "system", content: "You rewrite a user's opening message as a session objective." },
 					{
 						role: "user",
 						content:
-							`Rewrite the following as the session objective: self-contained, no pronouns, states what the agent must do, at most ${DISTILL_MAX_CHARS} characters. Output only the objective.\n\n${verbatim.slice(0, 4000)}`,
+							`Rewrite the following as the session objective: self-contained, no pronouns, states what the agent must do, at most ${DISTILL_MAX_CHARS} characters. Output only the objective.\n\n${verbatim}`,
 					},
 				],
 			}),

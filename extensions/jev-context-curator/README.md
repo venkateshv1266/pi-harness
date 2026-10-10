@@ -62,7 +62,7 @@ Kill switch: `JEVCURATOR=0` makes the curator fully inert; `/curator off` disabl
 | `JEVCURATOR_SCORE_JEV_TIMEOUT_MS` | `25000` | V3 line-scoring timeout. |
 | `JEVCURATOR_SHADOW_MAX_PER_TURN` | `10` | Max V3 candidates classified per turn boundary. |
 | `JEVCURATOR_VERIFIER_MODEL` | session model | Frontier verifier/compaction model as `provider/model[:thinking]` (e.g. `openrouter/z-ai/glm-5.3:max`); the thinking level is mapped through the model's supported levels; defaults to the session's current model. |
-| `JEVCURATOR_DISTILL_MODEL` | `@smol` role | Small model that rewrites the verbatim first prompt into the recited objective (≤320 chars, self-contained) at the first GoalSpec flush; the full text is kept verbatim in `objectiveSource`. Fire-and-forget, fail-open. Accepts `provider/model:thinking` or `@role`; unset role disables distillation. |
+| `JEVCURATOR_DISTILL_MODEL` | `@slow` role | Model that rewrites the verbatim first prompt into the recited objective (≤320 chars, self-contained) at the first GoalSpec flush; the full text is kept verbatim in `objectiveSource`. Fire-and-forget, fail-open. Accepts `provider/model:thinking` or `@role`; unset role disables distillation. |
 | `JEVCURATOR_VERIFIER` | `hybrid` | Verifier protocol: `hybrid` = Jev fact-decomposed verification (per-line coverage, repair-first) with frontier escalation on uncertainty; `jev` = Jev-only (uncertain → retainFull, no frontier calls); `frontier` = the holistic frontier gate only (pre-V4 behavior). `/setup`-persisted. |
 | `JEVCURATOR_COV_MIN` | `0.5` | Coverage score below which a dropped goal-relevant line counts as lost (repair or escalate). |
 | `JEVCURATOR_CARD_BG_PROB` | `0.8` | Role-probability gate for Jev-approving background source cards. |
