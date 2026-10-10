@@ -34,7 +34,7 @@ Kill switch: `JEVCURATOR=0` makes the curator fully inert; `/curator off` disabl
 
 ## Configuration
 
-`/setup` → **Jev curator** exposes four knobs — `JEVCURATOR`, `JEVCURATOR_MODE`, `JEVCURATOR_VERIFIER`, and `JEVCURATOR_VERIFIER_MODEL` — persisted to `settings.json` under `jevCurator`; every other knob below is set through the environment, then code defaults. `JEVCURATOR=0` in the environment still forces the curator off regardless. Settings are read when the extension loads (`/reload` or a new session) except the verifier model, which is re-resolved on every verifier call so `/setup` edits to it apply immediately.
+`/setup` → **Jev curator** exposes five knobs — `JEVCURATOR`, `JEVCURATOR_MODE`, `JEVCURATOR_VERIFIER`, `JEVCURATOR_VERIFIER_MODEL`, and `JEVCURATOR_DISTILL_MODEL` — persisted to `settings.json` under `jevCurator`; every other knob below is set through the environment, then code defaults. `JEVCURATOR=0` in the environment still forces the curator off regardless. Settings are read when the extension loads (`/reload` or a new session) except the verifier and distill models, which are re-resolved on every call so `/setup` edits to them apply immediately.
 
 | Env var | Default | Effect |
 |---|---|---|
@@ -62,6 +62,7 @@ Kill switch: `JEVCURATOR=0` makes the curator fully inert; `/curator off` disabl
 | `JEVCURATOR_SCORE_JEV_TIMEOUT_MS` | `25000` | V3 line-scoring timeout. |
 | `JEVCURATOR_SHADOW_MAX_PER_TURN` | `10` | Max V3 candidates classified per turn boundary. |
 | `JEVCURATOR_VERIFIER_MODEL` | session model | Frontier verifier/compaction model as `provider/model[:thinking]` (e.g. `openrouter/z-ai/glm-5.3:max`); the thinking level is mapped through the model's supported levels; defaults to the session's current model. |
+| `JEVCURATOR_DISTILL_MODEL` | `@smol` role | Small model that rewrites the verbatim first prompt into the recited objective (≤320 chars, self-contained) at the first GoalSpec flush; the full text is kept verbatim in `objectiveSource`. Fire-and-forget, fail-open. Accepts `provider/model:thinking` or `@role`; unset role disables distillation. |
 | `JEVCURATOR_VERIFIER` | `hybrid` | Verifier protocol: `hybrid` = Jev fact-decomposed verification (per-line coverage, repair-first) with frontier escalation on uncertainty; `jev` = Jev-only (uncertain → retainFull, no frontier calls); `frontier` = the holistic frontier gate only (pre-V4 behavior). `/setup`-persisted. |
 | `JEVCURATOR_COV_MIN` | `0.5` | Coverage score below which a dropped goal-relevant line counts as lost (repair or escalate). |
 | `JEVCURATOR_CARD_BG_PROB` | `0.8` | Role-probability gate for Jev-approving background source cards. |
@@ -97,7 +98,7 @@ Audit logs in `~/.pi/agent/jev-decisions/`: `jev-curator-v2.jsonl` (V2 verdicts,
 
 **Auto-trigger:** at ≥ `AUTO_COMPACT_PCT` usage, or when usage keeps climbing while in the critical tier (the ladder in `tiering.ts`: soft ≥50% prunes early, floor ≥70% lowers the truncate gate, critical ≥85% zeroes the batch floor), the extension triggers compaction itself at the turn boundary. An in-flight flag blocks stacked triggers, failures start a cooldown, and success resets the usage history the slope detector reads.
 
-**GoalSpec lifecycle:** seeded from the user's first prompt verbatim (that prompt is the immutable `userObjective`); the seed is persisted as the session's first `jev-curator-goalspec` entry (v1) at the first turn boundary, so every session carries a goal record from turn 1 even if nothing is ever amended; `pin_goal` adds refinements, `amend_goalspec` adds criteria/constraints/plan/facts/questions, and only `/goal` with args replaces the objective. The curator is inert until a goal exists.
+**GoalSpec lifecycle:** seeded from the user's first prompt verbatim; the seed is persisted as the session's first `jev-curator-goalspec` entry (v1) at the first turn boundary, so every session carries a goal record from turn 1 even if nothing is ever amended. At the first flush the seed is distilled fire-and-forget by a small model (`JEVCURATOR_DISTILL_MODEL`, default the `@smol` role): `userObjective` is rewritten into a self-contained objective ≤320 chars (recite's OBJECTIVE cap — a long verbatim prompt loses its operative tail to the clip) and the full text is kept verbatim in `objectiveSource`; the digest flushes as the next version bump, and any failure leaves the verbatim in place. `pin_goal` adds refinements, `amend_goalspec` adds criteria/constraints/plan/facts/questions, and only `/goal` with args replaces the objective (user-authored objectives are never re-distilled). The curator is inert until a goal exists.
 
 **Session isolation:** pi caches an extension module per cwd, so the module outlives a session; a `session_start` handler resets every session-scoped store (goal, GoalSpec, ledger, registry, batches, counters, auto-compact history), so each session seeds and judges against its own goal instead of inheriting the previous session's.
 

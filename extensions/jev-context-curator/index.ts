@@ -95,7 +95,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { logDecision as logTelemetryDecision, logEvent, logOutcome } from "../../utils/jev-outcomes.ts";
-import { curatorEnabled, resolveCuratorConfig } from "./settings.ts";
+import { curatorEnabled, readTopLevelSetting, resolveCuratorConfig } from "./settings.ts";
 import { autoCompactDecision, pushPctSample, resolveGates, type Gates } from "./tiering.ts";
 
 const GOAL_TYPE = "jev-curator-goal";
@@ -244,7 +244,8 @@ interface GoalSpecFact {
 }
 
 interface GoalSpec {
-	userObjective: string; // immutable unless the user changes it via /goal
+	userObjective: string; // immutable unless the user changes it via /goal; distilled from the seed when objectiveSource is set
+	objectiveSource?: string; // verbatim first prompt, persisted when userObjective is distilled
 	objectiveRefinements: string[]; // pin_goal proposals; never replace the objective
 	successCriteria: string[];
 	constraints: string[];
@@ -358,6 +359,7 @@ function goalspecSummary(): string {
 	if (!spec) return "(no goalspec yet)";
 	const s = spec;
 	const out = [`USER OBJECTIVE: ${s.userObjective}`];
+	if (s.objectiveSource && s.objectiveSource !== s.userObjective) out.push(`Verbatim seed: ${clipObjective(s.objectiveSource, 600)}`);
 	if (s.objectiveRefinements.length) out.push(`Refinements: ${s.objectiveRefinements.join(" | ")}`);
 	if (s.successCriteria.length) out.push(`Success criteria:\n${s.successCriteria.map((c, i) => `  c${i + 1}. ${c}`).join("\n")}`);
 	if (s.constraints.length) out.push(`Constraints:\n${s.constraints.map((c, i) => `  k${i + 1}. ${c}`).join("\n")}`);
@@ -1645,6 +1647,83 @@ function registerResults(results: ShadowResult[], v2Outcome: Map<string, string>
 
 // ─── Jev client (same shape as ttsr / jev-mcp) ──────────────────────
 
+// Seed-objective distillation: recite composes OBJECTIVE from GoalSpec.userObjective
+// and clips at 320 chars, so a long verbatim first prompt loses its operative tail.
+// The seed is rewritten once by a small model, fire-and-forget; the digest flushes as
+// the next version bump. Any failure leaves the verbatim in place (fail-open).
+
+const DISTILL_MAX_CHARS = 320; // recite's OBJECTIVE per-item cap
+
+let distillAttempted = false;
+
+const ROLE_KEYS: Record<string, string> = {
+	"@smol": "smolModel",
+	"@fast": "smolModel",
+	"@slow": "slowModel",
+	"@plan": "planModel",
+	"@task": "taskModel",
+	"@designer": "designerModel",
+};
+
+function distillModelRef(): string | undefined {
+	const explicit = resolveCuratorConfig().distillModel.trim();
+	const ref = explicit || readTopLevelSetting("smolModel") || "";
+	if (!ref) return undefined;
+	const roleKey = ROLE_KEYS[ref.toLowerCase()];
+	if (!roleKey) return ref;
+	return readTopLevelSetting(roleKey) || undefined;
+}
+
+function clipObjective(text: string, max: number): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	if (flat.length <= max) return flat;
+	return `${flat.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
+}
+
+function openRouterModelId(ref: string): string {
+	const bare = ref.split(":")[0];
+	return bare.startsWith("openrouter/") ? bare.slice("openrouter/".length) : bare;
+}
+
+async function distillSeedObjective(): Promise<void> {
+	if (distillAttempted || !spec || spec.objectiveSource) return;
+	distillAttempted = true;
+	const verbatim = spec.userObjective;
+	if (verbatim.length <= DISTILL_MAX_CHARS) return;
+	const modelRef = distillModelRef();
+	const key = jevKey();
+	if (!modelRef || !key) return;
+	try {
+		const res = await fetch(`${JEV_BASE_URL}/v1/chat/completions`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+			body: JSON.stringify({
+				model: openRouterModelId(modelRef),
+				max_tokens: 1500,
+				// smolModel roles can be hybrid-reasoning; left on, the burn eats max_tokens and content returns null
+				reasoning: { enabled: false },
+				messages: [
+					{ role: "system", content: "You rewrite a user's opening message as a session objective." },
+					{
+						role: "user",
+						content:
+							`Rewrite the following as the session objective: self-contained, no pronouns, states what the agent must do, at most ${DISTILL_MAX_CHARS} characters. Output only the objective.\n\n${verbatim.slice(0, 4000)}`,
+					},
+				],
+			}),
+		});
+		if (!res.ok) return;
+		const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+		const digest = json.choices?.[0]?.message?.content?.trim();
+		if (!digest || !spec || spec.objectiveSource) return;
+		spec.userObjective = clipObjective(digest, DISTILL_MAX_CHARS);
+		spec.objectiveSource = verbatim;
+		specDirty = true;
+	} catch {
+		// network/provider failure: verbatim objective stays (fail-open)
+	}
+}
+
 let jevKeyCache: string | null | undefined;
 
 function jevKey(): string | null {
@@ -2236,6 +2315,7 @@ ${goalspecSummary()}` }],
 				// the seed flushes as v1; every later flush is an amendment bump
 				if (!specSeedPending) spec.version++;
 				specSeedPending = false;
+				void distillSeedObjective();
 				drafts.push({ type: "custom", customType: GOALSPEC_TYPE, data: { ...spec } });
 				specDirty = false;
 			}
@@ -2696,6 +2776,8 @@ ${goalspecSummary()}` }],
 				ensureGoalSpec(ctx);
 				if (spec) {
 					spec.userObjective = text;
+					// user-authored objective: shielded from an in-flight seed distill, never re-distilled
+					spec.objectiveSource = text;
 					// the user's objective replaces a pending seed: still v1
 					if (specSeedPending) specSeedPending = false;
 					else spec.version++;
