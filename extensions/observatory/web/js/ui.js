@@ -368,7 +368,7 @@ export function table({ columns, rows = [], onRowClick = null, empty = "No rows"
 	const tableEl = h(
 		"table",
 		{ class: "tbl" },
-		h("thead", {}, h("tr", {}, ...columns.map((c) => h("th", { class: c.right ? "right" : null, style: c.width ? { width: c.width } : null }, c.label)))),
+		h("thead", {}, h("tr", {}, ...columns.map((c) => h("th", { class: c.right ? "right" : null, style: c.width ? { width: c.width } : null, ...(c.tip ? { "data-tip": c.tip } : null) }, c.label)))),
 		tbody,
 	);
 	const wrap = h("div", { class: "tablewrap", style: maxHeight ? { maxHeight } : null }, tableEl);
