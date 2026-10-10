@@ -19,7 +19,6 @@ const NAV = [
 	{ id: "sessions", label: "Sessions", icon: "chat" },
 	{ id: "extensions", label: "Extensions", icon: "puzzle" },
 	{ id: "health", label: "Health", icon: "pulse" },
-	{ id: "live", label: "Live", icon: "radio" },
 ];
 
 const ICONS = {
@@ -34,7 +33,6 @@ const ICONS = {
 	pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>',
 	wand: '<path d="M4 20 14 10"/><path d="M15 4l1 2.2 2.2 1-2.2 1L15 10.4l-1-2.2-2.2-1 2.2-1zM19 12l.7 1.5 1.5.7-1.5.7-.7 1.5-.7-1.5-1.5-.7 1.5-.7zM7 4l.8 1.7L9.5 6.5 7.8 7.3 7 9 6.2 7.3 4.5 6.5l1.7-.8z"/>',
 	sliders: '<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/>',
-	radio: '<circle cx="12" cy="12" r="2.4"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
 };
 
 function iconHTML(name) {

@@ -2792,7 +2792,7 @@ export function health(db: Database, range: Range) {
 	};
 }
 
-// ------------------------------------------------------------------ live
+// ------------------------------------------------------------------ events
 
 export function eventDetail(db: Database, id: number) {
 	const row = db.query<EventRow, [number]>("SELECT * FROM events WHERE id = ?").get(id);
@@ -2814,29 +2814,6 @@ export function eventDetail(db: Database, id: number) {
 			summary: row.summary,
 			data: parseData(row),
 		},
-	};
-}
-
-export function live(db: Database, limit = 80) {	const rows = db.query<EventRow, [number]>("SELECT * FROM events ORDER BY ts_ms DESC LIMIT ?").all(limit);
-	return {
-		rows: rows.map((row) => {
-			const data = parseData(row);
-			return {
-				id: row.id,
-				ts: row.ts,
-				system: row.system,
-				kind: row.kind,
-				severity: row.severity,
-				sessionId: row.session_id,
-				turn: row.turn,
-				costUsd: row.cost_usd,
-				latencyMs: row.latency_ms,
-				title: row.title,
-				summary: row.summary,
-				ref: row.ref,
-				verdict: typeof data.verifierVerdict === "string" ? data.verifierVerdict : typeof data.verdict === "string" ? data.verdict : null,
-			};
-		}),
 	};
 }
 
