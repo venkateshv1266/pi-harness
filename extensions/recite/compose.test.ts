@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { clip, composeRecitation, DEFAULT_BUDGET_CHARS, RECITE_HEADER, type ReciteSpec } from "./compose.ts";
-import { buildRecitationDrafts, lastRecitation, lastUserText, readGoalSpec, readTodos } from "./state.ts";
+import { buildRecitationDrafts, firstUserText, lastRecitation, readGoalSpec, readTodos } from "./state.ts";
 
 const HEADER_COST = RECITE_HEADER.length + 1;
 
@@ -166,9 +166,9 @@ test("readTodos keeps the latest todo tool result", () => {
 	]);
 });
 
-test("lastUserText keeps the latest non-empty user message", () => {
+test("firstUserText anchors on the first non-empty user message", () => {
 	const entries = [userEntry("u1", "first ask"), userEntry("u2", "second ask"), userEntry("u3", "  ")];
-	assert.equal(lastUserText(entries), "second ask");
+	assert.equal(firstUserText(entries), "first ask");
 });
 
 test("buildRecitationDrafts appends a hidden custom message on first emission", () => {
