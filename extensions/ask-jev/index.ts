@@ -74,7 +74,8 @@ const NUDGE =
 	"You have triage_log (top-k relevant lines from a large log), triage_test_output (failure sites + root-cause/cascade/flaky classification " +
 	"from a failing test run), review_diff (typed pre-commit review of the staged diff: scope, secrets, debug leftovers, missing tests), " +
 	"ask_jev_files + pick_first_file (where to start in an unfamiliar tree), ask_jev (one typed call over state you assemble plus one " +
-	"read-only command), and the one-file ask_jev_file_bool/choice/score. Reach for these when the input is large or fan-out shaped — " +
+	"read-only command), ask_jev_extract (relevance map of a file too big to read whole), and the one-file ask_jev_file_bool/choice/score. " +
+	"Reach for these when the input is large or fan-out shaped — " +
 	"logs, test dumps, diffs, whole trees — and give paths, not pasted content. Don't route small files you are about to edit or quote " +
 	"through them; read is the right tool there. Before committing, call review_diff once and fix blockers.";
 
@@ -875,7 +876,7 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 
-				const blocks = buildFailureBlocks(kept, allLines, topK, 12_000);
+				const blocks = buildContextBlocks(kept, allLines, topK, 12_000);
 				const failures: { lines: string; class: string; confidence: number; primary_noul: number | null; evidence: string }[] = [];
 				let overall: { choice: string; confidence: number } | null = null;
 				if (blocks.length > 0) {
@@ -898,7 +899,7 @@ export default function (pi: ExtensionAPI) {
 							instructions: `Classify failure site ${i + 1} (lines ${blocks[i].lines}).`,
 							criteria: {
 								root_cause: "the primary defect — its failure is not explained by any other failure in this run",
-								cascade: "fails because of another failure (shared fixture, setup, dependent test); fix the root cause and this passes",
+								cascade: "fails because of the same underlying defect as another failure (shared fixture, setup, dependent test, broken helper); fixing that one failure makes this pass",
 								flaky: "timing, ordering, or network dependent; likely passes on retry",
 								env_infra: "environment or infrastructure problem — service down, resource missing, port conflict, dependency fetch failure",
 								other: "none of the above",
@@ -1020,7 +1021,7 @@ export default function (pi: ExtensionAPI) {
 						missing_tests: {
 							type: "noul",
 							instructions:
-								"Does the diff change runtime logic without adding or updating any test? (Docs-only, config-only, or test-only diffs count as no.)",
+								"Does the diff change runtime logic without adding or updating any test? (Docs-only, config-only, or test-only diffs count as no. If the repo has no test suite convention for this path, count as no.)",
 							criteria: { true: "runtime logic changed with no test changes", false: "tests updated, or no runtime logic changed" },
 						},
 						overall: {
@@ -1085,14 +1086,117 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	pi.registerTool({
+		name: "ask_jev_extract",
+		label: "Extract goal-relevant sections of a big file with Jev",
+		description:
+			"Judgment-through-read for files too big to read whole: scores every line for relevance to your question and returns the top-k " +
+			"line ranges with context, so a follow-up read can target exact offset/limit instead of guessing. " +
+			"Use when a file is over the read budget or you only need the parts that answer a question. " +
+			"Jev narrows; verify with a targeted read before editing.",
+		promptSnippet: "ask_jev_extract(path, question, top_k?) — ranked relevant line ranges of a big file",
+		parameters: Type.Object({
+			path: Type.String({ description: "File path, relative to the working directory (~ works)" }),
+			question: Type.String({ description: "What you need from the file, e.g. 'where is the token refresh scheduled?'" }),
+			top_k: Type.Optional(Type.Number({ description: "Max line ranges returned (default 8, max 20)" })),
+			max_lines: Type.Optional(Type.Number({ description: "Cap on lines read (default 6000)" })),
+			chunk_lines: Type.Optional(Type.Number({ description: "Lines per internal scoring batch (default 150)" })),
+		}),
+		annotations,
+		async execute(_id, p, _signal, _onUpdate, ctx) {
+			const t0 = Date.now();
+			try {
+				if (p.question.trim() === "") throw new AskError("question is required");
+				const text = readText(resolvePath(p.path, ctx.cwd), 8_000_000);
+				const maxLines = Math.max(50, p.max_lines ?? 6000);
+				const topK = Math.min(20, Math.max(1, p.top_k ?? 8));
+				const chunkSize = Math.min(400, Math.max(10, p.chunk_lines ?? CHUNK_LINES));
+
+				const warnings: string[] = [];
+				let costUsd = 0;
+
+				const allLines = text.split(/\r?\n/).map((t, i) => ({ n: i + 1, text: t }));
+				if (allLines.length > maxLines) warnings.push(`file truncated to first ${maxLines} of ${allLines.length} lines`);
+				const lines = allLines.slice(0, maxLines);
+
+				const chunks: { n: number; text: string }[][] = [];
+				let current: { n: number; text: string }[] = [];
+				let currentChars = 0;
+				for (const l of lines) {
+					if (current.length >= chunkSize || (current.length > 0 && currentChars + l.text.length > CHUNK_CHARS)) {
+						chunks.push(current);
+						current = [];
+						currentChars = 0;
+					}
+					current.push(l);
+					currentChars += l.text.length;
+				}
+				if (current.length > 0) chunks.push(current);
+
+				const chunkResults = await mapPool(chunks, JEV_CONCURRENCY, async (chunk) => {
+					try {
+						const state =
+							`What you need from the file: ${p.question}\n\nFILE excerpt (numbers on the left are line numbers):\n` +
+							chunk.map((l) => `${l.n}| ${l.text}`).join("\n");
+						const questions: Record<string, Question> = {};
+						for (const l of chunk) {
+							if (l.text.trim()) questions[`L${l.n}`] = { type: "noul", instructions: `Is line ${l.n} relevant to what you need from the file?` };
+						}
+						const r = await jevCall(state, questions);
+						const scored: { n: number; score: number; text: string }[] = [];
+						for (const l of chunk) {
+							if (!l.text.trim()) continue;
+							const a = noulOf(r.answers, `L${l.n}`);
+							if (a) scored.push({ n: l.n, score: a.noul, text: l.text });
+						}
+						return { ok: true as const, scored, costUsd: r.costUsd };
+					} catch (err) {
+						return { ok: false as const, error: (err as Error).message };
+					}
+				});
+
+				const scored: { n: number; score: number; text: string }[] = [];
+				for (const r of chunkResults) {
+					if (r.ok) {
+						scored.push(...r.scored);
+						costUsd += r.costUsd;
+					} else {
+						warnings.push(`chunk scoring failed: ${r.error}`);
+					}
+				}
+
+				scored.sort((a, b) => b.score - a.score || a.n - b.n);
+				const kept: { n: number; score: number | null; text: string }[] = scored.filter((l) => l.score >= 0.5).slice(0, topK * 10);
+				const blocks = buildContextBlocks(kept, allLines, topK, EVIDENCE_CHAR_BUDGET);
+
+				const elapsedMs = Date.now() - t0;
+				recordCall("ask_jev_extract", costUsd, elapsedMs, { total_lines: allLines.length, ranges: blocks.length, chunks: chunks.length });
+				return ok({
+					question: p.question,
+					map: blocks.map((b) => ({ lines: b.lines, relevance: b.score })),
+					ranges: blocks,
+					suggested_reads: blocks.map((b) => ({ offset: b.lo, limit: b.hi - b.lo + 1 })),
+					total_lines: allLines.length,
+					chunks: chunks.length,
+					warnings,
+					cost_usd: round6(costUsd),
+					elapsed_ms: elapsedMs,
+				});
+			} catch (err) {
+				recordError("ask_jev_extract", (err as Error).message);
+				return fail(err instanceof AskError ? err.message : `ask_jev_extract error: ${(err as Error).message}`);
+			}
+		},
+	});
 }
 
-function buildFailureBlocks(
+function buildContextBlocks(
 	kept: { n: number; score: number | null; text: string }[],
 	allLines: { n: number; text: string }[],
 	maxBlocks: number,
 	budget = 12_000,
-): { lines: string; score: number; text: string }[] {
+): { lo: number; hi: number; lines: string; score: number; text: string }[] {
 	const byLine = [...kept].sort((a, b) => a.n - b.n);
 	const windows: { lo: number; hi: number; score: number }[] = [];
 	for (const l of byLine) {
@@ -1105,7 +1209,7 @@ function buildFailureBlocks(
 		} else windows.push({ lo, hi, score: l.score ?? 0 });
 	}
 	windows.sort((a, b) => b.score - a.score);
-	const blocks: { lines: string; score: number; text: string }[] = [];
+	const blocks: { lo: number; hi: number; lines: string; score: number; text: string }[] = [];
 	let used = 0;
 	for (const w of windows) {
 		if (blocks.length >= maxBlocks) break;
@@ -1113,7 +1217,7 @@ function buildFailureBlocks(
 		for (let n = w.lo; n <= w.hi; n++) text.push(`${n}| ${allLines[n - 1]?.text ?? ""}`);
 		const joined = text.join("\n");
 		if (used + joined.length > budget) break;
-		blocks.push({ lines: `${w.lo}-${w.hi}`, score: w.score, text: joined });
+		blocks.push({ lo: w.lo, hi: w.hi, lines: `${w.lo}-${w.hi}`, score: w.score, text: joined });
 		used += joined.length;
 	}
 	return blocks;

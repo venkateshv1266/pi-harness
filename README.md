@@ -43,7 +43,7 @@ To uninstall an extension, delete its file (or directory) from
 | `skills/` | 5 skills: add-rule, add-agent, add-mcp-server, code-review, orchestrate | [`skills/README.md`](skills/README.md) |
 | `themes/` | 3 custom pi themes | [`themes/README.md`](themes/README.md) |
 | `utils/` | Shared helpers (decision contract, role resolution, Jev client + ask CLI) + the omp-stats dashboard | [`utils/README.md`](utils/README.md) |
-| `scripts/` + `bin/` | YubiKey Git notification wrappers + installer, settings migration | [`scripts/README.md`](scripts/README.md) |
+| `scripts/` + `bin/` | YubiKey Git notification wrappers + installer, settings migration, ask-jev adoption report | [`scripts/README.md`](scripts/README.md) |
 | `docs/` | Extension README template and postmortems | [`docs/README.md`](docs/README.md) |
 
 Common entry points:
@@ -54,7 +54,7 @@ Common entry points:
   [one-shot engine](extensions/subagent/README.md) and
   [persistent engine](extensions/persistent-subagent/README.md)
 - **Judgment and guardrails** — [ask-jev](extensions/ask-jev/README.md) (Jev
-  tools: log/test-output triage, pre-commit diff review, tree fan-out, typed state decisions),
+  tools: log/test-output triage, pre-commit diff review, big-file extraction, tree fan-out, typed state decisions),
   [jev-guard](extensions/jev-guard/README.md) (bash command gate + injection screen,
   `/jev-guard on|off` toggle)
 - **Memory and context** — [jev-memory](extensions/jev-memory/README.md),

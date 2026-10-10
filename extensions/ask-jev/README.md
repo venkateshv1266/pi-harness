@@ -21,6 +21,7 @@ The agent learns when to reach for these from a system-prompt nudge injected at 
 | `triage_log(file|text, question, ...)` | Log prefilter: scores every line for relevance, returns top-k with ±2 context lines; ERROR/FATAL/traceback lines pass through deterministically. Optional failure-type classification. Port of the former MCP tool. |
 | `triage_test_output(file|text, question?, top_k?)` | Failing-test prefilter: finds failure sites and classifies each (root_cause / cascade / flaky / env_infra) with evidence blocks; FAIL/Error/traceback lines pass through deterministically. |
 | `review_diff(state?, diff_text?)` | Pre-commit review: one Jev call over the staged diff (falls back to unstaged) — typed checks (scope, secrets, debug leftovers, type escapes, missing tests), pass/fix_first/blocked verdict, per-finding file locations. |
+| `ask_jev_extract(path, question, top_k?)` | Judgment-through-read for big files: per-line relevance scoring returns top-k line ranges with context and suggested read offset/limit, so follow-up reads target exact slices instead of guessing. |
 
 ## Configuration
 
@@ -39,6 +40,8 @@ State: every call appends an event to `~/.pi/agent/jev-decisions/ask-jev.jsonl` 
 ## How it works
 
 `before_agent_start` appends the usage nudge once (marker `ask-jev-nudge-v2`; `before_agent_start` replaces the whole prompt, so the marker check keeps re-runs idempotent). File reads enforce a 150k-char budget (100k in `ask_jev_files`), sniff binaries, and `ask_jev_files` silently drops `node_modules`/`.git`/build output, lockfiles, and binary/generated extensions (`filtered` count in the result). The `command` parameter only accepts the read-only prefixes shared with `jev-guard`'s fast path (`utils/jev-client.ts` `READONLY_BASH_PREFIXES`) — deliberately excluding `find` (`find . -delete`) and anything that executes project code. Secrets are scrubbed from every state centrally in the shared client. `review_diff` runs `git diff --staged` (fallback `git diff`) itself — a fixed read-only command in extension code, not the model-supplied `command` parameter.
+
+Adoption report: run `node scripts/ask-jev-adoption.mjs` in the repo for per-tool Jev-call usage vs read-call volume measured from real session files.
 
 ## Caveats
 
