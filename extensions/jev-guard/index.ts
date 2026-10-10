@@ -169,7 +169,7 @@ function notifyApproval(command: string, why: string): void {
 				spawnDetached(notifier, [
 					"-title", title,
 					"-message", body.replace(/\r?\n/g, " · ").slice(0, 200),
-					"-sender", "com.stablyai.orca",
+					"-group", "pi-harness.yubikey-alert",
 					...(focusable ? ["-execute", `${focusHelper} ${paneRef}`] : []),
 				]);
 			} else {

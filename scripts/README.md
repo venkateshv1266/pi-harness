@@ -83,10 +83,13 @@ name, installed into `/Applications` (or `~/.pi/agent/bin` when
 reliably — allow the one-time permission prompt on first use. The banner
 shows Orca's icon and name, and a click runs `bin/orca-focus-terminal` to
 open Orca on the exact alerting terminal, which the wrapper pre-focuses
-pane-level via `ORCA_AGENT_PANE`. Without the app it falls back to
-`terminal-notifier -sender com.stablyai.orca` (click activates Orca on the
-pre-focused tab), and finally to a plain `osascript` banner when
-terminal-notifier is not installed (`brew install terminal-notifier`).
+pane-level via `ORCA_AGENT_PANE`. Without the app it falls back to plain
+`terminal-notifier`, and finally to a plain `osascript` banner when
+terminal-notifier is not installed (`brew install terminal-notifier`). Every
+banner carries the stable group `pi-harness.yubikey-alert`, so a new alert
+replaces the previous one in Notification Center instead of stacking; clear
+residue with the notifier binary and `-remove pi-harness.yubikey-alert`
+(or `-remove ALL` for everything that identity delivered).
 
 ### Configuration
 
