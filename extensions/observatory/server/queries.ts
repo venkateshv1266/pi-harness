@@ -741,13 +741,14 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	destructive.sort((a, b) => b.destructive - a.destructive);
 
 	// -------- TTSR
-	const ttsrRows = db.query<{ data: string }, [number, number]>("SELECT data FROM events WHERE system = 'ttsr' AND ts_ms BETWEEN ? AND ? LIMIT 20000").all(range.from, range.to);
+	const ttsrRows = db.query<{ data: string; kind: string }, [number, number]>("SELECT data, kind FROM events WHERE system = 'ttsr' AND ts_ms BETWEEN ? AND ? LIMIT 20000").all(range.from, range.to);
 	const ttsr = { fired: 0, suppressed: 0, delivered: 0, blocked: 0, good: 0, bad: 0, unresolved: 0 };
 	let userCorrections = 0;
 	const ttsrRules: Record<string, { good: number; bad: number; fired: number }> = {};
 	for (const row of ttsrRows) {
 		const data = parseData(row);
 		if (data.decision === "fired") ttsr.fired += 1;
+		if (row.kind === "ttsr.decision" && data.mode === "plain") ttsr.fired += 1;
 		if (data.decision === "suppressed") ttsr.suppressed += 1;
 		if (data.delivered === true) ttsr.delivered += 1;
 		if (data.blocked === true) ttsr.blocked += 1;
@@ -1909,6 +1910,7 @@ export function ledgerStats(db: Database, range: Range) {
 		const rule = typeof data.rule === "string" ? data.rule : row.title ?? "unknown";
 		const entry = (ttsrRules[rule] ??= { rule, fired: 0, suppressed: 0, good: 0, bad: 0, blocked: 0 });
 		if (data.decision === "fired") entry.fired += 1;
+		if (row.kind === "ttsr.decision" && data.mode === "plain") entry.fired += 1;
 		if (data.decision === "suppressed") entry.suppressed += 1;
 		if (data.verdict === "good") entry.good += 1;
 		if (data.verdict === "bad") entry.bad += 1;
@@ -2880,12 +2882,14 @@ export interface TrendWindow {
 	corrections: number;
 	guardBlocks: number;
 	offTrack: number;
+	courseChecks: number;
 	jevSpend: number;
 	// ratios — usage-independent, so a window can be compared to another
 	costPerCall: number | null;
 	jevSpendPerCall: number | null;
 	cacheDiscountPerCall: number | null;
 	cacheRate: number | null;
+	offTrackRate: number | null;
 	promptTokensPerCall: number | null;
 	curatorTokensPerCall: number | null;
 	rulesTokensAvoidedPerCall: number | null;
@@ -2963,10 +2967,14 @@ function summarizeWindow(db: Database, priceList: Price[], rules: Array<{ name: 
 	}
 	let guardBlocks = 0;
 	let offTrack = 0;
+	let courseChecks = 0;
 	for (const row of db.query<{ system: string; data: string }, [number, number]>("SELECT system, data FROM events WHERE system IN ('guard','course-check','router') AND ts_ms BETWEEN ? AND ? LIMIT 40000").all(from, to)) {
 		const data = parseData(row);
 		if (row.system === "guard" && data.verdict === "blocked") guardBlocks += 1;
-		if (row.system === "course-check" && data.verdict === "off_track") offTrack += 1;
+		if (row.system === "course-check") {
+			if (data.verdict === "off_track") offTrack += 1;
+			if (typeof data.verdict === "string") courseChecks += 1;
+		}
 		if (row.system === "router" && data.outcome === "user_corrected") corrections += 1;
 	}
 
@@ -2998,11 +3006,13 @@ function summarizeWindow(db: Database, priceList: Price[], rules: Array<{ name: 
 		corrections,
 		guardBlocks,
 		offTrack,
+		courseChecks,
 		jevSpend: jevRow?.cost ?? 0,
 		costPerCall: perCall(callStats?.cost ?? 0),
 		jevSpendPerCall: perCall(jevRow?.cost ?? 0),
 		cacheDiscountPerCall: perCall(cacheDiscount),
 		cacheRate: input + cacheRead > 0 ? cacheRead / (input + cacheRead) : null,
+		offTrackRate: courseChecks > 0 ? offTrack / courseChecks : null,
 		promptTokensPerCall: perCall(input + cacheRead),
 		curatorTokensPerCall: perCall(curatorTokens),
 		rulesTokensAvoidedPerCall: perCall(rulesTokensAvoided),
@@ -3150,6 +3160,7 @@ export function trends(db: Database, range: Range) {
 			jevSpendPerCall: pct(current.jevSpendPerCall, previous.jevSpendPerCall),
 			cacheDiscountPerCall: pct(current.cacheDiscountPerCall, previous.cacheDiscountPerCall),
 			cacheRate: pct(current.cacheRate, previous.cacheRate),
+			offTrackRate: pct(current.offTrackRate, previous.offTrackRate),
 			promptTokensPerCall: pct(current.promptTokensPerCall, previous.promptTokensPerCall),
 			curatorTokensPerCall: pct(current.curatorTokensPerCall, previous.curatorTokensPerCall),
 			rulesTokensAvoidedPerCall: pct(current.rulesTokensAvoidedPerCall, previous.rulesTokensAvoidedPerCall),

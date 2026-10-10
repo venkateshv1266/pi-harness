@@ -3,7 +3,7 @@
 // regions whose data changed — no page rebuilds, no scroll jumps.
 import { api, post, h, clear, fmtCompact, fmtCost, fmtInt, fmtPct, fmtMs, fmtClock, fmtDateTime, timeAgo, toneForSeverity, toneForVerdict, openDrawer, toast, seriesColor, debounce } from "./util.js";
 import { areaChart, barChart, lineChart, spark, histogram, sankey } from "./charts.js";
-import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, shareLabel, banner, emptyState, lanes, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
+import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, shareLabel, banner, emptyState, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
 
 export const state = {
 	range: localStorage.getItem("observatory-range") || "7d",
@@ -14,7 +14,6 @@ export const state = {
 	ledgerQuery: "",
 	ledgerOffset: 0,
 	ledgerEffectTab: "ttsr",
-	curatorSession: null,
 	sessionId: null,
 	sessionSort: "recent",
 	sessionQuery: "",
@@ -83,13 +82,6 @@ const HELP = {
 		source: "Curator ledger items in session logs.",
 		action: "If logs or listings dominate, cap those commands at the source (head, tail, grep) — cheaper than condensing after the fact.",
 	},
-	ruleQuality: {
-		title: "Rule quality",
-		what: "Every rule that produced a judged outcome, with how often it fired and how often it was rated good.",
-		formula: "good ÷ (good + bad) per rule.",
-		source: "ttsr-jev.jsonl, joined to the rule files in ~/.pi/agent/rules/.",
-		action: "Rules with no verdicts but heavy gating are prune candidates; rules with bad verdicts need rewording.",
-	},
 	guardCatches: {
 		title: "Guard catches",
 		what: "Commands the guard blocked or flagged before they ran, ranked by its destructive-intent score. This is the harness preventing damage — the clearest qualitative win it produces.",
@@ -138,13 +130,6 @@ const HELP = {
 		formula: "Average replayed prompt size per session (chars ÷ 4) × calls × cache-aware rate.",
 		source: "Session system messages persist sections and patch them by name; the tool loadout is stored as declarations. Sizes are recorded per session at ingest.",
 		action: "If this is large relative to spend, trim it: fewer tools loaded, shorter skills/docs sections. Rules are only a fraction of it — check the share before moving them.",
-	},
-	benefitGuard: {
-		title: "Guard cost per block",
-		what: "The guard's own cost and what it costs per dangerous command it stops. The damage it prevents is real but unpriced.",
-		formula: "Sum of logged cost_usd over guard events ÷ blocked count.",
-		source: "~/.pi/agent/jev-decisions/jev-guard.jsonl.",
-		action: "A low cost-per-block means the harness pays cents for a safety net. If blocks stay at zero for a long stretch, confirm the gate is still screening rather than silently permissive.",
 	},
 	benefitGoal: {
 		title: "Rework avoided (goal loop)",
@@ -604,12 +589,13 @@ async function overview(view, ctx) {
 // ------------------------------------------------------------------ impact
 
 async function impactPage(view, ctx) {
-	const [data, findingData, modelData, benefitsData, trendsData] = await Promise.all([
+	const [data, findingData, modelData, benefitsData, trendsData, effectStats] = await Promise.all([
 		api("/api/impact", { from: state.range, model: state.impactModel }),
 		api("/api/findings", { from: state.range }),
 		api("/api/models", { from: state.range }),
 		api("/api/benefits", { from: state.range }),
 		api("/api/trends", { from: state.range }),
+		api("/api/ledger/stats", { from: state.range }),
 	]);
 	clear(view);
 
@@ -785,12 +771,6 @@ async function impactPage(view, ctx) {
 				help: HELP.benefitGoal,
 			}),
 			kpi({
-				label: "Guard cost per block",
-				value: b.guard.costPerBlock == null ? "—" : fmtCost(b.guard.costPerBlock),
-				sub: `${fmtInt(b.guard.blocked)} blocked · ${fmtInt(b.guard.flagged)} flagged of ${fmtInt(b.guard.screens)}`,
-				help: HELP.benefitGuard,
-			}),
-			kpi({
 				label: "Jev request spend (all subsystems)",
 				value: fmtCost(b.jev?.cost ?? 0),
 				sub: `${fmtInt(b.jev?.requests ?? 0)} requests · ${fmtPct((b.jev?.pricedRequests ?? 0) / Math.max(1, b.jev?.requests ?? 1), 0)} costed · ${fmtCost(b.jev?.costPerRequest ?? 0)}/request`,
@@ -854,15 +834,6 @@ async function impactPage(view, ctx) {
 					basis: `Replayed system sections + tool declarations, averaged over ${fmtInt(b.baseline.sessions)} sessions. Everything the harness adds sits on top of this.`,
 				},
 				{
-					key: "guard",
-					mechanism: "Guard (pre-tool screening)",
-					trendKey: "guardBlocks",
-					now: `${fmtInt(b.guard.screens)} screens · ${fmtCost(b.guard.cost)}`,
-					alternative: `${fmtInt(b.guard.blocked)} blocked · ${fmtInt(b.guard.flagged)} flagged before running`,
-					net: h("span", { class: "faint" }, "count only"),
-					basis: "A destructive command that never ran has no logged dollar value — reported as a count, never priced.",
-				},
-				{
 					key: "goal",
 					mechanism: "Goal loop (course-check)",
 					now: `${fmtInt(b.goalLoop.checks)} checks · cost not logged`,
@@ -893,22 +864,6 @@ async function impactPage(view, ctx) {
 	});
 
 	const curatorSources = nodeRegion((d) => bars(Object.entries(d.curator.savedBySource).map(([label, value]) => ({ label, value })), { valueFmt: fmtCompact }));
-	const ruleSummary = h("div", { class: "small muted", style: { padding: "10px 14px 2px" } }, "");
-	const ruleQuality = table({
-		columns: [
-			{ label: "Rule", render: (row) => h("span", { class: "rowtitle" }, row.rule) },
-			{ label: "Fired", right: true, render: (row) => fmtInt(row.fired) },
-			{ label: "Good", right: true, render: (row) => countPill(row.good, "ok") },
-			{ label: "Bad", right: true, render: (row) => countPill(row.bad, "error") },
-			{
-				label: "Precision",
-				right: true,
-				render: (row) => (row.precision == null ? h("span", { class: "faint" }, "no verdicts") : pill(`${Math.round(row.precision * 100)}%`, qualityTone(row.precision))),
-			},
-		],
-		rows: [],
-		maxHeight: "380px",
-	});
 	const qualityMeters = gridRegion((d) => {
 		const q = d.quality;
 		const escalationRate = d.curator.candidates ? q.verifierEscalations / d.curator.candidates : null;
@@ -999,7 +954,6 @@ async function impactPage(view, ctx) {
 		const current = t.current ?? {};
 		const previous = t.previous ?? {};
 		const delta = t.delta ?? {};
-		const sanitize = (values) => (values ?? []).map((value) => (typeof value === "number" && Number.isFinite(value) ? value : 0));
 		// `points` switches the delta to percentage points, which is the only honest
 		// way to express a change in a rate (a relative % of a ratio misleads).
 		const cell = (label, value, change, direction, sub = null, points = null) => {
@@ -1029,53 +983,24 @@ async function impactPage(view, ctx) {
 			h(
 				"div",
 				{ class: "delta-grid" },
-				cell("Cost per call", fmtCost(current.costPerCall ?? 0), delta.costPerCall, "down-good", `total ${fmtCost(current.cost ?? 0)} over ${fmtInt(current.calls ?? 0)} calls`),
-				cell("Prompt tokens per call", fmtCompact(current.promptTokensPerCall ?? 0), delta.promptTokensPerCall, "down-good", "the context every call sends"),
-				cell("Context condensed per call", fmtCompact(current.curatorTokensPerCall ?? 0), delta.curatorTokensPerCall, "up-good", `${fmtCompact(current.curatorTokens ?? 0)} tok total`),
-				cell("Rules avoided per call", fmtCompact(current.rulesTokensAvoidedPerCall ?? 0), delta.rulesTokensAvoidedPerCall, "up-good", "stable = rule set unchanged"),
-				cell("Cache discount per call", fmtCost(current.cacheDiscountPerCall ?? 0), delta.cacheDiscountPerCall, "up-good", `${fmtCost(current.cacheDiscount ?? 0)} total`),
 				cell("Cache rate", fmtPct(current.cacheRate, 0), delta.cacheRate, "up-good", `was ${fmtPct(previous.cacheRate, 0)}`, ((current.cacheRate ?? 0) - (previous.cacheRate ?? 0)) * 100),
-				cell("Error rate", fmtPct(current.errorRate, 1), delta.errorRate, "down-good", `was ${fmtPct(previous.errorRate, 1)}`, ((current.errorRate ?? 0) - (previous.errorRate ?? 0)) * 100),
-				cell("Rule precision", fmtPct(current.rulePrecision, 0), delta.rulePrecision, "up-good", `${fmtInt(current.judgedOutcomes ?? 0)} judged · was ${fmtPct(previous.rulePrecision, 0)}`, ((current.rulePrecision ?? 0) - (previous.rulePrecision ?? 0)) * 100),
+				cell("Context condensed per call", fmtCompact(current.curatorTokensPerCall ?? 0), delta.curatorTokensPerCall, "up-good", `${fmtCompact(current.curatorTokens ?? 0)} tok total`),
 				cell(
-					"Verifier agreement",
-					fmtPct(current.verifierAgreement, 0),
-					delta.verifierAgreement,
-					"up-good",
-					`${fmtInt(current.verifierHits ?? 0)}/${fmtInt(current.verifierSamples ?? 0)} samples · was ${fmtPct(previous.verifierAgreement, 0)} (${fmtInt(previous.verifierSamples ?? 0)} samples)`,
-					((current.verifierAgreement ?? 0) - (previous.verifierAgreement ?? 0)) * 100,
+					"Off-track (course check)",
+					fmtPct(current.offTrackRate, 1),
+					delta.offTrackRate,
+					"down-good",
+					`was ${fmtPct(previous.offTrackRate, 1)}`,
+					((current.offTrackRate ?? 0) - (previous.offTrackRate ?? 0)) * 100,
 				),
-				cell("Corrections per 100 calls", (current.correctionsPer100Calls ?? 0).toFixed(2), delta.correctionsPer100Calls, "down-good", `${fmtInt(current.corrections ?? 0)} total`),
-				cell("Jev spend per call", fmtCost(current.jevSpendPerCall ?? 0), delta.jevSpendPerCall, "neutral", `${fmtCost(current.jevSpend ?? 0)} total`),
-			),
-			h(
-				"div",
-				{ class: "grid cols-2" },
-				card({
-					title: "Cost per call vs cache discount",
-					sub: "per-call economics in $ — how much of each call caching gives back",
-					body: h("div", { html: areaChart({ labels: t.labels, series: [{ name: "cost per call", values: sanitize(t.series.costPerCall) }, { name: "cache discount per call", values: sanitize(t.series.cacheDiscountPerCall) }], height: 170, valueFmt: (value) => `$${value.toFixed(4)}` }) }),
-				}),
-				card({ title: "Prompt tokens per call", sub: "context sent per call — the denominator behind every other number", body: h("div", { html: areaChart({ labels: t.labels, series: [{ name: "tokens per call", values: sanitize(t.series.promptTokensPerCall) }], height: 170, valueFmt: fmtCompact }) }) }),
-				card({ title: "Context condensed per call", sub: "curator tokens kept out per call — context discipline", body: h("div", { html: areaChart({ labels: t.labels, series: [{ name: "tokens per call", values: sanitize(t.series.curatorTokensPerCall) }], height: 170, valueFmt: fmtCompact }) }) }),
-				card({ title: "Quality per day", sub: "error rate · rule precision · verifier agreement", body: h("div", { html: areaChart({ labels: t.labels, series: [{ name: "error rate", values: sanitize(t.series.errorRate) }, { name: "rule precision", values: sanitize(t.series.rulePrecision) }, { name: "verifier agreement", values: sanitize(t.series.verifierAgreement) }], height: 170, valueFmt: (value) => `${(value * 100).toFixed(0)}%` }) }) }),
-			),
-			h(
-				"div",
-				{ class: "grid cols-2" },
-				card({
-					title: "Quality per day",
-					sub: "error rate · rule precision · verifier agreement",
-					body: h("div", { html: areaChart({ labels: t.labels, series: [{ name: "error rate", values: sanitize(t.series.errorRate) }, { name: "rule precision", values: sanitize(t.series.rulePrecision) }, { name: "verifier agreement", values: sanitize(t.series.verifierAgreement) }], height: 170, valueFmt: (value) => `${(value * 100).toFixed(0)}%` }) }),
-				}),
-				card({ title: "Cache discount per day", sub: "provider caching, priced from your rates", body: h("div", { html: areaChart({ labels: t.labels, series: [{ name: "discount", values: sanitize(t.series.cacheDiscount) }], height: 170, valueFmt: fmtCost }) }) }),
+				cell("Cost per call", fmtCost(current.costPerCall ?? 0), delta.costPerCall, "down-good", `total ${fmtCost(current.cost ?? 0)} over ${fmtInt(current.calls ?? 0)} calls`),
 			),
 		);
 	});
 	const trendsSection = collapsible({
 		id: "trends",
 		title: "Trends",
-		sub: "this window against the one before it · per-day series for the harness's own numbers",
+		sub: "this window against the one before it",
 		badge: trendsBadge,
 		body: trendsRegion.node,
 	});
@@ -1113,19 +1038,122 @@ async function impactPage(view, ctx) {
 		body: findingsRegion.node,
 	});
 
+	// Effectiveness stats are range-wide — never model-scoped, unlike the meters above.
+	const effectTabs = [
+		["ttsr", "TTSR rules"],
+		["curator", "Curator"],
+		["guard", "Guard"],
+		["memory", "Memory"],
+		["course", "Course"],
+		["refine", "Refine"],
+	];
+	const effectPanel = h("div", { class: "cardbody flush" });
+	const segButtons = effectTabs.map(([id, label]) =>
+		h(
+			"button",
+			{
+				class: state.ledgerEffectTab === id ? "active" : "",
+				onclick: () => {
+					state.ledgerEffectTab = id;
+					for (const button of segButtons) button.classList.remove("active");
+					segButtons[effectTabs.findIndex(([tid]) => tid === id)]?.classList.add("active");
+					renderEffectPanel();
+				},
+			},
+			label,
+		),
+	);
+	let latestStats = effectStats;
+	let impactData = null;
+	function renderEffectPanel() {
+		clear(effectPanel);
+		const active = state.ledgerEffectTab;
+		if (active === "ttsr") {
+			const t = impactData?.ttsr;
+			effectPanel.appendChild(
+				h(
+					"div",
+					{},
+					t ? h("div", { class: "small muted", style: { padding: "10px 14px 2px" } }, `${fmtInt(t.fired)} fired · ${fmtInt(t.delivered)} delivered · ${fmtInt(t.blocked)} blocks · ${fmtInt(t.suppressed)} gate-suppressed · ${fmtInt(t.unresolved)} unresolved`) : null,
+					table({
+						columns: [
+							{ label: "Rule", render: (row) => h("span", { class: "rowtitle" }, row.rule) },
+							{ label: "Fired", right: true, tip: "Times the rule actually fired — via the gate (verified/degraded) or in plain mode.", render: (row) => fmtInt(row.fired) },
+							{ label: "Suppressed", right: true, tip: "Times the gate adjudicated the rule and chose not to deliver it.", render: (row) => fmtInt(row.suppressed) },
+							{ label: "Good", right: true, tip: "Fires whose 5-turn outcome window ended with nothing going wrong afterwards.", render: (row) => countPill(row.good, "ok") },
+							{ label: "Bad", right: true, tip: "Fires with an adverse outcome — a correction followed, the rule repeated, or a blocked command was retried.", render: (row) => countPill(row.bad, "error") },
+							{ label: "Blocks", right: true, tip: "Times the rule blocked a command outright before it ran.", render: (row) => fmtInt(row.blocked) },
+							{
+								label: "Precision",
+								right: true,
+								tip: "good ÷ (good + bad) over judged outcomes — the share of judged fires where nothing went wrong; 'no verdicts' = never judged.",
+								render: (row) => (row.good + row.bad > 0 ? pill(`${Math.round((row.good / (row.good + row.bad)) * 100)}%`, qualityTone(row.good / (row.good + row.bad))) : h("span", { class: "faint" }, "no verdicts")),
+							},
+						],
+						rows: [...latestStats.ttsrRules].sort((a, b) => {
+						const pa = a.good + a.bad > 0 ? a.good / (a.good + a.bad) : null;
+						const pb = b.good + b.bad > 0 ? b.good / (b.good + b.bad) : null;
+						if (pa == null && pb == null) return b.fired + b.suppressed - (a.fired + a.suppressed);
+						if (pa == null) return 1;
+						if (pb == null) return -1;
+						return pa - pb || (b.good + b.bad) - (a.good + a.bad);
+					}),
+						maxHeight: "420px",
+					}),
+				),
+			);
+			return;
+		}
+		const block =
+			active === "curator"
+				? [
+						["Verifier verdicts", latestStats.curatorVerdicts],
+						["Roles", latestStats.curatorRoles],
+						["Source types", latestStats.curatorSourceTypes],
+					]
+				: active === "guard"
+					? [
+							["Verdicts", latestStats.guardVerdicts],
+							["Hooks", latestStats.guardHooks],
+						]
+					: active === "memory"
+						? [
+								["Decisions", latestStats.memoryDecisions],
+								["Outcomes", latestStats.memoryOutcomes],
+							]
+						: active === "course"
+							? [["Verdicts", latestStats.courseVerdicts]]
+							: [["Decisions", latestStats.refineDecisions]];
+		effectPanel.appendChild(
+			h(
+				"div",
+				{ class: "cardbody grid cols-2" },
+				...block.map(([title, record]) =>
+					card({
+						title,
+						body: bars(Object.entries(record ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }),
+					}),
+				),
+			),
+		);
+	}
+	renderEffectPanel();
+	const effectivenessCard = h(
+		"div",
+		{ class: "card" },
+		h("div", { class: "cardhead" }, h("h3", {}, "Effectiveness"), h("div", { class: "grow" }), h("div", { class: "seg" }, ...segButtons)),
+		effectPanel,
+	);
+
 	view.append(
 		toolbar,
 		trendsSection,
 		benefitSection,
 		qualitySection,
 		findingsSection,
+		effectivenessCard,
 		card({ title: "Impact ledger", sub: "what each mechanism did, and how it was measured", flush: true, body: ledger, help: HELP.impactLedger }),
-		h(
-			"div",
-			{ class: "split" },
-			card({ title: "Curator savings by source", sub: "chars condensed per source type", body: curatorSources.node, help: HELP.curatorSources }),
-			card({ title: "Rule quality", sub: "outcomes per rule · precision where verdicts exist", body: h("div", {}, ruleSummary, ruleQuality), help: HELP.ruleQuality }),
-		),
+		card({ title: "Curator savings by source", sub: "chars condensed per source type", body: curatorSources.node, help: HELP.curatorSources }),
 		h(
 			"div",
 			{ class: "split" },
@@ -1140,6 +1168,7 @@ async function impactPage(view, ctx) {
 	);
 
 	const render = (d) => {
+		impactData = d;
 		findingsRegion.render(d);
 		trendSeriesCache = d.trends?.series ?? null;
 		ledger.patch(ledgerRows(d));
@@ -1149,10 +1178,8 @@ async function impactPage(view, ctx) {
 		trendsRegion.render(d.trends ?? { labels: [], series: {} });
 		const trendDelta = d.trends?.delta ?? {};
 		const fmtDeltaPct = (value) => (value == null ? "—" : `${value > 0 ? "+" : ""}${(value * 100).toFixed(0)}%`);
-		trendsBadge.textContent = `cost/call ${fmtDeltaPct(trendDelta.costPerCall)} · errors ${fmtDeltaPct(trendDelta.errorRate)} · corrections/100 ${fmtDeltaPct(trendDelta.correctionsPer100Calls)}`;
+		trendsBadge.textContent = `cost/call ${fmtDeltaPct(trendDelta.costPerCall)} · cache rate ${fmtDeltaPct(trendDelta.cacheRate)} · condensed ${fmtDeltaPct(trendDelta.curatorTokensPerCall)} · off-track ${fmtDeltaPct(trendDelta.offTrackRate)}`;
 		curatorSources.render(d);
-		ruleSummary.textContent = `${fmtInt(d.ttsr.fired)} fired · ${fmtInt(d.ttsr.delivered)} delivered · ${fmtInt(d.ttsr.blocked)} blocks · ${fmtInt(d.ttsr.suppressed)} gate-suppressed · ${fmtInt(d.ttsr.unresolved)} unresolved`;
-		ruleQuality.patch(d.ttsr.topRules.map((rule) => ({ ...rule, key: rule.rule, precision: rule.good + rule.bad > 0 ? rule.good / (rule.good + rule.bad) : null })));
 		facts.render(d);
 		catches.patch(
 			d.guard.destructive.map((row, index) => ({
@@ -1189,14 +1216,17 @@ async function impactPage(view, ctx) {
 		scopeNote.textContent = d.scope?.model
 			? `scoped to ${d.scope.model} · curator savings attributed by the model in use at that turn (${d.scope.curatorItemsTotal ? Math.round((d.scope.curatorItemsAttributed / d.scope.curatorItemsTotal) * 100) : 0}% attributable) · overhead and non-model meters stay global`
 			: "all models in range";
+		renderEffectPanel();
 	};
 	async function refreshAll() {
-		const [next, nextFindings, nextBenefits, nextTrends] = await Promise.all([
+		const [next, nextFindings, nextBenefits, nextTrends, nextEffectStats] = await Promise.all([
 			api("/api/impact", { from: state.range, model: state.impactModel }),
 			api("/api/findings", { from: state.range }),
 			api("/api/benefits", { from: state.range }),
 			api("/api/trends", { from: state.range }),
+			api("/api/ledger/stats", { from: state.range }),
 		]);
+		latestStats = nextEffectStats;
 		render({ ...next, findings: nextFindings.findings, benefits: nextBenefits, trends: nextTrends });
 	}
 	render({ ...data, findings: findingData.findings, benefits: benefitsData, trends: trendsData });
@@ -1210,13 +1240,20 @@ async function models(view, ctx) {
 	clear(view);
 	const totalCostOf = (d) => d.byModel.reduce((a, m) => a + m.cost, 0);
 	const totalCallsOf = (d) => d.byModel.reduce((a, m) => a + m.calls, 0);
+	const totalTokensOf = (d) => d.byModel.reduce((a, m) => a + m.tokens, 0);
 
-	const kpis = gridRegion((d) => [
-		kpi({ label: "Cost", value: fmtCost(totalCostOf(d)), sub: `${d.byModel.length} models` }),
-		kpi({ label: "Calls", value: fmtInt(totalCallsOf(d)) }),
-		kpi({ label: "Cache savings", value: fmtCost(d.cache.savingsUsd), sub: `${fmtInt(d.cache.pricedCalls)} priced · ${fmtInt(d.cache.unpricedCalls)} unpriced`, tip: "Estimated from live model prices (cache read rate vs input rate) for calls whose model has a known price." }),
-		kpi({ label: "Unpriced calls", value: fmtInt(d.cache.unpricedCalls), sub: "no matching price in models-store" }),
-	]);
+	const statsStrip = nodeRegion((d) => {
+		const totalTokens = totalTokensOf(d);
+		const cachedTokens = d.byModel.reduce((a, m) => a + m.tokens * (m.cacheRate ?? 0), 0);
+		return h(
+			"div",
+			{ class: "stats-strip" },
+			kpi({ label: "Cost", value: fmtCost(totalCostOf(d)), sub: `${d.byModel.length} models` }),
+			kpi({ label: "Calls", value: fmtInt(totalCallsOf(d)) }),
+			kpi({ label: "Cache savings", value: fmtCost(d.cache.savingsUsd), sub: `${fmtInt(d.cache.pricedCalls)} priced calls`, tip: "Estimated from live model prices (cache read rate vs input rate) for calls whose model has a known price." }),
+			kpi({ label: "Tokens", value: fmtCompact(totalTokens), sub: totalTokens ? `${fmtPct(cachedTokens / totalTokens, 0)} cached` : "—" }),
+		);
+	});
 	let dailyData = null;
 	let dailySub = null;
 	const chart = nodeRegion((d) => {
@@ -1228,11 +1265,24 @@ async function models(view, ctx) {
 			"div",
 			{},
 			h("div", { class: "chartctl" }, metricChips(() => chart.render(dailyData))),
-			h("div", { html: barChart({ labels: d.daily.labels, series, stacked: true, height: 210, valueFmt: metric.fmt }) }),
+			h("div", { html: barChart({ labels: d.daily.labels, series, stacked: true, height: 240, valueFmt: metric.fmt }) }),
 		);
 	});
-	const dailyCard = card({ title: "Per day by model", sub: "top 5 + other", actions: legend(data.daily.series.slice(0, 6).map((s) => ({ name: s.name }))), body: chart.node });
-	dailySub = dailyCard.querySelector(".cardhead .sub");
+	const heroCard = h(
+		"div",
+		{ class: "card" },
+		h(
+			"div",
+			{ class: "cardhead" },
+			h("h3", {}, "Per day by model"),
+			h("span", { class: "sub" }, "top 5 + other"),
+			h("div", { class: "grow" }),
+			h("div", { class: "actions" }, legend(data.daily.series.slice(0, 6).map((s) => ({ name: s.name })))),
+		),
+		h("div", { class: "cardbody" }, chart.node),
+		statsStrip.node,
+	);
+	dailySub = heroCard.querySelector(".cardhead .sub");
 	const byModel = table({
 		columns: [
 			{ label: "Model", width: "18%", render: (row) => modelCell(row.model) },
@@ -1253,31 +1303,17 @@ async function models(view, ctx) {
 		rows: data.byModel.map((m) => ({ ...m, key: m.model })),
 	});
 	const thinking = nodeRegion((d) => bars(d.thinking.map((row) => ({ label: row.level, value: row.calls, tip: `${row.level}: ${fmtInt(row.calls)} calls · ${fmtCost(row.cost)}` })), { valueFmt: fmtInt }));
-	const cache = nodeRegion((d) =>
-		h(
-			"div",
-			{},
-			kv([
-				["Savings (est.)", fmtCost(d.cache.savingsUsd)],
-				["Priced calls", fmtInt(d.cache.pricedCalls)],
-				["Unpriced calls", fmtInt(d.cache.unpricedCalls)],
-			]),
-			h("div", { class: "small muted", style: { marginTop: "8px" } }, "Unpriced calls still show exact logged cost — only savings estimation is skipped."),
-		),
-	);
 
 	view.append(
-		kpis.node,
-		dailyCard,
+		heroCard,
 		card({ title: "Model breakdown", sub: "unit economics first — cost and tokens per call are what a switch actually changes", flush: true, body: byModel, help: HELP.modelsUnit }),
-		h("div", { class: "split" }, card({ title: "Thinking levels", sub: "calls per requested level", body: thinking.node }), card({ title: "Cache", sub: "prompt token reuse", body: cache.node })),
+		card({ title: "Thinking levels", sub: "calls per requested level", body: thinking.node }),
 	);
 	const render = (d) => {
-		kpis.render(d);
+		statsStrip.render(d);
 		chart.render(d);
 		byModel.patch(d.byModel.map((m) => ({ ...m, key: m.model })));
 		thinking.render(d);
-		cache.render(d);
 		ctx.setStatus(`${RANGE_LABEL[state.range]} · ${fmtInt(totalCallsOf(d))} calls · ${fmtCost(totalCostOf(d))}`);
 	};
 	render(data);
@@ -1356,10 +1392,7 @@ async function routerPage(view, ctx) {
 // ------------------------------------------------------------------ ledger
 
 async function ledgerPage(view, ctx) {
-	const [ledger, stats] = await Promise.all([
-		api("/api/ledger", { from: state.range, system: state.ledgerSystem, severity: state.ledgerSeverity, q: state.ledgerQuery, limit: 200, offset: state.ledgerOffset }),
-		api("/api/ledger/stats", { from: state.range }),
-	]);
+	const ledger = await api("/api/ledger", { from: state.range, system: state.ledgerSystem, severity: state.ledgerSeverity, q: state.ledgerQuery, limit: 200, offset: state.ledgerOffset });
 	clear(view);
 
 	const chipsRow = nodeRegion((data) =>
@@ -1490,86 +1523,6 @@ async function ledgerPage(view, ctx) {
 		...["all", "warn", "error", "ok", "info"].map((value) => h("option", { value: value === "all" ? "" : value, selected: (state.ledgerSeverity ?? "") === (value === "all" ? "" : value) }, value)),
 	);
 
-	const tabs = [
-		["ttsr", "TTSR rules"],
-		["curator", "Curator"],
-		["guard", "Guard"],
-		["memory", "Memory"],
-		["course", "Course"],
-		["refine", "Refine"],
-	];
-	const effectPanel = h("div", { class: "cardbody flush" });
-	const segButtons = tabs.map(([id, label]) =>
-		h(
-			"button",
-			{
-				class: state.ledgerEffectTab === id ? "active" : "",
-				onclick: () => {
-					state.ledgerEffectTab = id;
-					for (const button of segButtons) button.classList.remove("active");
-					segButtons[tabs.findIndex(([tid]) => tid === id)]?.classList.add("active");
-					renderEffectPanel();
-				},
-			},
-			label,
-		),
-	);
-	let latestStats = stats;
-	function renderEffectPanel() {
-		clear(effectPanel);
-		const active = state.ledgerEffectTab;
-		if (active === "ttsr") {
-			effectPanel.appendChild(
-				table({
-					columns: [
-						{ label: "Rule", render: (row) => h("span", { class: "rowtitle" }, row.rule) },
-						{ label: "Fired", right: true, render: (row) => fmtInt(row.fired) },
-						{ label: "Suppressed", right: true, render: (row) => fmtInt(row.suppressed) },
-						{ label: "Good", right: true, render: (row) => countPill(row.good, "ok") },
-						{ label: "Bad", right: true, render: (row) => countPill(row.bad, "error") },
-						{ label: "Blocks", right: true, render: (row) => fmtInt(row.blocked) },
-					],
-					rows: latestStats.ttsrRules,
-					maxHeight: "420px",
-				}),
-			);
-			return;
-		}
-		const block =
-			active === "curator"
-				? [
-						["Verifier verdicts", latestStats.curatorVerdicts],
-						["Roles", latestStats.curatorRoles],
-						["Source types", latestStats.curatorSourceTypes],
-					]
-				: active === "guard"
-					? [
-							["Verdicts", latestStats.guardVerdicts],
-							["Hooks", latestStats.guardHooks],
-						]
-					: active === "memory"
-						? [
-								["Decisions", latestStats.memoryDecisions],
-								["Outcomes", latestStats.memoryOutcomes],
-							]
-						: active === "course"
-							? [["Verdicts", latestStats.courseVerdicts]]
-							: [["Decisions", latestStats.refineDecisions]];
-		effectPanel.appendChild(
-			h(
-				"div",
-				{ class: "cardbody grid cols-2" },
-				...block.map(([title, record]) =>
-					card({
-						title,
-						body: bars(Object.entries(record ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }),
-					}),
-				),
-			),
-		);
-	}
-	renderEffectPanel();
-
 	view.append(
 		h(
 			"div",
@@ -1580,20 +1533,14 @@ async function ledgerPage(view, ctx) {
 			h("div", { class: "cardbody" }, pager.node),
 		),
 		volumeCard,
-		h("div", { class: "card" }, h("div", { class: "cardhead" }, h("h3", {}, "Effectiveness"), h("div", { class: "grow" }), h("div", { class: "seg" }, ...segButtons)), effectPanel),
 	);
 
 	async function refresh() {
-		const [next, nextStats] = await Promise.all([
-			api("/api/ledger", { from: state.range, system: state.ledgerSystem, severity: state.ledgerSeverity, q: state.ledgerQuery, limit: 200, offset: state.ledgerOffset }),
-			api("/api/ledger/stats", { from: state.range }),
-		]);
-		latestStats = nextStats;
+		const next = await api("/api/ledger", { from: state.range, system: state.ledgerSystem, severity: state.ledgerSeverity, q: state.ledgerQuery, limit: 200, offset: state.ledgerOffset });
 		chipsRow.render(next);
 		volumeBySystem.render(next);
 		rows.patch(next.rows);
 		pager.render(next);
-		renderEffectPanel();
 		ctx.setStatus(`${RANGE_LABEL[state.range]} · ${fmtInt(next.total)} decisions`);
 		ledger.total = next.total;
 	}
@@ -1609,12 +1556,8 @@ async function ledgerPage(view, ctx) {
 // ------------------------------------------------------------------ curator
 
 async function curatorPage(view, ctx) {
-	let list = await api("/api/curator/sessions");
 	const overviewData = await api("/api/curator/overview", { from: state.range });
 	clear(view);
-
-	// Range-level pipeline first: the per-session view below answers "what did it
-	// do here", this answers "is the pipeline healthy overall".
 	const overviewBadge = h("span", { class: "pill accent" }, "…");
 	const overviewKpis = gridRegion((d) => [
 		kpi({ label: "Candidates", value: fmtInt(d.candidates), sub: `${fmtInt(d.emittedItems)} condensed items` }),
@@ -1648,98 +1591,13 @@ async function curatorPage(view, ctx) {
 		overviewSankey.render(d);
 		overviewMix.render(d);
 		overviewBadge.textContent = `${fmtInt(d.emits)} emits · ${fmtPct(d.emitRate, 0)} of ${fmtInt(d.candidates)}`;
+		ctx.setStatus(`Curator · ${fmtInt(d.candidates)} candidates · ${fmtInt(d.emits)} emits`);
 	}
 	renderOverview(overviewData);
-	if (!list.sessions.length) {
-		view.appendChild(card({ title: "Context curator", body: emptyState("No curator ledger entries yet. They appear when sessions run with the curator active.") }));
-		return;
-	}
-	if (!state.curatorSession || !list.sessions.some((s) => s.sessionId === state.curatorSession)) state.curatorSession = list.sessions[0].sessionId;
-
-	const sessionList = table({
-		columns: [
-			{
-				label: "Session",
-				render: (row) =>
-					h(
-						"div",
-						{},
-						h("div", { class: "rowtitle" }, shortTitle(row.title) ?? row.project ?? row.sessionId.slice(0, 8)),
-						h("div", { class: "rowsub" }, `${row.project ?? "—"} · ${fmtInt(row.candidates)} candidates · ${fmtInt(row.emits)} emits · ${timeAgo(row.lastTs)}${row.specSnapshots ? ` · GoalSpec v${row.specVersion}${row.specSeeded ? " seeded" : " (pre-seed)"}` : row.goalPins ? " · goal pinned" : row.specReconstructed ? " · GoalSpec reconstructed" : ""}`),
-					),
-			},
-		],
-		rows: list.sessions,
-		onRowClick: (row) => {
-			state.curatorSession = row.sessionId;
-			void loadDetail();
-		},
-		maxHeight: "640px",
-	});
-
-	const detail = h("div", { class: "grid" });
-	view.append(overviewSection, h("div", { class: "split-list" }, card({ title: "Sessions", sub: `${list.sessions.length} with curator activity`, flush: true, body: sessionList }), detail));
-
-	const kpis = gridRegion((d) => [
-		kpi({ label: "Candidates", value: fmtInt(d.stats.candidates), sub: `${fmtInt(d.stats.events)} curator events` }),
-		kpi({ label: "Emits", value: fmtInt(d.stats.emits), sub: `${fmtInt(Math.max(0, d.stats.candidates - d.stats.emits))} retained` }),
-		kpi({ label: "Chars condensed", value: fmtCompact(d.stats.chars), sub: "sum of candidate sizes" }),
-		kpi({ label: "Context edits", value: fmtInt(d.timeline.filter((r) => r.kind === "curator.context_edit").length), sub: "rewrites in transcript" }),
-	]);
-	const sankeyRegion = htmlRegion((d) => {
-		const hasFates = Object.keys(d.fates.nodes ?? {}).length > 0;
-		return hasFates ? sankey({ columns: d.fates.columns, nodes: d.fates.nodes, links: d.fates.links, height: 260 }) : "";
-	});
-	const itemsTable = table({
-		columns: [
-			{ label: "Turn", right: true, render: (row) => fmtInt(row.turn) },
-			{ label: "Tool", render: (row) => h("span", { class: "mono" }, row.tool ?? "—") },
-			{ label: "Source", render: (row) => row.sourceType ?? "—" },
-			{ label: "Role", render: (row) => pill(row.role ?? "—", row.role === "evidence" ? "info" : row.role === "irrelevant" ? "warn" : "neutral") },
-			{ label: "Verdict", render: (row) => verdictPill(row.verdict) },
-			{ label: "Chars", right: true, render: (row) => (row.chars != null ? fmtCompact(row.chars) : "—") },
-			{ label: "Entry", render: (row) => h("span", { class: "mono faint" }, row.entryId ?? "—") },
-		],
-		rows: [],
-		maxHeight: "420px",
-	});
-	const goalspec = feed([], { clock: fmtClock });
-
-	// Built once; refreshes only patch these regions. Rebuilding the detail on
-	// every ingest would reset inner scroll and flicker.
-	const sankeyCard = card({ title: "Candidate flow", sub: "source type → role → verifier verdict", body: sankeyRegion.node });
-	const itemsCard = card({ title: "Ledger items", flush: true, body: itemsTable });
-	const goalspecCard = card({ title: "GoalSpec", sub: "seeded from the session's first prompt, then every amendment", flush: true, body: goalspec });
-	const emptyNote = emptyState("No curator activity in this session.");
-	detail.append(kpis.node, sankeyCard, itemsCard, goalspecCard, emptyNote);
-
-	async function loadDetail() {
-		const d = await api("/api/curator", { session: state.curatorSession });
-		const has = Boolean(d.hasData);
-		const hasSpec = Boolean(d.goalspec?.timeline?.length);
-		for (const node of [kpis.node, sankeyCard, itemsCard]) node.hidden = !has;
-		goalspecCard.hidden = !hasSpec;
-		emptyNote.hidden = has || hasSpec;
-		if (!has && !hasSpec) {
-			ctx.setStatus(`Curator · ${state.curatorSession.slice(0, 8)} · no activity`);
-			return;
-		}
-		if (has) {
-			kpis.render(d);
-			sankeyRegion.render(d);
-			itemsTable.patch((d.items ?? []).slice().reverse().map((item, index) => ({ ...item, key: item.entryId ?? `${item.ts}-${item.tool ?? ""}-${index}` })));
-		}
-		goalspec.patch(goalspecFeedItems(d.goalspec?.timeline));
-		ctx.setStatus(`Curator · ${state.curatorSession.slice(0, 8)} · ${fmtInt(d.stats.candidates)} candidates`);
-	}
-	await loadDetail();
+	view.append(overviewSection);
 
 	ctx.onAutoRefresh(async () => {
-		const [nextList, nextOverview] = await Promise.all([api("/api/curator/sessions"), api("/api/curator/overview", { from: state.range })]);
-		list = nextList;
-		sessionList.patch(list.sessions);
-		renderOverview(nextOverview);
-		if (state.curatorSession) await loadDetail();
+		renderOverview(await api("/api/curator/overview", { from: state.range }));
 	});
 }
 
@@ -1907,31 +1765,6 @@ function goalspecFeedItems(timeline) {
 	});
 }
 
-function courseFeedItems(events) {
-	return (events ?? []).map((e) => {
-		if (e.kind === "course.outcome") {
-			const tone = e.outcome === "recovered" ? "ok" : e.outcome === "still_off_track" ? "bad" : "warn";
-			return {
-				key: `co:${e.ts_ms}`,
-				ts: e.ts,
-				tone,
-				title: `outcome: ${e.outcome ?? "?"}`,
-				sub: [e.verdict ? `verdict ${e.verdict}` : null, e.userSteered ? "user steered in between" : null].filter(Boolean).join(" · ") || "resolved at the next supervision check",
-				right: e.turn != null ? `turn ${e.turn}` : "",
-			};
-		}
-		const tone = e.verdict === "goal_moved" ? "warn" : "bad";
-		return {
-			key: `cd:${e.ts_ms}`,
-			ts: e.ts,
-			tone,
-			title: `${e.verdict ?? "?"} · p ${e.p ?? "?"}`,
-			sub: [e.why && e.why !== "none" ? `mode: ${e.why}` : null, e.consecutive > 1 ? `${e.consecutive} consecutive` : null].filter(Boolean).join(" · ") || "nudge injected at the turn boundary",
-			right: e.turn != null ? `turn ${e.turn}` : "",
-		};
-	});
-}
-
 async function sessionPage(view, ctx) {
 	clear(view);
 	if (!state.sessionId) {
@@ -1946,29 +1779,6 @@ async function sessionPage(view, ctx) {
 		kpi({ label: "Harness events", value: fmtInt(d.session.harness_events), sub: `${fmtInt(d.session.errors)} errored calls` }),
 		kpi({ label: "Started", value: fmtDateTime(d.session.started_ts), sub: `${d.session.project ?? "—"}`, valueClass: "small" }),
 	]);
-	const lanesRegion = nodeRegion((d) => {
-		const calls = d.calls ?? [];
-		const first = calls.length ? calls[0].ts_ms : Date.now();
-		const last = calls.length ? calls[calls.length - 1].ts_ms : first + 1;
-		const msgLane = (d.messages ?? []).map((m) => ({ start: m.ts_ms - 60_000, end: m.ts_ms + 60_000, color: m.role === "user" ? "var(--accent)" : "var(--s2)", tip: `${m.role} · turn ${m.turn}\n${m.preview?.slice(0, 160) ?? ""}` }));
-		const eventLane = (d.events ?? []).map((e) => ({ start: e.ts_ms - 60_000, end: e.ts_ms + 60_000, color: e.severity === "error" ? "var(--err)" : e.severity === "warn" ? "var(--warn)" : e.system === "curator" ? "var(--s5)" : "var(--s6)", tip: `${e.system} · ${e.kind}\n${e.title ?? ""}${e.summary ? `\n${e.summary}` : ""}` }));
-		const modelLane = calls.map((call, index) => ({ start: call.ts_ms - 60_000, end: call.ts_ms + 60_000, color: seriesColor(index % 8), tip: `${shortModel(call.model)} · turn ${call.turn}\n${fmtCompact(call.total_tokens)} tokens · ${fmtCost(call.cost)}` }));
-		const goalLane = (d.goalspec?.timeline ?? []).map((entry) => ({ start: entry.ts_ms - 60_000, end: entry.ts_ms + 60_000, color: entry.kind === "pin" ? "var(--s3)" : "var(--s10)", tip: `GoalSpec · ${goalspecChangeText(entry)}\nturn ${entry.turn ?? "—"}${entry.goal ? `\n${entry.goal.slice(0, 200)}` : ""}` }));
-		return h(
-			"div",
-			{},
-			h("div", { class: "small muted", style: { marginBottom: "8px" } }, `${fmtClock(new Date(first).toISOString())} → ${fmtClock(new Date(last).toISOString())}`),
-			lanes(
-				[
-					{ label: "messages", ticks: msgLane },
-					{ label: "harness", ticks: eventLane },
-					{ label: "goalspec", ticks: goalLane },
-					{ label: "models", ticks: modelLane },
-				],
-				{ from: first - 90_000, to: last + 90_000 },
-			),
-		);
-	});
 	const callsTable = table({
 		columns: [
 			{ label: "Time", right: true, render: (row) => fmtClock(row.ts) },
@@ -1987,6 +1797,38 @@ async function sessionPage(view, ctx) {
 	const modelsBars = nodeRegion((d) => bars((d.models ?? []).map((row) => ({ label: shortModel(row.model), value: row.cost, tip: `${row.model}\n${fmtInt(row.calls)} calls · ${fmtCompact(row.tokens)} tokens` })), { valueFmt: fmtCost }));
 	const eventsFeed = feed([], { clock: fmtClock });
 	const messagesFeed = feed([], { clock: fmtClock });
+
+	// Harness events filter: one chip per emitting system, "all" resets.
+	let eventFilter = null;
+	const eventChips = nodeRegion((d) => {
+		const events = d.events ?? [];
+		const bySystem = new Map();
+		for (const event of events) bySystem.set(event.system, (bySystem.get(event.system) ?? 0) + 1);
+		const chipFor = (name, count) =>
+			chip(name, count, {
+				active: eventFilter == null ? name === "all" : eventFilter === name,
+				onClick: () => {
+					eventFilter = name === "all" ? null : name;
+					eventChips.render(d);
+					patchEvents(d);
+				},
+			});
+		return h("div", { class: "cardtoolbar" }, chipFor("all", events.length), ...[...bySystem.keys()].sort().map((name) => chipFor(name, bySystem.get(name))));
+	});
+	function patchEvents(d) {
+		eventsFeed.patch(
+			(d.events ?? [])
+				.filter((event) => !eventFilter || event.system === eventFilter)
+				.map((event) => ({
+					key: `${event.ts}|${event.kind}|${event.turn ?? ""}`,
+					ts: event.ts,
+					tone: event.severity === "error" ? "error" : event.severity === "warn" ? "warn" : "info",
+					title: `${event.system} · ${event.title ?? event.kind}`,
+					sub: event.summary ?? "",
+					right: h("span", { class: "small faint" }, event.turn != null ? `turn ${event.turn}` : ""),
+				})),
+		);
+	}
 
 	// GoalSpec: the spec the curator judged evidence against at each point, and
 	// what each amendment added — the per-session record of how the goal moved.
@@ -2027,22 +1869,11 @@ async function sessionPage(view, ctx) {
 		open: true,
 		body: h(
 			"div",
-			{ class: "split" },
+			{ class: "split even scrolly" },
 			card({ title: "Current spec", sub: "the state evidence relevance is judged against", body: goalspecCurrent.node }),
 			card({ title: "Evolution", sub: "each snapshot after an amendment, with the time and turn it landed", flush: true, body: goalspecFeed }),
 		),
 	});
-	const courseBadge = h("span", { class: "pill" }, "…");
-	const courseFeed = feed([], { clock: fmtClock });
-	const courseSection = collapsible({
-		id: "session-course",
-		title: "Course check",
-		sub: "Jev supervision of the trajectory against the session goal",
-		badge: courseBadge,
-		open: true,
-		body: courseFeed,
-	});
-
 	// Session impact: benefit, quality and improvement hints for one session.
 	const impactBadge = h("span", { class: "pill accent" }, "…");
 	const impactKpis = gridRegion((si) => {
@@ -2123,73 +1954,11 @@ async function sessionPage(view, ctx) {
 		goalspecBadge.textContent = reconstructed ? "v1 · reconstructed" : current ? `v${current.version} · ${seeded ? "seeded" : "no seed"} · ${updates} update${updates === 1 ? "" : "s"}` : `${timeline.length} pins`;
 	}
 
-	function renderCourse(d) {
-		const events = d.course ?? [];
-		courseSection.hidden = events.length === 0;
-		const nudges = events.filter((e) => e.kind === "course.decision").length;
-		const warns = events.some((e) => e.kind === "course.decision" && e.verdict !== "goal_met");
-		courseBadge.className = `pill ${warns ? "warn" : "neutral"}`;
-		courseBadge.textContent = nudges ? `${nudges} nudge${nudges === 1 ? "" : "s"}` : "no nudges";
-		courseFeed.patch(courseFeedItems(events));
-	}
-
-	// --- compare with another session (same numbers, side by side)
-	const compareOptions = (await api("/api/sessions?limit=30")).sessions.filter((session) => session.sessionId !== state.sessionId);
-	const compareState = { thisImpact: null, otherImpact: null };
-	const compareTable = nodeRegion(() => {
-		const a = compareState.thisImpact;
-		const b = compareState.otherImpact;
-		if (!a?.session || !b?.session) return emptyState("Pick a session above to compare the two side by side.");
-		const row = (label, left, right) => ({ key: label, label, left, right });
-		return table({
-			columns: [
-				{ label: "Metric", render: (r) => r.label },
-				{ label: "This session", right: true, render: (r) => r.left },
-				{ label: "Compared", right: true, render: (r) => r.right },
-			],
-			rows: [
-				row("Cost", fmtCost(a.session.cost), fmtCost(b.session.cost)),
-				row("Calls", fmtInt(a.session.calls), fmtInt(b.session.calls)),
-				row("Turns", fmtInt(a.session.turns), fmtInt(b.session.turns)),
-				row("Cost / turn", fmtCost(a.benefit.costPerTurn ?? 0), fmtCost(b.benefit.costPerTurn ?? 0)),
-				row("Tokens kept out", fmtCompact(a.benefit.curatorTokensKeptOut), fmtCompact(b.benefit.curatorTokensKeptOut)),
-				row("Tokens condensed", fmtCompact(a.benefit.curatorTokensCondensed), fmtCompact(b.benefit.curatorTokensCondensed)),
-				row("Not re-read over the session", fmtCompact(a.benefit.curatorTokensNotResent), fmtCompact(b.benefit.curatorTokensNotResent)),
-				row("…worth at cache rates", fmtCost(a.benefit.curatorUsdCached), fmtCost(b.benefit.curatorUsdCached)),
-				row("Cache discount", fmtCost(a.benefit.cacheDiscount), fmtCost(b.benefit.cacheDiscount)),
-				row("Context edits", fmtInt(a.benefit.contextEdits), fmtInt(b.benefit.contextEdits)),
-				row("Rule deliveries", fmtInt(a.benefit.rulesDelivered), fmtInt(b.benefit.rulesDelivered)),
-				row("Corrections", fmtInt(a.quality.corrections), fmtInt(b.quality.corrections)),
-				row("Errored calls", fmtInt(a.quality.errors), fmtInt(b.quality.errors)),
-				row("Off-track", fmtInt(a.quality.offTrack), fmtInt(b.quality.offTrack)),
-				row("Rule precision", fmtPct(a.quality.rulePrecision, 0), fmtPct(b.quality.rulePrecision, 0)),
-			],
-		});
-	});
-	const comparePicker = modelPicker({
-		options: compareOptions.map((session) => ({
-			value: session.sessionId,
-			label: shortTitle(session.title) ?? session.sessionId.slice(0, 8),
-			meta: `${fmtInt(session.calls)} calls · ${fmtCost(session.cost)}`,
-		})),
-		value: null,
-		onChange: async (next) => {
-			compareState.otherImpact = next ? await api("/api/session/impact", { id: next }) : null;
-			compareTable.render();
-		},
-	});
-	const compareCard = card({
-		title: "Compare",
-		sub: "same harness numbers, side by side — useful for A/B on similar tasks",
-		body: h("div", { class: "grid" }, h("div", { class: "page-toolbar" }, h("span", { class: "small muted" }, "Compare with"), comparePicker), compareTable.node),
-	});
-
 	const callsCard = card({ title: "Model calls", flush: true, body: callsTable });
 	const modelsCard = card({ title: "Models used", body: modelsBars.node });
-	const eventsCard = card({ title: "Harness events", sub: "curator, model switches, custom entries", flush: true, body: eventsFeed });
+	const eventsCard = card({ title: "Harness events", sub: "curator, model switches, custom entries", flush: true, body: h("div", {}, eventChips.node, eventsFeed) });
 	const messagesCard = card({ title: "Messages", flush: true, body: messagesFeed });
-	const lanesCard = card({ title: "Timeline", body: lanesRegion.node });
-	view.append(kpis.node, goalspecSection, courseSection, impactSection, lanesCard, h("div", { class: "split" }, callsCard, modelsCard), h("div", { class: "split" }, eventsCard, messagesCard), compareCard);
+	view.append(kpis.node, goalspecSection, impactSection, h("div", { class: "split" }, callsCard, modelsCard), h("div", { class: "split even scrolly" }, eventsCard, messagesCard));
 
 	async function refresh() {
 		const [d, si] = await Promise.all([api("/api/session", { id: state.sessionId }), api("/api/session/impact", { id: state.sessionId })]);
@@ -2200,23 +1969,11 @@ async function sessionPage(view, ctx) {
 		}
 		kpis.render(d);
 		renderGoalspec(d);
-		renderCourse(d);
 		renderSessionImpact(si);
-		compareState.thisImpact = si;
-		compareTable.render();
-		lanesRegion.render(d);
 		callsTable.patch(d.calls ?? []);
 		modelsBars.render(d);
-		eventsFeed.patch(
-			(d.events ?? []).map((event) => ({
-				key: `${event.ts}|${event.kind}|${event.turn ?? ""}`,
-				ts: event.ts,
-				tone: event.severity === "error" ? "error" : event.severity === "warn" ? "warn" : "info",
-				title: `${event.system} · ${event.title ?? event.kind}`,
-				sub: event.summary ?? "",
-				right: h("span", { class: "small faint" }, event.turn != null ? `turn ${event.turn}` : ""),
-			})),
-		);
+		eventChips.render(d);
+		patchEvents(d);
 		messagesFeed.patch(
 			(d.messages ?? []).map((message) => ({
 				key: message.msg_id,

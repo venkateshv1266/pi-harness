@@ -145,7 +145,7 @@ export function barChart({ labels, series, height = 190, stacked = true, valueFm
 	const max = Math.max(...(stacked ? totals : series.flatMap((s) => s.values)), 1e-9);
 	const y = (v) => padT + ih - (v / max) * ih;
 	const slot = iw / n;
-	const barW = Math.max(1.5, Math.min(28, slot * 0.6));
+	const barW = Math.max(1.5, slot * 0.6);
 
 	const grid = [0, 0.25, 0.5, 0.75, 1]
 		.map((f) => {
