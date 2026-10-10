@@ -225,6 +225,7 @@ const server = Bun.serve({
 			}
 			if (p === "/api/models") return json(queries.models(db, rangeFrom(url)));
 			if (p === "/api/router") return json(queries.router(db, rangeFrom(url), Number(url.searchParams.get("limit")) || 300));
+			if (p === "/api/ask-jev") return json(queries.askJev(db, rangeFrom(url)));
 			if (p === "/api/ledger")
 				return json(
 					queries.ledger(db, {

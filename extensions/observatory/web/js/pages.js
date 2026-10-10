@@ -53,6 +53,34 @@ const HELP = {
 		source: "~/.pi/agent/jev-decisions/model-router.jsonl.",
 		action: "Open the tagged bad cases first. If they cluster on deep-tier escalations, the escalation threshold is the thing to move.",
 	},
+	askJevAdoption: {
+		title: "Ask-jev adoption",
+		what: "How many Jev calls each tool made per day. The reform (2026-10-10) retired the never-firing read-gate rule and reshaped the surface around inputs too big to read — watch the triage_test_output, review_diff and ask_jev_extract columns move.",
+		formula: "count of ask-jev.jsonl events per day, grouped by tool; end-of-run summary rows excluded.",
+		source: "~/.pi/agent/jev-decisions/ask-jev.jsonl.",
+		action: "Flat new-tool columns after a few sessions mean the nudge is not landing — re-run scripts/ask-jev-adoption.mjs for the conversion rate against read volume.",
+	},
+	askJevGate: {
+		title: "The retired read-gate rule",
+		what: "The ask-jev-for-file-judgments TTSR rule evaluated every read to reroute judgment lookups; it never fired once and cost ~500ms per read, so the reform retired it.",
+		formula: "ttsr-jev.jsonl gate evals for the rule, all time: fired ÷ evals.",
+		source: "~/.pi/agent/jev-decisions/ttsr-jev.jsonl.",
+		action: "If single-file judgment questions resurface in sessions, consider an intent-phase rule instead — see .pi/tasks/ask-jev-reform.md.",
+	},
+	askJevSurface: {
+		title: "Tool surface",
+		what: "Every tool the ask-jev extension currently registers, whether used or not: active (called in this range), idle (called before, not now), unused (never called), retired (no longer registered but present in the logs).",
+		formula: "the registered surface is parsed live from the extension file, so removing a tool retires it here automatically; status comes from range and all-time call counts in ask-jev.jsonl.",
+		source: "~/.pi/agent/extensions/ask-jev/index.ts + ~/.pi/agent/jev-decisions/ask-jev.jsonl.",
+		action: "The tuning view: unused after a week means the tool is not earning its surface — remove it or fix what blocks adoption. Idle tools are where nudging helps.",
+	},
+	askJevVerdicts: {
+		title: "review_diff verdicts",
+		what: "The typed verdicts review_diff returned from real pre-commit diff reviews: pass (no blockers, safe to commit), fix_first (findings worth fixing before committing), blocked (critical problem — secret, destructive change, or incoherent diff).",
+		formula: "tally of the verdict field over ask-jev.jsonl review_diff calls in range; the unobserved verdict types stay listed at 0 so an unused checkpoint reads as unused, not absent.",
+		source: "~/.pi/agent/jev-decisions/ask-jev.jsonl.",
+		action: "fix_first and blocked bars mean the checkpoint is earning its keep by intercepting problems. All-zero bars mean the pre-commit habit is not landing — reinforce the nudge.",
+	},
 	escalations: {
 		title: "Frontier escalations",
 		what: "How often the curator's verifier was unsure enough to pay for a frontier-model check, and how many goal-relevant lines the repair pass recovered before emitting.",
@@ -1388,6 +1416,87 @@ async function routerPage(view, ctx) {
 	ctx.onAutoRefresh(async () => render(await api("/api/router", { from: state.range, limit: 200 })));
 }
 
+// ------------------------------------------------------------------ ask-jev
+
+async function askJevPage(view, ctx) {
+	const data = await api("/api/ask-jev", { from: state.range });
+	clear(view);
+
+	const kpis = gridRegion((d) => [
+		kpi({ label: "Jev calls", value: fmtInt(d.stats.total), sub: `${fmtInt(d.stats.newToolCalls)} on the new big-input tools · ${d.stats.tools.length} tools` }),
+		kpi({ label: "Cost", value: fmtCost(d.stats.costTotal), sub: "logged Jev spend" }),
+		kpi({ label: "Latency p50", value: fmtMs(d.stats.latencyP50), sub: `p90 ${fmtMs(d.stats.latencyP90)}` }),
+		kpi({ label: "Errors", value: fmtInt(d.stats.errors), sub: d.stats.total ? `${Math.round(((d.stats.total - d.stats.errors) / d.stats.total) * 100)}% ok` : "—" }),
+		kpi({ label: "Tool surface", value: `${d.stats.activeCount}/${d.stats.surfaceTotal}`, sub: `${fmtInt(d.stats.unusedCount)} never called · ${fmtInt(d.stats.idleCount)} idle` }),
+	]);
+	const adoption = htmlRegion((d) => barChart({ labels: d.stats.days, series: d.stats.series, stacked: true, valueFmt: fmtInt }));
+	const surfaceTable = nodeRegion((d) => {
+		if (!d.stats.toolRows.length) return emptyState("No ask-jev tools and no calls in this range.");
+		return table({
+			columns: [
+				{ label: "Tool", render: (row) => h("span", { class: "mono" }, row.tool) },
+				{ label: "Status", render: (row) => pill(row.status, row.status === "active" ? "ok" : row.status === "unused" ? "warn" : row.status === "retired" ? "error" : "neutral") },
+				{ label: "Calls", right: true, render: (row) => fmtInt(row.calls) },
+				{ label: "All-time", right: true, render: (row) => fmtInt(row.callsAll) },
+				{ label: "Last used", render: (row) => (row.lastTs ? timeAgo(new Date(row.lastTs).toISOString()) : "never") },
+				{ label: "Since", render: (row) => h("span", { class: "muted" }, row.since ?? "—") },
+			],
+			rows: d.stats.toolRows.map((row) => ({ ...row, key: row.tool })),
+		});
+	});
+	const surfaceCard = card({ title: "Tool surface", sub: "every registered tool, used or not", body: surfaceTable.node, help: HELP.askJevSurface });
+	const surfaceSub = surfaceCard.querySelector(".cardhead .sub");
+	const verdicts = nodeRegion((d) => {
+		const counts = Object.fromEntries(d.stats.verdicts.map((r) => [r.label, r.count]));
+		const fixed = ["pass", "fix_first", "blocked"];
+		const labels = [...fixed, ...Object.keys(counts).filter((l) => !fixed.includes(l))];
+		return bars(labels.map((label) => ({ label, value: counts[label] ?? 0, tip: `${label}: ${fmtInt(counts[label] ?? 0)} reviewed diffs` })), { valueFmt: fmtInt });
+	});
+	const gate = nodeRegion((d) => {
+		const g = d.stats.gate;
+		if (!g || !g.evals) return emptyState("No read-gate history in the ledger.");
+		return h(
+			"div",
+			{},
+			h("div", { class: "small muted", style: { marginBottom: "10px" } }, `${fmtInt(g.fired)} of ${fmtInt(g.evals)} gate evals ever fired${g.p50 != null ? ` (~${fmtMs(g.p50)} per read)` : ""} — the rule never once classified a read as a judgment lookup, so the reform retired it and reshaped the surface around inputs too big to read.`),
+			bars(g.perDay.map((r) => ({ label: r.day, value: r.evals, tip: `${r.day}: ${fmtInt(r.evals)} evals · ${r.fired} fired` })), { valueFmt: fmtInt }),
+		);
+	});
+	const recent = table({
+		columns: [
+			{ label: "Time", right: true, render: (row) => fmtClock(row.ts) },
+			{ label: "Tool", render: (row) => h("span", { class: "mono" }, row.tool) },
+			{ label: "Detail", render: (row) => h("span", { class: "muted" }, row.detail ?? "—") },
+			{ label: "Cost", right: true, render: (row) => (row.costUsd == null ? "—" : fmtCost(row.costUsd)) },
+			{ label: "Latency", right: true, render: (row) => fmtMs(row.latencyMs) },
+			{ label: "", render: (row) => (row.severity === "warn" ? pill("err", "warn") : pill("ok", "ok")) },
+		],
+		rows: data.recent,
+		onRowClick: (row) => openEventDrawer(row),
+	});
+
+	view.append(
+		kpis.node,
+		card({ title: "Calls per day by tool", sub: "stacked · reform reshaped the surface on 2026-10-10", body: adoption.node, help: HELP.askJevAdoption }),
+		h("div", { class: "split" }, surfaceCard, card({ title: "review_diff verdicts", sub: "typed pre-commit verdicts", body: verdicts.node, help: HELP.askJevVerdicts })),
+		card({ title: "Retired rule · ask-jev-for-file-judgments", sub: "the read-gate that never fired", body: gate.node, help: HELP.askJevGate }),
+		card({ title: "Recent calls", sub: "newest first · click for the raw record", flush: true, body: recent }),
+	);
+
+	const render = (d) => {
+		kpis.render(d);
+		adoption.render(d);
+		surfaceTable.render(d);
+		surfaceSub.textContent = `${d.stats.activeCount} active · ${d.stats.idleCount} idle · ${fmtInt(d.stats.unusedCount)} never called${d.stats.retiredCount ? ` · ${d.stats.retiredCount} retired` : ""}`;
+		verdicts.render(d);
+		gate.render(d);
+		recent.patch(d.recent);
+		ctx.setStatus(`${RANGE_LABEL[state.range]} · ${fmtInt(d.stats.total)} ask-jev calls`);
+	};
+	render(data);
+	ctx.onAutoRefresh(async () => render(await api("/api/ask-jev", { from: state.range })));
+}
+
 // ------------------------------------------------------------------ ledger
 
 async function ledgerPage(view, ctx) {
@@ -2400,6 +2509,7 @@ export const PAGES = {
 	impact: impactPage,
 	models,
 	router: routerPage,
+	askJev: askJevPage,
 	ledger: ledgerPage,
 	curator: curatorPage,
 	refine: refinePage,
