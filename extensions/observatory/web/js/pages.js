@@ -18,7 +18,6 @@ export const state = {
 	sessionSort: "recent",
 	sessionQuery: "",
 	impactModel: null,
-	liveSystem: null,
 };
 
 const RANGE_LABEL = { "24h": "last 24 hours", "7d": "last 7 days", "30d": "last 30 days", all: "all time" };
@@ -2144,99 +2143,6 @@ async function healthPage(view, ctx) {
 	ctx.onAutoRefresh(async () => render(await api("/api/health", { from: state.range })));
 }
 
-// ------------------------------------------------------------------ live
-
-async function livePage(view, ctx) {
-	const [live, overview] = await Promise.all([api("/api/live", { limit: 120 }), api("/api/overview", { from: "24h" })]);
-	clear(view);
-	const kpis = gridRegion((d) => [
-		kpi({ label: "Last 24h cost", value: fmtCost(d.overview.totals.costModel), sub: `${fmtInt(d.overview.totals.calls)} calls` }),
-		kpi({ label: "Last 24h events", value: fmtInt(d.overview.totals.events), sub: "harness decisions" }),
-		kpi({ label: "Cache rate", value: fmtPct(d.overview.totals.cacheRate, 1), sub: "prompt token reuse" }),
-		kpi({ label: "Stream", value: "live", sub: "patches in place on ingest", valueClass: "small" }),
-	]);
-	const stream = feed([], { clock: fmtClock });
-	// Hovering pauses updates so a busy stream does not move while you read it.
-	let hovering = false;
-	let deferred = false;
-	stream.addEventListener("mouseenter", () => {
-		hovering = true;
-	});
-	stream.addEventListener("mouseleave", () => {
-		hovering = false;
-		if (deferred) {
-			deferred = false;
-			void refreshLive();
-		}
-	});
-	const systemChips = h("div", { class: "chiprow", style: { padding: "10px 14px 0" } });
-	const scopeLabel = h("span", { class: "small muted" }, "all subsystems");
-
-	view.append(
-		kpis.node,
-		h(
-			"div",
-			{ class: "card" },
-			h("div", { class: "cardhead" }, h("h3", {}, "Event stream"), h("span", { class: "sub" }, "newest first · click for the raw record · hovering pauses updates"), h("div", { class: "grow" }), scopeLabel),
-			systemChips,
-			h("div", { class: "cardbody flush" }, stream),
-		),
-	);
-	const render = (d) => {
-		kpis.render(d);
-		const counts = new Map();
-		for (const row of d.live.rows) counts.set(row.system, (counts.get(row.system) ?? 0) + 1);
-		clear(systemChips);
-		systemChips.append(
-			chip("all", d.live.rows.length, {
-				active: !state.liveSystem,
-				onClick: () => {
-					state.liveSystem = null;
-					void refreshLive();
-				},
-			}),
-			...[...counts.entries()]
-				.sort((a, b) => b[1] - a[1])
-				.map(([system, count]) =>
-					chip(system, count, {
-						active: state.liveSystem === system,
-						onClick: () => {
-							state.liveSystem = state.liveSystem === system ? null : system;
-							void refreshLive();
-						},
-					}),
-				),
-		);
-		scopeLabel.textContent = state.liveSystem ? `filtered: ${state.liveSystem}` : "all subsystems";
-		stream.patch(
-			d.live.rows
-				.filter((row) => !state.liveSystem || row.system === state.liveSystem)
-				.map((row) => ({
-				key: row.id,
-				ts: row.ts,
-				tone: row.severity === "error" ? "error" : row.severity === "warn" ? "warn" : "info",
-				title: `${row.system} · ${row.title ?? row.kind}`,
-				sub: row.summary ?? "",
-				right: h("span", { class: "small mono faint" }, row.sessionId ? row.sessionId.slice(0, 8) : ""),
-				onClick: () => openEventDrawer(row),
-			})),
-		);
-		ctx.setStatus("live stream");
-	};
-	async function refreshLive() {
-		const [nextLive, nextOverview] = await Promise.all([api("/api/live", { limit: 120 }), api("/api/overview", { from: "24h" })]);
-		render({ live: nextLive, overview: nextOverview });
-	}
-	render({ live, overview });
-	ctx.onAutoRefresh(async () => {
-		if (hovering) {
-			deferred = true;
-			return;
-		}
-		await refreshLive();
-	});
-}
-
 // ------------------------------------------------------------------ refine
 
 async function refinePage(view, ctx) {
@@ -2502,5 +2408,4 @@ export const PAGES = {
 	session: sessionPage,
 	extensions: extensionsPage,
 	health: healthPage,
-	live: livePage,
 };

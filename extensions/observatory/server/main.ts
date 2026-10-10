@@ -272,7 +272,6 @@ const server = Bun.serve({
 				return "error" in result ? json(result, 404) : json(result);
 			}
 			if (p === "/api/health") return json(queries.health(db, rangeFrom(url)));
-			if (p === "/api/live") return json(queries.live(db, Math.min(400, Number(url.searchParams.get("limit")) || 80)));
 			if (p === "/api/event") {
 				const id = Number(url.searchParams.get("id"));
 				if (!id) return json({ error: "id parameter required" }, 400);

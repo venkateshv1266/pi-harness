@@ -39,7 +39,6 @@ Server logs: `~/.pi/agent/observatory/server.log`.
 | **Tuner** | Weekly tuning passes and their **proposals** — prune or config, with the evidence behind each, its review status, and a link to the file it concerns: config proposals record no file, so they open the proposal log, and an applied prune opens its renamed `.disabled` copy rather than a path that no longer exists |
 | **Extensions** | Every installed extension with activity, cost, adapter coverage, and a **silent 7d+** flag; adapter log paths are shown resolved (`~/.pi/agent/jev-decisions/…`) with the declared name in a tooltip, since a bare relative name is indistinguishable from a moved file |
 | **Health** | Warnings/errors per subsystem and recent issues, with raw-record drilldown |
-| **Live** | Streaming feed of harness events as they are written |
 
 Every headline number drills through to the raw log record it came from.
 Values the logs do not contain are shown as `—`, never estimated silently.
