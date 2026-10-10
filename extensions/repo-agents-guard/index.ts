@@ -1,45 +1,17 @@
-import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { basename } from "node:path";
+import {
+	AGENTS_FILE,
+	canonicalPath,
+	expandHome,
+	findGovernedRepo,
+	isAgentsReadPath,
+	type GovernedRepo,
+} from "./paths.ts";
 
-const AGENTS_FILE = "AGENTS.md";
 const PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
 const CHILD_TOOLS = new Set(["subagent", "subagent_spawn", "delegate"]);
-
-type GovernedRepo = {
-	root: string;
-	agentsPath: string;
-};
-
-function expandHome(value: string): string {
-	if (value === "~") return homedir();
-	if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-	return value;
-}
-
-function canonicalPath(value: string, cwd: string): string {
-	const candidate = resolve(cwd, expandHome(value));
-	try {
-		return realpathSync.native(candidate);
-	} catch {
-		return candidate;
-	}
-}
-
-function findGovernedRepo(value: string, cwd: string): GovernedRepo | undefined {
-	let directory = canonicalPath(value, cwd);
-	while (true) {
-		const agentsPath = join(directory, AGENTS_FILE);
-		if (existsSync(agentsPath)) {
-			return { root: directory, agentsPath };
-		}
-		const parent = dirname(directory);
-		if (parent === directory) return undefined;
-		directory = parent;
-	}
-}
 
 function shellPathCandidates(command: string, cwd: string): string[] {
 	const candidates = [cwd];
@@ -98,9 +70,7 @@ function governedTargets(event: ToolCallEvent, cwd: string): GovernedRepo[] {
 }
 
 function isAgentsRead(event: ToolCallEvent, repo: GovernedRepo, cwd: string): boolean {
-	if (!isToolCallEventType("read", event)) return false;
-	const path = typeof event.input.path === "string" ? canonicalPath(event.input.path, cwd) : "";
-	return path === repo.agentsPath;
+	return isToolCallEventType("read", event) && isAgentsReadPath(event.input.path, repo, cwd);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -109,8 +79,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		for (const file of event.systemPromptOptions.contextFiles ?? []) {
+			if (basename(expandHome(file.path)) !== AGENTS_FILE) continue;
 			const path = canonicalPath(file.path, ctx.cwd);
-			if (basename(path) !== AGENTS_FILE) continue;
 			const repo = findGovernedRepo(path, ctx.cwd);
 			if (repo?.agentsPath === path) confirmed.add(repo.agentsPath);
 		}
@@ -126,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			return {
 				block: true,
-				reason: `Read ${repo.agentsPath} with the read tool before using tools in ${repo.root}.`,
+				reason: `Read ${repo.displayPath} with the read tool before using tools in ${repo.root}.`,
 			};
 		}
 	});

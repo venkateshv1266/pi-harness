@@ -18,6 +18,8 @@ fi
 # cmux-session.ts is intentionally absent — cmux installs and upgrades it in
 # place (`cmux hooks pi install`); this rsync never touches it.
 mkdir -p "$AGENT/extensions"
+# Migrate the former single-file repo-agents-guard extension to its directory form.
+rm -f "$AGENT/extensions/repo-agents-guard.ts"
 RSYNC_EXCLUDES=(--exclude='node_modules' --exclude='.DS_Store')
 rsync -a "${RSYNC_EXCLUDES[@]}" "$REPO_DIR/extensions/" "$AGENT/extensions/"
 
