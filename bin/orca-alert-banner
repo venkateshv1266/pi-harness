@@ -1,23 +1,24 @@
 #!/bin/sh
 # Posts the Orca-branded alert banner; a click opens the exact session.
-# Usage: orca-alert-banner <title> <message>
+# A stable group makes each new alert replace the previous one in
+# Notification Center; clear residue with: <notifier> -remove pi-harness.yubikey-alert
 title="${1:-Alert}"
 message="${2:-}"
 focus="$HOME/.pi/agent/bin/orca-focus-terminal"
 pane_ref="${ORCA_AGENT_PANE##*:}"
 [ -n "$pane_ref" ] || pane_ref="${ORCA_TAB_ID:-}"
+GROUP="pi-harness.yubikey-alert"
 
 app_notifier="/Applications/Orca-Notifier.app/Contents/MacOS/terminal-notifier"
 [ -x "$app_notifier" ] || app_notifier="$HOME/Applications/Orca-Notifier.app/Contents/MacOS/terminal-notifier"
 [ -x "$app_notifier" ] || app_notifier="$HOME/.pi/agent/bin/Orca-Notifier.app/Contents/MacOS/terminal-notifier"
-if [ -x "$app_notifier" ] && [ -n "$pane_ref" ] && [ -x "$focus" ]; then
-  exec "$app_notifier" -title "$title" -message "$message" -execute "$focus $pane_ref"
-fi
+[ -x "$app_notifier" ] || app_notifier="$(command -v terminal-notifier 2>/dev/null || printf '%s' /opt/homebrew/bin/terminal-notifier)"
 
-plain_notifier="$(command -v terminal-notifier 2>/dev/null || printf '%s' /opt/homebrew/bin/terminal-notifier)"
-if [ -x "$plain_notifier" ]; then
-  # Click activates the real Orca app (sender bundle id); the caller pre-focuses the tab.
-  exec "$plain_notifier" -title "$title" -message "$message" -sender com.stablyai.orca
+if [ -x "$app_notifier" ]; then
+  if [ -n "$pane_ref" ] && [ -x "$focus" ]; then
+    exec "$app_notifier" -title "$title" -message "$message" -group "$GROUP" -execute "$focus $pane_ref"
+  fi
+  exec "$app_notifier" -title "$title" -message "$message" -group "$GROUP"
 fi
 
 esc_title=$(printf '%s' "$title" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' ')
