@@ -54,7 +54,7 @@ Common entry points:
   [one-shot engine](extensions/subagent/README.md) and
   [persistent engine](extensions/persistent-subagent/README.md)
 - **Judgment and guardrails** — [ask-jev](extensions/ask-jev/README.md) (Jev
-  tools: cheap file judgments, log triage, assumption validation),
+  tools: log/test-output triage, pre-commit diff review, tree fan-out, typed state decisions),
   [jev-guard](extensions/jev-guard/README.md) (bash command gate + injection screen,
   `/jev-guard on|off` toggle)
 - **Memory and context** — [jev-memory](extensions/jev-memory/README.md),

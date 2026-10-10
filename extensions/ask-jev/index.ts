@@ -67,16 +67,16 @@ const QUESTION_SCHEMA =
 	'score: {"type":"score","instructions":"How ... is `content`?","criteria":["lowest situation","...","highest situation"]} returns a position on your levels, 2 to 16 of them. ' +
 	"Ask every question you might need in one block — it is one call per file either way.";
 
-const NUDGE_MARKER = "ask-jev-nudge-v1";
+const NUDGE_MARKER = "ask-jev-nudge-v2";
 const NUDGE =
 	`\n\n<!-- ${NUDGE_MARKER} -->\n` +
-	"## Cheap file judgments (ask-jev)\n" +
-	"You have ask_jev_file_bool, ask_jev_file_choice, ask_jev_file_score, ask_jev_files, pick_first_file, ask_jev, and triage_log. " +
-	"When you need a judgment about a file — does it do X, which pattern is it, how risky is it — use these instead of read: " +
-	"the answer returns typed with a confidence in under a second and the file never enters your context. " +
-	"Give paths, not pasted content. Use ask_jev_files plus pick_first_file to find where to start in an unfamiliar tree, " +
-	"triage_log before reading any large log file, and a cheap ask_jev_file_bool to validate an assumption about a file before you act on it. " +
-	"Use read when you need the code itself, to edit or quote; grep for exact-string lookups.";
+	"## ask-jev: typed decisions over inputs too big to read\n" +
+	"You have triage_log (top-k relevant lines from a large log), triage_test_output (failure sites + root-cause/cascade/flaky classification " +
+	"from a failing test run), review_diff (typed pre-commit review of the staged diff: scope, secrets, debug leftovers, missing tests), " +
+	"ask_jev_files + pick_first_file (where to start in an unfamiliar tree), ask_jev (one typed call over state you assemble plus one " +
+	"read-only command), and the one-file ask_jev_file_bool/choice/score. Reach for these when the input is large or fan-out shaped — " +
+	"logs, test dumps, diffs, whole trees — and give paths, not pasted content. Don't route small files you are about to edit or quote " +
+	"through them; read is the right tool there. Before committing, call review_diff once and fix blockers.";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -772,6 +772,351 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	pi.registerTool({
+		name: "triage_test_output",
+		label: "Triage failing test output with Jev",
+		description:
+			"Failing-test prefilter: finds the failure sites in a big test dump and classifies each one — root_cause, cascade, flaky, env_infra — " +
+			"before you read the whole output. One Jev call per chunk in parallel; FAIL/Error/traceback lines pass through deterministically. " +
+			"After a large failing test run (CI, npm test, go test, pytest), save the output to a file and triage it, then read only the evidence blocks. " +
+			"Jev narrows the haystack; it does not conclude.",
+		promptSnippet: "triage_test_output(file|text, question?) — failure sites + root-cause/cascade/flaky classification before reading the dump",
+		parameters: Type.Object({
+			file: Type.Optional(Type.String({ description: "Path to the test output (save the raw dump to a file first)" })),
+			text: Type.Optional(Type.String({ description: "Inline test output (alternative to file; keep small)" })),
+			question: Type.Optional(Type.String({ description: "Investigation context, e.g. 'CI red after the auth refactor — which failure is the root cause?'" })),
+			top_k: Type.Optional(Type.Number({ description: "Max failure sites classified and returned (default 6, max 12)" })),
+			max_lines: Type.Optional(Type.Number({ description: "Cap on lines read (default 6000)" })),
+			chunk_lines: Type.Optional(Type.Number({ description: "Lines per internal scoring batch (default 150)" })),
+		}),
+		annotations,
+		async execute(_id, p, _signal, _onUpdate, ctx) {
+			const t0 = Date.now();
+			try {
+				let text: string;
+				if (p.file !== undefined && p.file !== "") text = readText(resolvePath(p.file, ctx.cwd), 8_000_000);
+				else if (p.text !== undefined && p.text !== "") text = p.text;
+				else throw new AskError("provide either file or text");
+
+				const question = p.question?.trim() || "Which failing test is the root cause, and which failures cascade from it?";
+				const maxLines = Math.max(50, p.max_lines ?? 6000);
+				const topK = Math.min(12, Math.max(1, p.top_k ?? 6));
+				const chunkSize = Math.min(400, Math.max(10, p.chunk_lines ?? CHUNK_LINES));
+
+				const warnings: string[] = [];
+				let costUsd = 0;
+
+				const allLines = text.split(/\r?\n/).map((t, i) => ({ n: i + 1, text: t }));
+				if (allLines.length > maxLines) warnings.push(`test output truncated to first ${maxLines} of ${allLines.length} lines`);
+				const lines = allLines.slice(0, maxLines);
+
+				const chunks: { n: number; text: string }[][] = [];
+				let current: { n: number; text: string }[] = [];
+				let currentChars = 0;
+				for (const l of lines) {
+					if (current.length >= chunkSize || (current.length > 0 && currentChars + l.text.length > CHUNK_CHARS)) {
+						chunks.push(current);
+						current = [];
+						currentChars = 0;
+					}
+					current.push(l);
+					currentChars += l.text.length;
+				}
+				if (current.length > 0) chunks.push(current);
+
+				const chunkResults = await mapPool(chunks, JEV_CONCURRENCY, async (chunk) => {
+					try {
+						const state =
+							`${question}\n\nTEST OUTPUT excerpt (numbers on the left are line numbers):\n` +
+							chunk.map((l) => `${l.n}| ${l.text}`).join("\n");
+						const questions: Record<string, Question> = {};
+						for (const l of chunk) {
+							if (l.text.trim())
+								questions[`L${l.n}`] = {
+									type: "noul",
+									instructions: `Is line ${l.n} part of a failing test's report (failing test name, assertion error, expected/actual mismatch, stack trace) rather than passing output or run summary?`,
+								};
+						}
+						const r = await jevCall(state, questions);
+						const scored: { n: number; score: number; text: string }[] = [];
+						for (const l of chunk) {
+							if (!l.text.trim()) continue;
+							const a = noulOf(r.answers, `L${l.n}`);
+							if (a) scored.push({ n: l.n, score: a.noul, text: l.text });
+						}
+						return { ok: true as const, scored, costUsd: r.costUsd };
+					} catch (err) {
+							return { ok: false as const, error: (err as Error).message };
+					}
+				});
+
+				const scored: { n: number; score: number; text: string }[] = [];
+				for (const r of chunkResults) {
+					if (r.ok) {
+							scored.push(...r.scored);
+							costUsd += r.costUsd;
+						} else {
+							warnings.push(`chunk scoring failed: ${r.error}`);
+						}
+				}
+
+				scored.sort((a, b) => b.score - a.score || a.n - b.n);
+				const kept: { n: number; score: number | null; text: string }[] = scored.filter((l) => l.score >= 0.5).slice(0, topK * 10);
+				const chosen = new Set(kept.map((l) => l.n));
+				let deterministicAdded = 0;
+				for (const l of lines) {
+					if (deterministicAdded >= topK * 10) break;
+					if (chosen.has(l.n) || !l.text.trim()) continue;
+					if (ERROR_LINE.test(l.text) || /[✕✗✘]/.test(l.text)) {
+							kept.push({ n: l.n, score: scored.find((s) => s.n === l.n)?.score ?? null, text: l.text });
+							chosen.add(l.n);
+							deterministicAdded++;
+					}
+				}
+
+				const blocks = buildFailureBlocks(kept, allLines, topK, 12_000);
+				const failures: { lines: string; class: string; confidence: number; primary_noul: number | null; evidence: string }[] = [];
+				let overall: { choice: string; confidence: number } | null = null;
+				if (blocks.length > 0) {
+					const questions: Record<string, Question> = {
+						overall: {
+							type: "choice",
+							instructions: "How is this failing test run best explained?",
+							criteria: {
+								single_root_cause: "one failure causes most of the rest",
+								multiple_independent: "several unrelated failures",
+								flaky_run: "timing or ordering flakiness dominates",
+								env_infra: "environment or infrastructure problem dominates",
+								other: "none of these",
+							},
+						},
+					};
+					for (let i = 0; i < blocks.length; i++) {
+						questions[`C${i}`] = {
+							type: "choice",
+							instructions: `Classify failure site ${i + 1} (lines ${blocks[i].lines}).`,
+							criteria: {
+								root_cause: "the primary defect — its failure is not explained by any other failure in this run",
+								cascade: "fails because of another failure (shared fixture, setup, dependent test); fix the root cause and this passes",
+								flaky: "timing, ordering, or network dependent; likely passes on retry",
+								env_infra: "environment or infrastructure problem — service down, resource missing, port conflict, dependency fetch failure",
+								other: "none of the above",
+							},
+						};
+						questions[`P${i}`] = { type: "noul", instructions: `Is failure site ${i + 1} the single primary root cause of this failing run?` };
+					}
+					const state =
+						`${question}\n\nFAILURE SITES from the test run:\n\n` +
+						blocks.map((b, i) => `--- site ${i + 1} (lines ${b.lines}) ---\n${b.text}`).join("\n\n");
+					const r = await jevCall(state, questions);
+					costUsd += r.costUsd;
+					for (let i = 0; i < blocks.length; i++) {
+							const c = choiceOf(r.answers, `C${i}`);
+							const prim = noulOf(r.answers, `P${i}`);
+							failures.push({
+								lines: blocks[i].lines,
+								class: c?.choice ?? "other",
+								confidence: c?.confidence ?? 0,
+								primary_noul: prim?.noul ?? null,
+								evidence: blocks[i].text,
+							});
+						}
+						failures.sort((a, b) => (b.primary_noul ?? 0) - (a.primary_noul ?? 0));
+						const o = choiceOf(r.answers, "overall");
+						if (o) overall = { choice: o.choice, confidence: o.confidence };
+				} else {
+						warnings.push("no failure sites found — confirm this is actually a failing run");
+				}
+
+				const elapsedMs = Date.now() - t0;
+				recordCall("triage_test_output", costUsd, elapsedMs, {
+					total_lines: allLines.length,
+					failure_sites: failures.length,
+					chunks: chunks.length,
+				});
+				return ok({
+					question,
+					failures,
+					overall,
+					total_lines: allLines.length,
+					chunks: chunks.length,
+					warnings,
+					cost_usd: round6(costUsd),
+					elapsed_ms: elapsedMs,
+				});
+			} catch (err) {
+				recordError("triage_test_output", (err as Error).message);
+				return fail(err instanceof AskError ? err.message : `triage_test_output error: ${(err as Error).message}`);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "review_diff",
+		label: "Review the diff with Jev before committing",
+		description:
+			"One Jev review of the current diff at commit time: scope creep, secrets, debug leftovers, type escapes, missing tests — " +
+			"typed findings with confidences plus a pass/fix_first/blocked verdict, and the most likely file per flagged finding. " +
+			"Runs `git diff --staged` itself (falls back to the unstaged diff when nothing is staged), or reviews diff text you pass. " +
+			"Call it before every commit; fix blockers, then commit. Not a substitute for your own check pass.",
+		promptSnippet: "review_diff(state?) — typed pre-commit review of the staged diff",
+		parameters: Type.Object({
+			state: Type.Optional(Type.String({ description: "Short change intent, e.g. the ticket title — used for the scope check" })),
+			diff_text: Type.Optional(Type.String({ description: "Diff text to review (default: run git diff --staged, falling back to git diff)" })),
+		}),
+		annotations,
+		async execute(_id, p, _signal, _onUpdate, ctx) {
+			const t0 = Date.now();
+			try {
+				let diffText: string;
+				let source: string;
+				if (p.diff_text !== undefined && p.diff_text !== "") {
+					diffText = p.diff_text;
+					source = "diff_text";
+				} else {
+					const staged = await runCommand("git diff --staged", ctx.cwd);
+					if (staged.stdout.trim() !== "") {
+						diffText = staged.stdout;
+						source = "git diff --staged";
+					} else {
+						const unstaged = await runCommand("git diff", ctx.cwd);
+						if (unstaged.stdout.trim() === "") throw new AskError("no staged or unstaged changes to review");
+						diffText = unstaged.stdout;
+						source = "git diff (nothing staged)";
+					}
+				}
+				if (diffText.length > 60_000) {
+					throw new AskError(
+						`diff is ${diffText.length} chars, over the 60000 char budget — review in smaller units (per-path with ask_jev, or commit in slices)`,
+					);
+				}
+
+				const warnings: string[] = [];
+				const intent = p.state?.trim() || "(not provided — judge whether the diff looks like one coherent change)";
+				const questions: Record<string, Question> = {
+						scope_creep: {
+							type: "noul",
+							instructions: `Change intent: ${intent}. Does the diff contain changes unrelated to that intent — drive-by edits, debug code, commented-out code, unrelated refactors?`,
+							criteria: { true: "contains unrelated or out-of-scope edits", false: "every hunk serves the stated intent" },
+						},
+						secrets: {
+							type: "noul",
+							instructions: "Does the diff add hardcoded secrets — API keys, tokens, passwords, connection strings, private keys?",
+							criteria: { true: "adds a hardcoded secret", false: "no hardcoded secrets added" },
+						},
+						debug_leftovers: {
+							type: "noul",
+							instructions:
+								"Does the diff add debug leftovers — console.log, print, debugger statements, commented-out code, TODO/FIXME/HACK markers?",
+							criteria: { true: "adds debug leftovers", false: "no debug leftovers" },
+						},
+						type_escapes: {
+							type: "noul",
+							instructions:
+								"Does the diff add type-system escapes or swallowed errors — ts-ignore without an explicit justification, unjustified any, empty catch blocks, errors caught and ignored?",
+							criteria: { true: "adds a type escape or swallowed error", false: "no type escapes or swallowed errors" },
+						},
+						missing_tests: {
+							type: "noul",
+							instructions:
+								"Does the diff change runtime logic without adding or updating any test? (Docs-only, config-only, or test-only diffs count as no.)",
+							criteria: { true: "runtime logic changed with no test changes", false: "tests updated, or no runtime logic changed" },
+						},
+						overall: {
+						type: "choice",
+							instructions: "Given these check answers, what should the model do before committing this diff?",
+							criteria: {
+								pass: "no blockers — safe to commit",
+								fix_first: "fix the flagged findings before committing",
+								blocked: "critical problem — secret, destructive change, or incoherent diff; do not commit as-is",
+							},
+						},
+					};
+				const r = await jevCall({ intent, diff_source: source, diff: diffText }, questions);
+				let costUsd = r.costUsd;
+
+				const files = [...diffText.matchAll(/^diff --git a\/(.+?) b\/(.+?)$/gm)].map((m) => m[2]);
+				const checks = (["scope_creep", "secrets", "debug_leftovers", "type_escapes", "missing_tests"] as const).map((id) => {
+					const a = noulOf(r.answers, id);
+					return { check: id, noul: a?.noul ?? 0, confidence: a?.confidence ?? 0 };
+				});
+
+				let locations: Record<string, { file: string; confidence: number }> | undefined;
+				const flagged = checks.filter((c) => c.noul >= 0.5);
+				if (flagged.length > 0 && files.length >= 1 && files.length <= 20) {
+					try {
+						const criteria: Record<string, string> = {};
+						for (const f of files) criteria[f] = `most likely location of the finding (${f})`;
+						criteria.not_located = "cannot pin the finding to one file";
+						const locQuestions: Record<string, Question> = {};
+						for (const c of flagged)
+							locQuestions[c.check] = { type: "choice", instructions: `Which file most likely contains the ${c.check.replace(/_/g, " ")} finding?`, criteria };
+						const lr = await jevCall({ diff: diffText, findings: flagged }, locQuestions);
+						costUsd += lr.costUsd;
+						locations = {};
+						for (const c of flagged) {
+							const a = choiceOf(lr.answers, c.check);
+							if (a && a.choice !== "not_located") locations[c.check] = { file: a.choice, confidence: a.confidence };
+						}
+						if (Object.keys(locations).length === 0) locations = undefined;
+					} catch (err) {
+							warnings.push(`location pass failed: ${(err as Error).message}`);
+						}
+				}
+
+				const verdict = choiceOf(r.answers, "overall");
+				const elapsedMs = Date.now() - t0;
+				recordCall("review_diff", costUsd, elapsedMs, { files: files.length, diff_chars: diffText.length, verdict: verdict?.choice ?? null });
+				return ok({
+					verdict: verdict?.choice ?? "fix_first",
+					verdict_confidence: verdict?.confidence ?? 0,
+					checks,
+					...(locations ? { locations } : {}),
+					files_changed: files,
+					diff_source: source,
+					warnings,
+					cost_usd: round6(costUsd),
+				elapsed_ms: elapsedMs,
+				});
+			} catch (err) {
+				recordError("review_diff", (err as Error).message);
+				return fail(err instanceof AskError ? err.message : `review_diff error: ${(err as Error).message}`);
+			}
+		},
+	});
+}
+
+function buildFailureBlocks(
+	kept: { n: number; score: number | null; text: string }[],
+	allLines: { n: number; text: string }[],
+	maxBlocks: number,
+	budget = 12_000,
+): { lines: string; score: number; text: string }[] {
+	const byLine = [...kept].sort((a, b) => a.n - b.n);
+	const windows: { lo: number; hi: number; score: number }[] = [];
+	for (const l of byLine) {
+		const lo = Math.max(1, l.n - 2);
+		const hi = Math.min(allLines.length, l.n + 2);
+		const last = windows[windows.length - 1];
+		if (last && lo <= last.hi + 1) {
+			last.hi = Math.max(last.hi, hi);
+			last.score = Math.max(last.score, l.score ?? 0);
+		} else windows.push({ lo, hi, score: l.score ?? 0 });
+	}
+	windows.sort((a, b) => b.score - a.score);
+	const blocks: { lines: string; score: number; text: string }[] = [];
+	let used = 0;
+	for (const w of windows) {
+		if (blocks.length >= maxBlocks) break;
+		const text: string[] = [];
+		for (let n = w.lo; n <= w.hi; n++) text.push(`${n}| ${allLines[n - 1]?.text ?? ""}`);
+		const joined = text.join("\n");
+		if (used + joined.length > budget) break;
+		blocks.push({ lines: `${w.lo}-${w.hi}`, score: w.score, text: joined });
+		used += joined.length;
+	}
+	return blocks;
 }
 
 function buildSample(lines: { n: number; text: string }[]): string {
