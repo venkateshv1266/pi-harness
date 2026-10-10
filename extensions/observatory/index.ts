@@ -136,7 +136,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`Starting Observatory on port ${port}… (first scan indexes all session logs)`, "info");
 			let child;
 			try {
-				child = spawn(bun, ["run", serverEntry()], {
+				child = spawn(bun, [serverEntry()], {
 					env: { ...process.env, PI_CODING_AGENT_DIR: agentDir(), OBSERVATORY_PORT: String(port) },
 					stdio: ["ignore", logFd, logFd],
 					detached: true,

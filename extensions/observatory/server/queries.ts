@@ -1782,6 +1782,192 @@ export function router(db: Database, range: Range, limit = 300) {
 	};
 }
 
+// ------------------------------------------------------------------ ask-jev
+
+const ASK_JEV_NEW_TOOLS = new Set(["triage_test_output", "review_diff", "ask_jev_extract"]);
+
+// Registration dates for the surface table — everything else shipped with the
+// extension's first install.
+const ASK_JEV_SINCE: Record<string, string> = {
+	triage_test_output: "2026-10-10",
+	review_diff: "2026-10-10",
+	ask_jev_extract: "2026-10-10",
+};
+
+// The active tool surface is parsed live from the extension file, not kept as a
+// hand list, so removing a tool from the extension retires it here automatically.
+function askJevSurface(): string[] {
+	try {
+		const src = readFileSync(path.join(extensionsDir(), "ask-jev", "index.ts"), "utf8");
+		return src
+			.split("pi.registerTool(")
+			.slice(1)
+			.map((block) => block.match(/name:\s*"([^"]+)"/)?.[1] ?? null)
+			.filter((name): name is string => name !== null);
+	} catch {
+		return [];
+	}
+}
+
+export function askJev(db: Database, range: Range) {
+	const rows = db
+		.query<EventRow, []>("SELECT * FROM events WHERE system = 'ask-jev' ORDER BY ts_ms DESC LIMIT 50000")
+		.all();
+
+	const perTool: Record<string, { count: number; latencies: number[]; cost: number; errors: number; lastTs: number | null }> = {};
+	const verdicts: Record<string, number> = {};
+	const byDay: Record<string, Record<string, number>> = {};
+	const recent: Record<string, unknown>[] = [];
+	const allLatencies: number[] = [];
+	const allTime: Record<string, { calls: number; lastTs: number }> = {};
+	let costTotal = 0;
+	let errors = 0;
+	let newToolCalls = 0;
+
+	for (const row of rows) {
+		const data = parseData(row);
+		if (data.summary === true) continue; // end-of-run ledger rows, not calls
+		const tool = typeof data.tool === "string" ? data.tool : "unknown";
+		const tsMs = row.ts_ms ?? 0;
+		const seen = (allTime[tool] ??= { calls: 0, lastTs: 0 });
+		seen.calls += 1;
+		seen.lastTs = Math.max(seen.lastTs, tsMs);
+		if (tsMs < range.from || tsMs > range.to) continue;
+		const day = new Date(tsMs).toISOString().slice(0, 10);
+		const entry = (perTool[tool] ??= { count: 0, latencies: [], cost: 0, errors: 0, lastTs: null });
+		entry.count += 1;
+		entry.lastTs = Math.max(entry.lastTs ?? 0, tsMs);
+		if (row.latency_ms != null) {
+			entry.latencies.push(row.latency_ms);
+			allLatencies.push(row.latency_ms);
+		}
+		if (row.cost_usd != null) {
+			entry.cost += row.cost_usd;
+			costTotal += row.cost_usd;
+		}
+		if (row.severity === "warn") {
+			entry.errors += 1;
+			errors += 1;
+		}
+		if (ASK_JEV_NEW_TOOLS.has(tool)) newToolCalls += 1;
+		if (typeof data.verdict === "string") verdicts[data.verdict] = (verdicts[data.verdict] ?? 0) + 1;
+		const dayTools = (byDay[day] ??= {});
+		dayTools[tool] = (dayTools[tool] ?? 0) + 1;
+		if (recent.length < 60) {
+			recent.push({
+				id: row.id,
+				ts: row.ts,
+				tool,
+				system: "ask-jev",
+				severity: row.severity ?? "info",
+				costUsd: row.cost_usd,
+				latencyMs: row.latency_ms,
+				detail:
+					typeof data.verdict === "string"
+						? data.verdict
+						: typeof data.noul === "number"
+							? `noul ${data.noul.toFixed(2)}`
+							: typeof data.failure_sites === "number"
+								? `${data.failure_sites} sites`
+								: typeof data.total_lines === "number"
+									? `${data.total_lines} lines`
+									: null,
+				title: row.title ?? `ask · ${tool}`,
+			});
+		}
+	}
+
+	const total = Object.values(perTool).reduce((a, e) => a + e.count, 0);
+	const days = Object.keys(byDay).sort();
+	const tools = Object.entries(perTool)
+		.sort((a, b) => b[1].count - a[1].count)
+		.map(([tool, e]) => ({
+			tool,
+			calls: e.count,
+			share: total > 0 ? e.count / total : null,
+			p50: pct(e.latencies, 50),
+			p90: pct(e.latencies, 90),
+			cost: e.cost,
+			errors: e.errors,
+			lastTs: e.lastTs,
+		}));
+
+	// The retired read-gate rule is history, so its evals are counted all-time — the
+	// reform story stays visible regardless of the selected range.
+	const gateRows = db
+		.query<EventRow, []>("SELECT * FROM events WHERE system = 'ttsr' AND data LIKE '%ask-jev-for-file-judgments%' ORDER BY ts_ms ASC")
+		.all();
+	const gateByDay: Record<string, { evals: number; fired: number }> = {};
+	let gateEvals = 0;
+	let gateFired = 0;
+	const gateLatencies: number[] = [];
+	for (const row of gateRows) {
+		const data = parseData(row);
+		if (typeof data.rule !== "string" || data.rule !== "ask-jev-for-file-judgments") continue;
+		gateEvals += 1;
+		const fired = data.decision === "fired";
+		if (fired) gateFired += 1;
+		if (row.latency_ms != null) gateLatencies.push(row.latency_ms);
+		const day = new Date(row.ts_ms ?? 0).toISOString().slice(0, 10);
+		const entry = (gateByDay[day] ??= { evals: 0, fired: 0 });
+		entry.evals += 1;
+		if (fired) entry.fired += 1;
+	}
+
+	const surface = askJevSurface();
+	const statusRank = { active: 0, idle: 1, unused: 2, retired: 3 } as Record<string, number>;
+	const toolRows = [...new Set([...surface, ...Object.keys(allTime)])]
+		.map((tool) => {
+			const inSurface = surface.includes(tool);
+			const calls = perTool[tool]?.count ?? 0;
+			const callsAll = allTime[tool]?.calls ?? 0;
+			const status = !inSurface ? "retired" : calls > 0 ? "active" : callsAll > 0 ? "idle" : "unused";
+			return {
+				tool,
+				status,
+				active: inSurface,
+				calls,
+				callsAll,
+				p50: perTool[tool] ? pct(perTool[tool].latencies, 50) : null,
+				cost: perTool[tool]?.cost ?? 0,
+				errors: perTool[tool]?.errors ?? 0,
+				lastTs: allTime[tool]?.lastTs ?? null,
+				since: ASK_JEV_SINCE[tool] ?? "2026-10-06",
+			};
+		})
+		.sort((a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || b.callsAll - a.callsAll);
+
+	return {
+		recent,
+		stats: {
+			total,
+			errors,
+			costTotal,
+			latencyP50: pct(allLatencies, 50),
+			latencyP90: pct(allLatencies, 90),
+			newToolCalls,
+			days,
+			series: tools.map((t) => ({ name: t.tool, values: days.map((d) => byDay[d]?.[t.tool] ?? 0) })),
+			tools,
+			verdicts: Object.entries(verdicts).map(([label, count]) => ({ label, count })),
+			surfaceTotal: surface.length,
+			activeCount: toolRows.filter((t) => t.status === "active").length,
+			idleCount: toolRows.filter((t) => t.status === "idle").length,
+			unusedCount: toolRows.filter((t) => t.status === "unused").length,
+			retiredCount: toolRows.filter((t) => t.status === "retired").length,
+			toolRows,
+			gate: {
+				evals: gateEvals,
+				fired: gateFired,
+				p50: pct(gateLatencies, 50),
+				perDay: Object.entries(gateByDay)
+					.sort(([a], [b]) => a.localeCompare(b))
+					.map(([day, e]) => ({ day, ...e })),
+			},
+		},
+	};
+}
+
 // ------------------------------------------------------------------ ledger
 
 export interface LedgerFilters {

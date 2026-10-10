@@ -370,7 +370,7 @@ export function decisionAdapters(): Adapter[] {
 		jsonlAdapter({
 			id: "ask-jev",
 			title: "Ask-Jev",
-			description: "File judgment calls (bool/choice/score) with latency and cost.",
+			description: "Typed Jev decisions — file judgments, log/test-output triage, pre-commit diff review, big-file extraction — with latency and cost.",
 			file: "ask-jev.jsonl",
 			map: askJevMap,
 			panels: tablePanel("ask-jev", "Judgments"),
