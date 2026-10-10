@@ -4,7 +4,7 @@
 
 ## What it does
 
-After each turn, `recite` appends a deterministic block starting with `SESSION STATE (reference only — continue the task; do not restate this block)` as a hidden custom message: objective, goal refinements, plan, open questions, todo list, success criteria, and constraints. The previous copy is omitted from model context via a context edit, so exactly one block is ever live. State is read from session entries — the curator's GoalSpec and `todo` tool results — so the reciter runs independently of other extensions: with the curator disabled (`JEVCURATOR=0`), the objective falls back to the latest user request and the todo list still recites.
+After each turn, `recite` appends a deterministic block starting with `SESSION STATE (reference only — continue the task; do not restate this block)` as a hidden custom message: objective, goal refinements, plan, open questions, todo list, success criteria, and constraints. The previous copy is omitted from model context via a context edit, so exactly one block is ever live. State is read from session entries — the curator's GoalSpec and `todo` tool results — so the reciter runs independently of other extensions: with the curator disabled (`JEVCURATOR=0`), the objective falls back to the first user request and the todo list still recites.
 
 ## Commands and tools
 
@@ -29,13 +29,13 @@ All state readers are pure functions over the session branch (`ctx.sessionManage
 
 - Latest `custom` entry of type `jev-curator-goalspec`, flushed by the curator (`../jev-context-curator/`), supplies the objective, refinements, criteria, constraints, plan, and open questions. Malformed entries are ignored.
 - Latest `toolResult` of the `todo` tool supplies the live todo list.
-- With no GoalSpec on the branch, the objective falls back to the latest non-empty user message.
+- With no GoalSpec on the branch, the objective falls back to the first non-empty user message — a stable anchor that cannot drift as the conversation moves.
 
 Sections are composed in a fixed priority order, whole items first, until the char budget is spent — a long constraints list can never crowd out the objective. A section that does not fit is dropped; capped lists get a `(+N more)` marker when the marker itself fits.
 
 | Section | Source | Cap |
 |---|---|---|
-| `OBJECTIVE` | GoalSpec `userObjective`, else latest user message | 1 item, 320 chars |
+| `OBJECTIVE` | GoalSpec `userObjective` (the distilled digest when the curator distills the seed), else first user message | 1 item, 320 chars |
 | `GOAL` | last 2 objective refinements | 200 chars/item |
 | `PLAN` | first 6 plan steps (`p1.`, `p2.`, …) | 140 chars/item |
 | `OPEN` | first 4 open questions (`q1.`, …) | 140 chars/item |

@@ -71,15 +71,14 @@ export function readTodos(entries: readonly SessionEntry[]): ReciteTodo[] {
 	return todos;
 }
 
-/** Last non-empty user message on the branch: the fallback objective without a GoalSpec. */
-export function lastUserText(entries: readonly SessionEntry[]): string {
-	let text = "";
+/** First non-empty user message on the branch: the stable fallback objective without a GoalSpec. */
+export function firstUserText(entries: readonly SessionEntry[]): string {
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;
 		const candidate = messageText(entry.message.content).trim();
-		if (candidate) text = candidate;
+		if (candidate) return candidate;
 	}
-	return text;
+	return "";
 }
 
 /** Most recent recitation entry, if any. */
@@ -99,7 +98,7 @@ export function buildRecitationDrafts(
 	budget: number,
 ): (ContextEditEntryDraft | CustomMessageEntryDraft)[] {
 	const spec = readGoalSpec(entries);
-	const block = composeRecitation({ spec, fallbackObjective: lastUserText(entries), todos: readTodos(entries) }, budget);
+	const block = composeRecitation({ spec, fallbackObjective: firstUserText(entries), todos: readTodos(entries) }, budget);
 	if (!block) return [];
 
 	const drafts: (ContextEditEntryDraft | CustomMessageEntryDraft)[] = [];

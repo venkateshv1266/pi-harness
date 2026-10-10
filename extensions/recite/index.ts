@@ -8,7 +8,7 @@
  * context so exactly one is ever live.
  *
  * Runs independently of the curator: state comes from session entries, so with
- * JEVCURATOR=0 the objective falls back to the latest user request and the todo
+ * JEVCURATOR=0 the objective falls back to the first user request and the todo
  * list still recites.
  *
  * Env: RECITE=0 disables; RECITE_CHARS overrides the char budget (default 1200,
@@ -17,7 +17,7 @@
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
 import { composeRecitation, DEFAULT_BUDGET_CHARS } from "./compose.js";
-import { buildRecitationDrafts, lastRecitation, lastUserText, readGoalSpec, readTodos } from "./state.js";
+import { buildRecitationDrafts, firstUserText, lastRecitation, readGoalSpec, readTodos } from "./state.js";
 
 const ENABLED = process.env.RECITE !== "0";
 const BUDGET = parseBudget(process.env.RECITE_CHARS);
@@ -62,7 +62,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const live = lastRecitation(entries);
 			const block = composeRecitation(
-				{ spec: readGoalSpec(entries), fallbackObjective: lastUserText(entries), todos: readTodos(entries) },
+				{ spec: readGoalSpec(entries), fallbackObjective: firstUserText(entries), todos: readTodos(entries) },
 				BUDGET,
 			);
 			ctx.ui.notify(
