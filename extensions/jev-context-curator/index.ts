@@ -1655,6 +1655,8 @@ function registerResults(results: ShadowResult[], v2Outcome: Map<string, string>
 const DISTILL_MAX_CHARS = 320; // recite's OBJECTIVE per-item cap
 
 let distillAttempted = false;
+let distillOutcome: "pending" | "skipped" | "disabled" | "ok" | "failed" = "pending";
+let distillModelUsed: string | undefined;
 
 const ROLE_KEYS: Record<string, string> = {
 	"@smol": "smolModel",
@@ -1689,10 +1691,16 @@ async function distillSeedObjective(): Promise<void> {
 	if (distillAttempted || !spec || spec.objectiveSource) return;
 	distillAttempted = true;
 	const verbatim = spec.userObjective;
-	if (verbatim.length <= DISTILL_MAX_CHARS) return;
+	if (verbatim.length <= DISTILL_MAX_CHARS) {
+		distillOutcome = "skipped";
+		return;
+	}
 	const modelRef = distillModelRef();
 	const key = jevKey();
-	if (!modelRef || !key) return;
+	if (!modelRef || !key) {
+		distillOutcome = "disabled";
+		return;
+	}
 	try {
 		const res = await fetch(`${JEV_BASE_URL}/v1/chat/completions`, {
 			method: "POST",
@@ -1712,15 +1720,24 @@ async function distillSeedObjective(): Promise<void> {
 				],
 			}),
 		});
-		if (!res.ok) return;
+		if (!res.ok) {
+			distillOutcome = "failed";
+			return;
+		}
 		const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
 		const digest = json.choices?.[0]?.message?.content?.trim();
-		if (!digest || !spec || spec.objectiveSource) return;
+		if (!digest || !spec || spec.objectiveSource) {
+			distillOutcome = "failed";
+			return;
+		}
 		spec.userObjective = clipObjective(digest, DISTILL_MAX_CHARS);
 		spec.objectiveSource = verbatim;
 		specDirty = true;
+		distillOutcome = "ok";
+		distillModelUsed = modelRef;
 	} catch {
 		// network/provider failure: verbatim objective stays (fail-open)
+		distillOutcome = "failed";
 	}
 }
 
@@ -2817,7 +2834,7 @@ ${goalspecSummary()}` }],
 			ctx.ui.notify(
 				`curator: ${CFG.on ? "on" : "off"} · mode=${MODE} · caps=${byKind.cap} truncs=${byKind.truncate} stubs=${byKind.stub} · ` +
 					`~${Math.round(savedChars / 1000)}k chars saved · pending=${pending.size} held=${ready.size} · ` +
-					`goal=${goal ? "pinned" : "none"}${shadow}`,
+					`goal=${goal ? "pinned" : "none"} · distill=${distillOutcome}${distillModelUsed ? ` (${distillModelUsed})` : ""}${shadow}`,
 				"info",
 			);
 		},
