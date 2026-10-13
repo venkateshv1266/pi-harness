@@ -37,6 +37,7 @@ import {
 	type FramedBlockComponent,
 	renderStatusLine,
 	type State,
+	withOutputPad,
 } from "./tui.ts";
 import { CIRCLE_SPINNER_FRAMES } from "./symbols.ts";
 
@@ -500,6 +501,14 @@ export interface TaskRenderOptions {
 
 export function renderCall(
 	args: TaskParamsLike,
+	options: { argsComplete?: boolean; executionStarted?: boolean; outputPad?: number },
+	theme: ThemeLike,
+): Component {
+	return withOutputPad(renderCallFramed(args, options, theme), options.outputPad);
+}
+
+function renderCallFramed(
+	args: TaskParamsLike,
 	options: { argsComplete?: boolean; executionStarted?: boolean },
 	theme: ThemeLike,
 ): Component {
@@ -893,6 +902,16 @@ function formatHiddenProgressLine(hidden: readonly RenderSingleResult[], theme: 
 // ============================================================================
 
 export function renderResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: RenderSubagentDetails; isError?: boolean },
+	options: TaskRenderOptions,
+	theme: ThemeLike,
+	args?: TaskParamsLike,
+	outputPad?: number,
+): Component {
+	return withOutputPad(renderResultFramed(result, options, theme, args), outputPad);
+}
+
+function renderResultFramed(
 	result: { content: Array<{ type: string; text?: string }>; details?: RenderSubagentDetails; isError?: boolean },
 	options: TaskRenderOptions,
 	theme: ThemeLike,

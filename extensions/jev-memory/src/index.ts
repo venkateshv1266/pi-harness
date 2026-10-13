@@ -274,6 +274,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── 2. Inject memory policy by default; legacy mode keeps full frozen memory blocks ──
   pi.on("before_agent_start", async (event, _ctx) => {
+    if (event.messageType === "custom") return;
     const promptContext = await buildPromptContext(config, store, projectStoreRef(), projectNameRef(), standingStore);
 
     if (promptContext) {

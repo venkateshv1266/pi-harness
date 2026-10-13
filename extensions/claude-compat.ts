@@ -223,6 +223,7 @@ export default function claudeCompatExtension(pi: ExtensionAPI) {
   // Inject project .claude/CLAUDE.md contents into the system prompt.
   pi.on("before_agent_start", async (event) => {
     if (claudeContextBlobs.length === 0) return;
+    if (event.messageType === "custom") return;
 
     const blocks = claudeContextBlobs
       .map(

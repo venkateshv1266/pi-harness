@@ -57,8 +57,8 @@ import {
 } from "../subagent/render.ts";
 import { SYMBOLS, styledSymbol, type ThemeLike } from "../subagent/symbols.ts";
 import { CIRCLE_SPINNER_FRAMES, formatCircleStatusIcon, previewLine } from "../subagent/render-utils.ts";
-import { framedBlock, renderStatusLine, type FramedBlockComponent, type State } from "../subagent/tui.ts";
-import { Text } from "@earendil-works/pi-tui";
+import { framedBlock, renderStatusLine, type FramedBlockComponent, type State, withOutputPad } from "../subagent/tui.ts";
+import { Text, type Component } from "@earendil-works/pi-tui";
 
 const REGISTRY_ROOT = path.join(getAgentDir(), "subagents");
 const IDLE_UNLOAD_MS = 30 * 60 * 1000;
@@ -524,7 +524,11 @@ function startChild(opts: SpawnOptions): LiveChild {
 	if (resolvedModel) args.push("--model", resolvedModel);
 	if (!opts.resume && opts.agent.thinking) args.push("--thinking", opts.agent.thinking);
 	const effectiveTools = opts.toolsOverride && opts.toolsOverride.length > 0 ? opts.toolsOverride : opts.agent.tools;
-	if (effectiveTools && effectiveTools.length > 0) args.push("--tools", effectiveTools.join(","));
+	if (effectiveTools && effectiveTools.length > 0) {
+		args.push("--tools", effectiveTools.join(","));
+		// pi >= 1.0.4 keeps MCP tools under --tools unless an entry starts with mcp__.
+		if (!effectiveTools.some((tool) => tool.startsWith("mcp__"))) args.push("--no-mcp");
+	}
 
 	if (!opts.resume && opts.agent.systemPrompt.trim()) {
 		let systemPrompt = opts.agent.systemPrompt.trim();
@@ -825,6 +829,16 @@ function renderRoster(details: RosterDetails, theme: ThemeLike): FramedBlockComp
 }
 
 export function renderPersistentResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+	options: { expanded: boolean; isPartial: boolean },
+	theme: ThemeLike,
+	args?: TaskParamsLike,
+	outputPad?: number,
+): Component {
+	return withOutputPad(renderPersistentResultFramed(result, options, theme, args), outputPad);
+}
+
+function renderPersistentResultFramed(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: ThemeLike,
@@ -1144,11 +1158,11 @@ export default function (pi: ExtensionAPI) {
 		renderShell: "self",
 
 		renderCall(args, theme, context) {
-			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted, outputPad: context.outputPad }, theme);
 		},
 
 		renderResult(result, options, theme, context) {
-			return renderPersistentResult(result, options, theme, context.args);
+			return renderPersistentResult(result, options, theme, context.args, context.outputPad);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1190,11 +1204,11 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, context) {
 			// The message reads like the one-shot tool's task brief in the call preview.
-			return renderSubagentCall({ ...args, task: args.message }, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+			return renderSubagentCall({ ...args, task: args.message }, { argsComplete: context.argsComplete, executionStarted: context.executionStarted, outputPad: context.outputPad }, theme);
 		},
 
 		renderResult(result, options, theme, context) {
-			return renderPersistentResult(result, options, theme, context.args);
+			return renderPersistentResult(result, options, theme, context.args, context.outputPad);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1298,11 +1312,11 @@ export default function (pi: ExtensionAPI) {
 		renderShell: "self",
 
 		renderCall(args, theme, context) {
-			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted, outputPad: context.outputPad }, theme);
 		},
 
 		renderResult(result, options, theme, context) {
-			return renderPersistentResult(result, options, theme, context.args);
+			return renderPersistentResult(result, options, theme, context.args, context.outputPad);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1358,11 +1372,11 @@ export default function (pi: ExtensionAPI) {
 		renderShell: "self",
 
 		renderCall(args, theme, context) {
-			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted, outputPad: context.outputPad }, theme);
 		},
 
 		renderResult(result, options, theme, context) {
-			return renderPersistentResult(result, options, theme, context.args);
+			return renderPersistentResult(result, options, theme, context.args, context.outputPad);
 		},
 
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {

@@ -212,7 +212,11 @@ async function runSingleAgent(
 	if (agent.thinking) args.push("--thinking", agent.thinking);
 
 	const effectiveTools = toolsOverride && toolsOverride.length > 0 ? toolsOverride : agent.tools;
-	if (effectiveTools && effectiveTools.length > 0) args.push("--tools", effectiveTools.join(","));
+	if (effectiveTools && effectiveTools.length > 0) {
+		args.push("--tools", effectiveTools.join(","));
+		// pi >= 1.0.4 keeps MCP tools under --tools unless an entry starts with mcp__.
+		if (!effectiveTools.some((tool) => tool.startsWith("mcp__"))) args.push("--no-mcp");
+	}
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -335,10 +339,6 @@ async function runSingleAgent(
 					}
 				}
 
-				if (event.type === "tool_result_end" && event.message) {
-					currentResult.messages.push(event.message as Message);
-					emitUpdate();
-				}
 			};
 
 			proc.stdout.on("data", (data) => {
@@ -791,7 +791,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			return renderCallImpl(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+			return renderCallImpl(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted, outputPad: context.outputPad }, theme);
 		},
 
 		renderResult(result, options, theme, context) {
@@ -800,6 +800,7 @@ export default function (pi: ExtensionAPI) {
 				options,
 				theme,
 				context.args,
+				context.outputPad,
 			);
 		},
 	});
