@@ -234,7 +234,7 @@ export default function claudeCompatExtension(pi: ExtensionAPI) {
 
     // Contribute a keyed section instead of a full prompt replacement so pi can
     // diff sections across runs and keep the provider prompt cache warm.
-    event.systemPromptOptions.sections.claudeProjectContext =
+    event.systemPromptOptions.sections.claude_project_context =
       `## Project-local Claude context (.claude/CLAUDE.md)\n\n` +
       `The following project-local memory files were discovered inside \`<dir>/.claude/CLAUDE.md\` ` +
       `while walking from the current directory up to the filesystem root. Treat them with the same ` +
