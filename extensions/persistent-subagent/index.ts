@@ -359,12 +359,13 @@ function finalizeViewCrash(child: LiveChild, code: number | null | undefined): v
 	child.view.error = child.stderrTail || `process exited (code ${code ?? "?"})`;
 }
 
-function settleRun(child: LiveChild): void {
+function settleRun(child: LiveChild, aborted?: boolean): void {
 	child.streaming = false;
 	touch(child);
 	const run = child.currentRun;
 	if (!run) return;
 	child.currentRun = null;
+	if (aborted) child.view.aborted = true;
 	if (run.finalText) child.lastOutput = run.finalText;
 	finalizeViewSuccess(child);
 	for (const w of run.waiters.splice(0)) {
@@ -469,7 +470,7 @@ function handleChildLine(child: LiveChild, line: string): void {
 	}
 
 	if (rec.type === "agent_settled") {
-		settleRun(child);
+		settleRun(child, rec.aborted === true);
 		return;
 	}
 }

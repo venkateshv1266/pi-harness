@@ -875,7 +875,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		}
 
 		if (parts.length === 0) return;
-		return { systemPrompt: event.systemPrompt + "\n\n" + parts.join("\n\n") };
+		event.systemPromptOptions.sections.ttsr = parts.join("\n\n");
 	});
 
 	// read_rule tool: omp's rule:// equivalent.
@@ -1267,7 +1267,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	pi.registerCommand("rules", {
 		description: "Alias for /ttsr",
 		handler: async (_args, _ctx) => {
-			pi.sendUserMessage("/ttsr", { deliverAs: "followUp" });
+			pi.sendUserMessage("/ttsr", { deliverAs: "followUp", expandPromptTemplates: true });
 		},
 	});
 
