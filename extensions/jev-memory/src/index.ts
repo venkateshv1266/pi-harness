@@ -278,7 +278,7 @@ export default function (pi: ExtensionAPI) {
     const promptContext = await buildPromptContext(config, store, projectStoreRef(), projectNameRef(), standingStore);
 
     if (promptContext) {
-      event.systemPromptOptions.sections.memoryPolicy = promptContext;
+      event.systemPromptOptions.sections.memory_policy = promptContext;
     }
   });
 
