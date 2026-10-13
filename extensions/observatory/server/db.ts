@@ -120,6 +120,7 @@ export function openDb(): Database {
 	const db = new Database(dbPath(), { create: true });
 	db.exec(SCHEMA);
 	ensureColumn(db, "sessions", "system_chars", "INTEGER DEFAULT 0");
+	purgeSessionStartModelRecords(db);
 	return db;
 }
 
@@ -127,6 +128,18 @@ export function openDb(): Database {
 function ensureColumn(db: Database, table: string, column: string, definition: string): void {
 	const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
 	if (!columns.some((entry) => entry.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+/**
+ * Session-start model records (the session's first tree entry, parentId null) were
+ * once ingested as model.switch events, inflating every session's switch count by
+ * one. The sessions adapter no longer emits them; drop any that old scans stored.
+ */
+function purgeSessionStartModelRecords(db: Database): void {
+	if (metaGet(db, "model_switch_start_purged") === "1") return;
+	db.run("DELETE FROM events WHERE kind = 'model.switch' AND json_valid(data) AND json_extract(data, '$.parentId') IS NULL");
+	db.run("UPDATE sessions SET harness_events = (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.session_id)");
+	metaSet(db, "model_switch_start_purged", "1");
 }
 
 export function metaGet(db: Database, key: string): string | null {

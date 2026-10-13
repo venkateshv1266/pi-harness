@@ -139,6 +139,9 @@ export function scanSessionFile(file: string, raw: string): SessionScan {
 			continue;
 		}
 		if (type === "model_change") {
+			// The first tree entry (parentId null) is pi recording the session's starting
+			// model, not a switch — real switches always have a parent entry.
+			if (entry.parentId == null) continue;
 			pushEvent({
 				key: `mc:${entry.id ?? ts}`,
 				ts: ts ?? new Date(0).toISOString(),
