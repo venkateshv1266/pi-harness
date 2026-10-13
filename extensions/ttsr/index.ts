@@ -854,6 +854,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	// ─── System prompt injection (always-apply + rulebook) ──────────────
 
 	pi.on("before_agent_start", async (event) => {
+		if (event.messageType === "custom") return;
 		const parts: string[] = [];
 
 		if (registryEntries.length) {

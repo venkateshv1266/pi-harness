@@ -316,6 +316,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event: BeforeAgentStartEvent) => {
 		runStartCalls = sessionCalls;
 		runStartCostUsd = sessionCostUsd;
+		if (event.messageType === "custom") return;
 		if ((event.systemPrompt ?? "").includes(NUDGE_MARKER)) return;
 		return { systemPrompt: `${event.systemPrompt ?? ""}${NUDGE}` };
 	});

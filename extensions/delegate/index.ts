@@ -247,11 +247,11 @@ export default function (pi: ExtensionAPI) {
 		renderShell: "self",
 
 		renderCall(args, theme, context) {
-			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted }, theme);
+			return renderSubagentCall(args, { argsComplete: context.argsComplete, executionStarted: context.executionStarted, outputPad: context.outputPad }, theme);
 		},
 
 		renderResult(result, options, theme, context) {
-			return renderPersistentResult(result, options, theme, context.args);
+			return renderPersistentResult(result, options, theme, context.args, context.outputPad);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {

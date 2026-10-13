@@ -196,6 +196,18 @@ export function framedBlock(theme: ThemeLike, build: (width: number) => OutputBl
 	};
 }
 
+/** Applies the `outputPad` render setting for `renderShell: "self"` tools (pi >= 1.1.0). */
+export function withOutputPad(component: Component, outputPad?: number): Component {
+	const pad = outputPad ?? 0;
+	if (pad <= 0) return component;
+	return {
+		render(width: number): string[] {
+			return component.render(width - pad).map((line) => " ".repeat(pad) + line);
+		},
+		invalidate: () => component.invalidate(),
+	};
+}
+
 // ============================================================================
 // Status header (omp `tui/status-line.ts`)
 // ============================================================================
