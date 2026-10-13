@@ -317,8 +317,8 @@ export default function (pi: ExtensionAPI) {
 		runStartCalls = sessionCalls;
 		runStartCostUsd = sessionCostUsd;
 		if (event.messageType === "custom") return;
-		if ((event.systemPrompt ?? "").includes(NUDGE_MARKER)) return;
-		return { systemPrompt: `${event.systemPrompt ?? ""}${NUDGE}` };
+		if (event.systemPromptOptions.sections.askJevNudge) return;
+		event.systemPromptOptions.sections.askJevNudge = NUDGE;
 	});
 
 	pi.on("agent_end", (_event: AgentEndEvent, ctx) => {

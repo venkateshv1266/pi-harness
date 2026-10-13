@@ -372,8 +372,8 @@ export default function (pi: ExtensionAPI) {
 	// Retries exhausted and the run died on a real model error after a mid-run switch:
 	// resume on the fallback model with a short marker — the original prompt is already
 	// in the branch, so re-sending its full text would only balloon the context.
-	pi.on("agent_settled", (_event, ctx) => {
-		if (!switchedDuringRun || ctx.signal?.aborted) return;
+	pi.on("agent_settled", (event, ctx) => {
+		if (!switchedDuringRun || event.aborted) return;
 		const branch = ctx.sessionManager.getBranch();
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i] as { type?: string; message?: { role?: string; stopReason?: string; errorMessage?: string } };

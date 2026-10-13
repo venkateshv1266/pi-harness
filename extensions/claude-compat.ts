@@ -232,15 +232,13 @@ export default function claudeCompatExtension(pi: ExtensionAPI) {
       )
       .join("\n\n");
 
-    return {
-      systemPrompt:
-        event.systemPrompt +
-        `\n\n## Project-local Claude context (.claude/CLAUDE.md)\n\n` +
-        `The following project-local memory files were discovered inside \`<dir>/.claude/CLAUDE.md\` ` +
-        `while walking from the current directory up to the filesystem root. Treat them with the same ` +
-        `weight as AGENTS.md/CLAUDE.md context files.\n\n` +
-        blocks +
-        `\n`,
-    };
+    // Contribute a keyed section instead of a full prompt replacement so pi can
+    // diff sections across runs and keep the provider prompt cache warm.
+    event.systemPromptOptions.sections.claudeProjectContext =
+      `## Project-local Claude context (.claude/CLAUDE.md)\n\n` +
+      `The following project-local memory files were discovered inside \`<dir>/.claude/CLAUDE.md\` ` +
+      `while walking from the current directory up to the filesystem root. Treat them with the same ` +
+      `weight as AGENTS.md/CLAUDE.md context files.\n\n` +
+      blocks;
   });
 }
