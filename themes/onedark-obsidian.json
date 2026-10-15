@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "$schema": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/schemas/theme.schema.json",
   "name": "onedark-obsidian",
   "vars": {
     "accent": "#789bbd",
@@ -92,27 +92,5 @@
     "pageBg": "bg",
     "cardBg": "bgCard",
     "infoBg": "bgSubtle"
-  },
-  "extras": {
-    "assistantPrefix": "◆",
-    "assistantPrefixColor": "accent",
-    "userPrefixColor": "accent",
-    "dividerChar": "─",
-    "dividerColor": "borderMuted",
-    "showDivider": false,
-    "quoteStyle": false,
-    "userPrefix": "❯",
-    "quoteChar": "┆",
-    "quoteColor": "blue",
-    "inputBorderColor": "accent",
-    "bashPromptColor": "green",
-    "tagBgColor": "accent",
-    "slashSelectedColor": "accent",
-    "slashCommandColor": "text",
-    "slashDescriptionColor": "muted",
-    "slashHintColor": "dim",
-    "userBoxBorderColor": "borderMuted",
-    "parensTextColor": "blue",
-    "parensBracketColor": "purple"
   }
 }
