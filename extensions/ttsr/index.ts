@@ -151,7 +151,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	let textBuf = "";
 	let thinkingBuf = "";
-	let toolBufs = new Map<number, string>();
 
 	let abortArmed = false;
 	let pendingToolReminders = new Map<string, string>();
@@ -962,7 +961,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		suppressCache = new Map();
 		textBuf = "";
 		thinkingBuf = "";
-		toolBufs = new Map();
 		pushesThisTurn = 0;
 		digestCache = null;
 		refreshContextCompliance();
@@ -973,8 +971,15 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		expireFires();
 	});
 
+	// Subagent children execute an assigned task under the parent's supervision;
+	// text/thinking rules coach root-session behavior and aborting a child
+	// mid-run loses its work irrecoverably (one-shot children exit with none).
+	// Tool-scope rules still apply in children.
+	const subagentChild = process.env.PI_SUBAGENT_CHILD === "1";
+
 	pi.on("message_update", async (event, ctx) => {
 		if (ttsrRules.length === 0) return;
+		if (subagentChild) return;
 		const e = event.assistantMessageEvent;
 
 		if (e.type === "text_delta") {
@@ -985,9 +990,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			thinkingBuf += e.delta;
 			const hits = matchRegex(thinkingBuf, "thinking");
 			if (hits.length) handleStreamHits(hits, thinkingBuf, "thinking", ctx);
-		} else if (e.type === "toolcall_delta") {
-			const prev = toolBufs.get(e.contentIndex) ?? "";
-			toolBufs.set(e.contentIndex, prev + e.delta);
 		}
 	});
 

@@ -128,6 +128,15 @@ contexts:
     status: retired
     triggers:
       - tool: '^dead$'
+  - id: epsilon
+    file: beta.md
+    when: "delegate-seeding only doc"
+    subagents: true
+    reads: [beta.md]
+  - id: zeta
+    file: gamma.md
+    when: "no triggers, no delegation"
+    reads: [gamma.md]
 `);
 fs.writeFileSync(path.join(projDir, "registry.yaml"), `version: 1
 defaults:
@@ -199,14 +208,14 @@ const betaEntry = entries.find((e) => e.id === "beta");
 check(!!betaEntry && statsFor(betaEntry, tel).suppressed === 6, "telemetry: entry merges trigger + delegate stats");
 check(pruneCandidates(entries, tel).some((c) => c.entry.id === "beta"), "telemetry: prune candidate detected");
 
-check(entries.length === 5, `expected 5 entries, got ${entries.length} (${entries.map((e) => e.id).join(",")})`);
+check(entries.length === 7, `expected 7 entries, got ${entries.length} (${entries.map((e) => e.id).join(",")})`);
 const alpha = entries.find((e) => e.id === "alpha");
 check(alpha?.origin === "project", "project registry wins by id");
 check(alpha?.when === "project override of alpha", "project override description wins");
 const beta = entries.find((e) => e.id === "beta");
 check(beta?.tier === "gated" && beta?.onFail === "fire", "entry tier/onFail overrides defaults");
 
-check(rules.length === 5, `expected 5 rules, got ${rules.length} (${rules.map((r) => r.name).join(",")})`);
+check(rules.length === 6, `expected 6 rules, got ${rules.length} (${rules.map((r) => r.name).join(",")})`);
 check(rules.some((r) => r.name === "ctx-beta-2"), "second globs group gets -2 suffix");
 
 const alphaRule = rules.find((r) => r.name === "ctx-alpha");
@@ -219,7 +228,8 @@ if (alphaRule) {
 	check(!p.conditions[0].test("bash\ncat alpha-override.md"), "alpha: no match when token is part of a path");
 	check(!p.conditions[0].test("bash\ncat alpha.md"), "alpha: no match on doc mention");
 	check(p.verify !== null && p.verify.type === "noul", "alpha: noul verify synthesized");
-	check(p.fm.scope?.[0] === "tool" && p.fm.interrupt === false, "alpha: tool scope, non-interrupting");
+	const scope = p.fm.scope as string[] | undefined;
+	check(scope?.[0] === "tool" && p.fm.interrupt === false, "alpha: tool scope, non-interrupting");
 }
 
 const beta2 = rules.find((r) => r.name === "ctx-beta-2");
@@ -249,6 +259,19 @@ if (betaDeleg) {
 	check(p.conditions[0].test("subagent_spawn\ntask=x"), "delegate rule matches subagent_spawn");
 	check(!p.conditions[0].test("mcp__linear__get_issue\nid=x"), "delegate rule excludes other tools");
 }
+
+// delegate-seeding-only entry: no triggers + subagents: true keeps only the
+// ctxdelegate- spawn gate — no inline push rule attaches to tool results.
+check(!rules.some((r) => r.name === "ctx-epsilon"), "epsilon: no inline push rule without triggers");
+const epsDeleg = rules.find((r) => r.name === "ctxdelegate-epsilon");
+check(!!epsDeleg, "epsilon: ctxdelegate rule survives without triggers");
+if (epsDeleg) {
+	const p = engineParse(epsDeleg.source);
+	check(p.fm.interrupt === true, "epsilon: delegate rule blocks (interrupt true)");
+	check(p.conditions[0].test("delegate\ntask=use the epsilon context"), "epsilon: delegate rule matches delegate calls");
+	check(p.conditions[0].test("subagent_spawn\ntask=x"), "epsilon: delegate rule matches subagent_spawn");
+}
+check(!rules.some((r) => r.id === "zeta"), "zeta: no triggers and no subagents synthesizes nothing");
 
 const list = contextListText(entries);
 check(list.includes("gamma") && list.includes("tier=index-only"), "context_list shows index-only entries");

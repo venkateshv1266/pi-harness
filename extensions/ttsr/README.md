@@ -59,6 +59,17 @@ Rule body — the reminder injected on match.
 
 Legacy aliases: `ttsrTrigger`/`ttsr_trigger` → `condition`; `ast_condition` → `astCondition`.
 
+### Subagent children never enforce text/thinking rules
+
+Both spawn engines run children with `PI_SUBAGENT_CHILD=1`. In those
+sessions the engine skips text/thinking matching entirely: those rules coach
+root-session behavior ("delegate read-only surveys instead of doing them
+inline"), and aborting a child mid-run loses its assigned work
+irrecoverably — a one-shot child exits with nothing and the parent sees
+`Subagent was aborted`. Tool-scope rules (safety blocks, delegate seeding)
+still apply in children: a blocked tool call carries its reason and the child
+can adapt, unlike an aborted run.
+
 ## Context registry (synthesized rules)
 
 Context docs registered in a registry become TTSR rules automatically — no
@@ -149,6 +160,10 @@ threshold, i.e. every fire suppressed (a dead rule). Rules for gated entries:
   `subagent_spawn` when the child task needs the context, so the parent
   re-issues with the docs in the child's task (children start with empty
   context). Its gate is forced `onFail: suppress` — Jev outages never block.
+  Omit `triggers:` on such an entry to make it delegate-seeding-only: no
+  inline `ctx-<id>` push attaches to tool results, only the spawn gate
+  remains (`subagent-patterns` uses this — its post-hoc push made parents
+  re-do finished delegations).
 - Session ledger: trigger rules re-arm only when their doc changed since the
   last receipt (`read` and `read_context` both count); an ignored push gets one
   retry (advisory), then a block (gated); ≤2 context pushes per turn; repeated

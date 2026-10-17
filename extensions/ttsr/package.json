@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "description": "A pi extension that brings omp's TTSR concept to stock `@earendil-works/pi-coding-agent`.",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "node registry.test.ts"
+    "test": "node registry.test.ts && node index.test.ts"
   },
   "keywords": [],
   "author": "",

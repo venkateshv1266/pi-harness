@@ -306,8 +306,9 @@ async function runSingleAgent(
 					const msg = event.message as Message;
 					currentResult.messages.push(msg);
 
-					if (msg.role === "toolResult" && msg.toolName === "subagent" && Array.isArray(msg.details?.results)) {
-						stashNestedResults(msg.toolCallId, msg.details.results);
+					if (msg.role === "toolResult" && msg.toolName === "subagent") {
+						const details = msg.details as Record<string, unknown> | undefined;
+						if (Array.isArray(details?.results)) stashNestedResults(msg.toolCallId, details.results as unknown[]);
 					}
 
 					if (msg.role === "assistant") {
@@ -403,7 +404,7 @@ async function runSingleAgent(
 			}
 		}
 
-		if (wasAborted) throw new Error("Subagent was aborted");
+		if (wasAborted) throw new Error(currentResult.abortReason ?? "Subagent was aborted");
 		return currentResult;
 	} finally {
 		clearTimeout(timeoutTimer);

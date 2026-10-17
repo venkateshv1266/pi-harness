@@ -259,7 +259,9 @@ function delegateVerifyJson(e: LoadedEntry, paths: string[]): string {
 export function synthesizeRules(e: LoadedEntry): SynthesizedRule[] {
 	if (e.status === "retired" || e.tier === "index-only") return [];
 	const triggers = (e.triggers ?? []).filter((t) => typeof t?.tool === "string" && t.tool.trim().length > 0);
-	if (triggers.length === 0) return [];
+	// No triggers + subagents: true → delegate-seeding-only entry: no inline
+	// push rule, just the ctxdelegate- spawn gate synthesized below.
+	if (triggers.length === 0 && e.subagents !== true) return [];
 
 	const groups = new Map<string, RegistryTrigger[]>();
 	for (const t of triggers) {
