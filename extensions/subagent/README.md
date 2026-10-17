@@ -104,7 +104,9 @@ confirmation before running (`confirmProjectAgents`, default `true`).
 
 A result is failed when the exit code is non-zero, the stop reason is `error`
 or `aborted`, or the run timed out; failures surface as tool errors carrying
-the child's error message or stderr.
+the child's error message or stderr. An aborted child throws its abort
+reason: the watchdog timeout message when it expired, the generic
+`Subagent was aborted` otherwise.
 
 **Timeouts and aborts.** The watchdog is disabled by default (`timeoutMs: 0`).
 On expiry the child gets `SIGTERM`, then `SIGKILL` after 3 s. An abort signal
