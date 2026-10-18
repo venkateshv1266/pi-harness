@@ -11,6 +11,12 @@
  * context: each new check retires the previous message with a context_edit,
  * and a recovering trajectory retires the stale one.
  *
+ * A focused goal_moved check also runs at every user prompt (`before_agent_start`):
+ * Jev judges the incoming prompt against the recorded goal, and when the prompt
+ * redefines the objective a nudge lands before the run starts — so the agent
+ * re-pins the goal immediately instead of working a few turns with the stale
+ * goal that recite's session-state block still carries.
+ *
  * Scope and safety:
  *   - Print-mode sessions are skipped (an appended entry displaces pi -p
  *     output), so subagent children are never supervised — only the main
@@ -26,17 +32,23 @@
  * vars override for one-off runs, and COURSE_CHECK=0 is a hard kill switch.
  */
 
-import type { ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { looksLikeUserCorrection, logDecision, logEvent, logOutcome, type Verdict as OutcomeVerdict } from "../../utils/jev-outcomes.ts";
 import {
 	buildNudgeDrafts,
+	composePromptState,
 	composeState,
+	COURSE_CHECK_TYPE,
 	hasUserCorrection,
 	lastNudge,
+	MIN_PROMPT_CHARS,
+	nudgeIsPromptMoved,
+	parseMoved,
 	parseVerdict,
+	promptMovedText,
 	readGoal,
 	shouldCheck,
 	type SessionGoal,
@@ -79,6 +91,20 @@ const QUESTIONS = {
 	},
 } as const;
 
+// Focused per-prompt question: only "did this prompt redefine the objective",
+// never the trajectory verdicts — those stay with the periodic turn-end check.
+const PROMPT_QUESTIONS = {
+	goal_moved: {
+		type: "noul",
+		instructions:
+			"A supervisor watches an AI coding session. A NEW USER PROMPT just arrived. Judged against the SESSION GOAL, does this prompt redefine the objective so the goal state is stale?",
+		criteria: {
+			true: "The prompt names a different target or outcome, materially changes scope, or adds or changes a requirement the SESSION GOAL does not describe — the goal state should be rewritten to match the new ask",
+			false: "The prompt is a follow-up, refinement, clarification, bug report, or new detail within the existing objective; the SESSION GOAL still describes the current ask",
+		},
+	},
+} as const;
+
 let jevKeyCache: string | null | undefined;
 
 function jevKey(): string | null {
@@ -109,7 +135,7 @@ function scrubSecrets(s: string): string {
 	return out;
 }
 
-async function jevCall(state: string, timeoutMs: number): Promise<Record<string, unknown> | null> {
+async function jevCall(state: string, timeoutMs: number, questions: Record<string, unknown> = QUESTIONS): Promise<Record<string, unknown> | null> {
 	const key = jevKey();
 	if (!key) return null;
 	let res: { ok: boolean; json(): Promise<unknown> };
@@ -117,7 +143,7 @@ async function jevCall(state: string, timeoutMs: number): Promise<Record<string,
 		res = await fetch(`${JEV_BASE_URL}/v1/systemone`, {
 			method: "POST",
 			headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-			body: JSON.stringify({ model: JEV_MODEL, state, questions: QUESTIONS }),
+			body: JSON.stringify({ model: JEV_MODEL, state, questions }),
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 	} catch {
@@ -159,6 +185,9 @@ export default function courseCheck(pi: ExtensionAPI) {
 	let armed = false;
 	let fails = 0;
 	let cooldownUntil = 0;
+	let promptSeq = 0;
+	let promptPending: { id: string; objective: string } | null = null;
+	let promptFired: { previousNudgeId: string | null; objectiveBefore: string } | null = null;
 
 	function resolvePending(turn: number, v: Verdict, entries: readonly SessionEntry[], session: string): void {
 		if (!pending) return;
@@ -176,20 +205,114 @@ export default function courseCheck(pi: ExtensionAPI) {
 		pending = null;
 	}
 
-	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: SessionBoundaryDraft[] } | void> => {
-		if (ctx.mode === "print" || event.outcome !== "completed") return;
+	// Per-prompt goal_moved check: the user's latest prompt may redefine the
+	// objective while the goal state (pinned goal / GoalSpec, echoed by
+	// recite) still describes the old one. The focused Jev call runs before
+	// the agent loop starts, so a re-pin happens in the same turn.
+	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
+		if (event.messageType !== "user" || ctx.mode === "print") return;
 		const cfg = resolveLiveConfig();
-		const due = armed || shouldCheck(event.turnIndex, lastCheckedTurn, cfg);
-		if (!due) return;
-		armed = false;
-		if (!cfg.enabled) return;
-		if (Date.now() < cooldownUntil) return;
-		lastCheckedTurn = event.turnIndex;
-
+		if (!cfg.enabled || !cfg.promptCheck || Date.now() < cooldownUntil) return;
+		const prompt = event.prompt.trim();
+		if (prompt.startsWith("/") || prompt.length < MIN_PROMPT_CHARS) return;
 		const entries = branchEntries(ctx);
 		if (!entries) return;
 		const goal = readGoal(entries);
-		if (!goal) return; // no user prompt yet: nothing to judge
+		if (!goal || goal.objective === prompt) return; // no goal material yet, or identical resend
+
+		promptSeq++;
+		const answers = await jevCall(scrubSecrets(composePromptState(goal, prompt)), cfg.timeoutMs, PROMPT_QUESTIONS);
+		if (!answers) {
+			fails++;
+			logEvent(SYSTEM, LOG_FILE, { event: "prompt_jev_unreachable", consecutive: fails, prompt: promptSeq, session: sessionId(ctx) });
+			if (fails >= MAX_FAILS) {
+				cooldownUntil = Date.now() + COOLDOWN_MS;
+				logEvent(SYSTEM, LOG_FILE, { event: "breaker_open", cooldownMs: COOLDOWN_MS, prompt: promptSeq, session: sessionId(ctx) });
+			}
+			return;
+		}
+		fails = 0;
+		const m = parseMoved(answers, cfg.threshold);
+		if (!m) {
+			logEvent(SYSTEM, LOG_FILE, { event: "prompt_malformed_answer", prompt: promptSeq, session: sessionId(ctx) });
+			return;
+		}
+
+		// A pending prompt nudge resolves against the goal state as it stands
+		// now: changed → the agent acted on it; unchanged → it did not.
+		if (promptPending) {
+			const now = readGoal(entries)?.objective;
+			const recovered = now !== undefined && now !== promptPending.objective;
+			logOutcome(SYSTEM, LOG_FILE, promptPending.id, recovered ? "recovered" : "still_stale", {
+				verdict: recovered ? "good" : "bad",
+				detail: { session: sessionId(ctx), source: "prompt" },
+			});
+			promptPending = null;
+		}
+
+		if (!m.moved) {
+			logEvent(SYSTEM, LOG_FILE, { event: "prompt_check", verdict: "unchanged", p: round2(m.p), prompt: promptSeq, session: sessionId(ctx) });
+			return;
+		}
+
+		const live = lastNudge(entries);
+		const id = logDecision(SYSTEM, LOG_FILE, { prompt: promptSeq, source: "prompt", verdict: "goal_moved", p: round2(m.p), session: sessionId(ctx) });
+		promptPending = { id, objective: goal.objective };
+		// A prompt-time nudge already live says the same thing; don't stack a
+		// second copy — housekeeping still gets a chance to retire it.
+		const duplicate = live !== null && nudgeIsPromptMoved(live.details);
+		promptFired = { previousNudgeId: duplicate ? null : live?.id ?? null, objectiveBefore: goal.objective };
+		if (duplicate) return;
+		return {
+			message: {
+				customType: COURSE_CHECK_TYPE,
+				content: promptMovedText(goal, m.p),
+				display: true,
+				details: { source: "prompt", verdict: "goal_moved", p: round2(m.p) },
+			},
+		};
+	});
+
+	pi.on("turn_end", async (event: TurnEndEvent, ctx): Promise<{ entries: SessionBoundaryDraft[] } | void> => {
+		if (ctx.mode === "print" || event.outcome !== "completed") return;
+		const cfg = resolveLiveConfig();
+		const entries = branchEntries(ctx);
+		if (!entries) return;
+
+		// Prompt-time nudge housekeeping: once the goal moved, any previous
+		// nudge is obsolete; and a prompt nudge the agent acted on (goal state
+		// changed during the run) is consumed and can leave the context.
+		const drafts: SessionBoundaryDraft[] = [];
+		if (promptFired) {
+			const fired = promptFired;
+			promptFired = null;
+			if (fired.previousNudgeId) drafts.push({ type: "context_edit", targetId: fired.previousNudgeId, replacement: null });
+			const goalNow = readGoal(entries);
+			if (goalNow && goalNow.objective !== fired.objectiveBefore) {
+				const live = lastNudge(entries);
+				if (live && nudgeIsPromptMoved(live.details)) drafts.push({ type: "context_edit", targetId: live.id, replacement: null });
+			}
+		}
+		const withDrafts = (extra: SessionBoundaryDraft[] = []): { entries: SessionBoundaryDraft[] } | undefined => {
+			const seen = new Set<string>();
+			const all = [...drafts, ...extra].filter((d) => {
+				if (d.type !== "context_edit") return true;
+				if (seen.has(d.targetId)) return false;
+				seen.add(d.targetId);
+				return true;
+			});
+			return all.length ? { entries: [...event.entries, ...all] } : undefined;
+		};
+
+		const due = armed || shouldCheck(event.turnIndex, lastCheckedTurn, cfg);
+		if (!due) return withDrafts();
+		armed = false;
+		if (!cfg.enabled) return withDrafts();
+		if (Date.now() < cooldownUntil) return withDrafts();
+		lastCheckedTurn = event.turnIndex;
+
+		const goal = readGoal(entries);
+		if (!goal) return withDrafts(); // no user prompt yet: nothing to judge
 
 		const state = scrubSecrets(composeState(goal, entries, cfg));
 		const answers = await jevCall(state, cfg.timeoutMs);
@@ -200,13 +323,13 @@ export default function courseCheck(pi: ExtensionAPI) {
 				cooldownUntil = Date.now() + COOLDOWN_MS;
 				logEvent(SYSTEM, LOG_FILE, { turn: event.turnIndex, event: "breaker_open", cooldownMs: COOLDOWN_MS, session: sessionId(ctx) });
 			}
-			return;
+			return withDrafts();
 		}
 		fails = 0;
 		const v = parseVerdict(answers, cfg.threshold);
 		if (!v) {
 			logEvent(SYSTEM, LOG_FILE, { turn: event.turnIndex, event: "malformed_answer", session: sessionId(ctx) });
-			return;
+			return withDrafts();
 		}
 
 		resolvePending(event.turnIndex, v, entries, sessionId(ctx));
@@ -223,16 +346,14 @@ export default function courseCheck(pi: ExtensionAPI) {
 			});
 			pending = { id, turn: event.turnIndex };
 			// boundary entries compose by replacement: keep earlier handlers' drafts
-			return { entries: [...event.entries, ...buildNudgeDrafts(entries, v, goal, consecutiveNudges)] };
+			return withDrafts(buildNudgeDrafts(entries, v, goal, consecutiveNudges));
 		}
 
 		consecutiveNudges = 0;
 		logEvent(SYSTEM, LOG_FILE, { turn: event.turnIndex, verdict: v.verdict, p: round2(v.p), session: sessionId(ctx) });
 		// on_track/blocked: retire a now-obsolete correction so stale "off-track" text never lingers
 		const previous = lastNudge(entries);
-		if (previous) {
-			return { entries: [...event.entries, { type: "context_edit", targetId: previous.id, replacement: null }] };
-		}
+		return withDrafts(previous ? [{ type: "context_edit", targetId: previous.id, replacement: null }] : []);
 	});
 
 	pi.registerCommand("course-check", {
@@ -253,8 +374,8 @@ export default function courseCheck(pi: ExtensionAPI) {
 			}
 			const cfg = resolveLiveConfig();
 			const lines = [
-				`course check: ${cfg.enabled ? "on" : "off"} · every ${cfg.intervalTurns} turns · threshold ${cfg.threshold} · timeout ${cfg.timeoutMs} ms`,
-				`last check: turn ${lastCheckedTurn || "none"} · consecutive nudges: ${consecutiveNudges}${pending ? " · outcome pending" : ""}`,
+				`course check: ${cfg.enabled ? "on" : "off"} · every ${cfg.intervalTurns} turns · prompt goal check ${cfg.promptCheck ? "on" : "off"} · threshold ${cfg.threshold} · timeout ${cfg.timeoutMs} ms`,
+				`last check: turn ${lastCheckedTurn || "none"} · consecutive nudges: ${consecutiveNudges}${pending ? " · outcome pending" : ""}${promptPending ? " · prompt outcome pending" : ""}`,
 			];
 			if (Date.now() < cooldownUntil) lines.push(`Jev breaker open until ${new Date(cooldownUntil).toLocaleTimeString()}`);
 			ctx.ui.notify(lines.join("\n"), "info");

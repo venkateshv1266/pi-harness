@@ -23,6 +23,21 @@ export default function courseCheckSetup(): SetupSection {
 			},
 		},
 		{
+			id: "coursecheck:promptcheck",
+			label: "Goal check at every prompt",
+			detail: "Before each user prompt, ask Jev whether that prompt redefines the objective (goal_moved) so the goal state is re-pinned immediately instead of after up to N turns.",
+			effect: "next prompt",
+			owner: "course-check · /course-check",
+			kind: "toggle",
+			get: () => (resolveLiveConfig().promptCheck ? "on" : "off"),
+			apply: (_c, value) => {
+				updateCourseSettings((s) => {
+					s.promptCheck = value === "on";
+				});
+				return `prompt goal check ${value === "on" ? "enabled" : "disabled"}`;
+			},
+		},
+		{
 			id: "coursecheck:interval",
 			label: "Check interval (turns)",
 			detail: "Run the Jev course review at every Nth completed turn (default 10).",
@@ -86,7 +101,7 @@ export default function courseCheckSetup(): SetupSection {
 	return {
 		id: "course-check",
 		title: "Course check",
-		detail: "Periodic Jev supervision: every N turns, judge the agent's trajectory against the session goal and inject a rethink nudge when off track.",
+		detail: "Jev supervision: every N turns, judge the agent's trajectory against the session goal and inject a rethink nudge when off track; a focused goal_moved check also runs before every user prompt.",
 		items,
 	};
 }

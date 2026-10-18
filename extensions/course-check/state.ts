@@ -22,6 +22,8 @@ export interface CourseConfig {
 	timeoutMs: number;
 	digestEntries: number;
 	digestCapChars: number;
+	/** Focused goal_moved check before every user prompt, not only the periodic turn-end check. */
+	promptCheck: boolean;
 }
 
 export interface SessionGoal {
@@ -82,6 +84,7 @@ const DEFAULTS: CourseConfig = {
 	timeoutMs: 6000,
 	digestEntries: 60,
 	digestCapChars: 6000,
+	promptCheck: true,
 };
 
 function num(env: Record<string, string | undefined>, key: string): number | null {
@@ -102,6 +105,7 @@ export function resolveConfig(env: Record<string, string | undefined>, stored: u
 		if (typeof s.timeoutMs === "number") cfg.timeoutMs = s.timeoutMs;
 		if (typeof s.digestEntries === "number") cfg.digestEntries = s.digestEntries;
 		if (typeof s.digestCapChars === "number") cfg.digestCapChars = s.digestCapChars;
+		if (typeof s.promptCheck === "boolean") cfg.promptCheck = s.promptCheck;
 	}
 	const interval = num(env, "COURSE_CHECK_INTERVAL");
 	if (interval !== null) cfg.intervalTurns = interval;
@@ -113,6 +117,9 @@ export function resolveConfig(env: Record<string, string | undefined>, stored: u
 	if (digestEntries !== null) cfg.digestEntries = digestEntries;
 	const cap = num(env, "COURSE_CHECK_CAP");
 	if (cap !== null) cfg.digestCapChars = cap;
+
+	if (env.COURSE_CHECK_PROMPT_CHECK === "0") cfg.promptCheck = false;
+	else if (env.COURSE_CHECK_PROMPT_CHECK === "1") cfg.promptCheck = true;
 
 	cfg.intervalTurns = Math.max(1, Math.round(cfg.intervalTurns));
 	cfg.threshold = Math.min(0.95, Math.max(0.5, cfg.threshold));
@@ -226,6 +233,17 @@ export function composeState(goal: SessionGoal, entries: readonly SessionEntry[]
 	return parts.join("\n\n");
 }
 
+const PROMPT_CAP_CHARS = 4000;
+
+/** Focused state for the per-prompt goal_moved check: the goal as recorded, then the prompt that just arrived. */
+export function composePromptState(goal: SessionGoal, prompt: string, promptCapChars = PROMPT_CAP_CHARS): string {
+	const parts: string[] = [`SESSION GOAL:\n${goal.objective}`];
+	if (goal.criteria.length) parts.push(`SUCCESS CRITERIA:\n${goal.criteria.slice(0, 6).map((c) => `- ${clip(c, 150)}`).join("\n")}`);
+	if (goal.plan.length) parts.push(`CURRENT PLAN:\n${goal.plan.slice(0, 6).map((p) => `- ${clip(p, 150)}`).join("\n")}`);
+	parts.push(`NEW USER PROMPT:\n${clip(prompt, promptCapChars)}`);
+	return parts.join("\n\n");
+}
+
 // ─── scheduling ────────────────────────────────────────────────────────
 
 /** True when any recent user message reads like a correction — makes nudge-outcome attribution ambiguous. */
@@ -248,6 +266,9 @@ export function shouldCheck(turnIndex: number, lastCheckedTurn: number, cfg: Cou
 	if (turnIndex % cfg.intervalTurns !== 0) return false;
 	return turnIndex !== lastCheckedTurn;
 }
+
+/** Prompts shorter than this cannot meaningfully redefine a goal; the per-prompt check skips them. */
+export const MIN_PROMPT_CHARS = 12;
 
 // ─── verdict ──────────────────────────────────────────────────────────
 
@@ -295,6 +316,20 @@ export function parseVerdict(answers: Record<string, unknown> | null, threshold:
 		confidence,
 		why,
 		nudge: NUDGEABLE.has(verdict) && p >= threshold,
+	};
+}
+
+/** The per-prompt goal_moved answer (noul) → moved verdict; null when the answer is missing or malformed. */
+export function parseMoved(answers: Record<string, unknown> | null, threshold: number): { moved: boolean; p: number; confidence: number } | null {
+	if (!answers) return null;
+	const raw = answers["goal_moved"];
+	if (typeof raw !== "object" || raw === null) return null;
+	const a = raw as { noul?: unknown; confidence?: unknown };
+	if (typeof a.noul !== "number") return null;
+	return {
+		moved: a.noul >= threshold,
+		p: a.noul,
+		confidence: typeof a.confidence === "number" ? a.confidence : 1,
 	};
 }
 
@@ -354,18 +389,38 @@ export function nudgeText(v: Verdict, goal: SessionGoal, consecutive: number): s
 	].join("\n");
 }
 
+/** The prompt-time goal_moved message: lands before the run starts so the agent re-pins the goal instead of working with a stale one. */
+export function promptMovedText(goal: SessionGoal, p: number): string {
+	return [
+		`${NUDGE_MARKER} goal moved (p=${p.toFixed(2)}) — a Jev review of the user's latest prompt against the session goal:`,
+		``,
+		`SESSION GOAL: ${goal.objective}`,
+		``,
+		`This prompt redefines the objective — the goal state above is stale. Before continuing, update it: call pin_goal with the refined objective, or amend_goalspec for new criteria/constraints/plan. Session-state reminders attached earlier in this conversation may still describe the old goal; treat the user's latest prompt as the authoritative ask and do not steer back toward the old objective.`,
+	].join("\n");
+}
+
 /** Most recent live course-check message on the branch, if any. */
-export function lastNudge(entries: readonly SessionEntry[]): { id: string } | null {
+export function lastNudge(entries: readonly SessionEntry[]): { id: string; details?: Record<string, unknown> } | null {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (
 			entry.type === "custom_message" &&
 			(entry as unknown as { customType?: unknown }).customType === COURSE_CHECK_TYPE
 		) {
-			return { id: (entry as { id: string }).id };
+			const e = entry as unknown as { id: string; details?: unknown };
+			const details = e.details && typeof e.details === "object" ? (e.details as Record<string, unknown>) : undefined;
+			return details ? { id: e.id, details } : { id: e.id };
 		}
 	}
 	return null;
+}
+
+/** True when a live nudge's details mark it as a prompt-time goal_moved nudge (a duplicate would say the same thing). */
+export function nudgeIsPromptMoved(details: unknown): boolean {
+	if (!details || typeof details !== "object") return false;
+	const d = details as Record<string, unknown>;
+	return d.source === "prompt" && d.verdict === "goal_moved";
 }
 
 /** Boundary drafts: retire the previous nudge (at most one live copy), then append the fresh one. */

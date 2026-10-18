@@ -4,14 +4,19 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Verdict } from "./state.ts";
 import {
 	buildNudgeDrafts,
+	composePromptState,
 	composeState,
 	COURSE_CHECK_TYPE,
 	digest,
 	hasUserCorrection,
 	lastNudge,
+	MIN_PROMPT_CHARS,
 	NUDGE_MARKER,
+	nudgeIsPromptMoved,
 	nudgeText,
+	parseMoved,
 	parseVerdict,
+	promptMovedText,
 	readGoal,
 	resolveConfig,
 	shouldCheck,
@@ -52,7 +57,7 @@ function nudgeEntry(content = `${NUDGE_MARKER} off track`): SessionEntry {
 	return { id: nextId(), type: "custom_message", customType: COURSE_CHECK_TYPE, content, display: true } as unknown as SessionEntry;
 }
 
-const CFG: CourseConfig = { enabled: true, intervalTurns: 10, threshold: 0.7, timeoutMs: 6000, digestEntries: 60, digestCapChars: 6000 };
+const CFG: CourseConfig = { enabled: true, intervalTurns: 10, threshold: 0.7, timeoutMs: 6000, digestEntries: 60, digestCapChars: 6000, promptCheck: true };
 
 // ─── resolveConfig ────────────────────────────────────────────────────
 
@@ -301,4 +306,62 @@ test("hasUserCorrection: predicate over the recent window", () => {
 	assert.equal(hasUserCorrection(entries, (t) => t.startsWith("not")), true);
 	assert.equal(hasUserCorrection(entries, (t) => t.startsWith("zzz")), false);
 	assert.equal(hasUserCorrection([msgEntry("user", "all good")], () => true), true);
+});
+
+// ─── per-prompt goal_moved check ─────────────────────────────────────
+
+test("resolveConfig promptCheck default and env override", () => {
+	assert.equal(resolveConfig({}, undefined).promptCheck, true);
+	assert.equal(resolveConfig({}, { promptCheck: false }).promptCheck, false);
+	assert.equal(resolveConfig({ COURSE_CHECK_PROMPT_CHECK: "0" }, { promptCheck: true }).promptCheck, false);
+	assert.equal(resolveConfig({ COURSE_CHECK_PROMPT_CHECK: "1" }, { promptCheck: false }).promptCheck, true);
+});
+
+test("composePromptState: goal blocks plus the new prompt, capped", () => {
+	const goal: SessionGoal = { objective: "fix the bug", criteria: ["tests pass"], plan: ["find root cause"] };
+	const state = composePromptState(goal, "actually ship the CLI exporter instead");
+	assert.match(state, /SESSION GOAL:\nfix the bug/);
+	assert.match(state, /SUCCESS CRITERIA:\n- tests pass/);
+	assert.match(state, /CURRENT PLAN:\n- find root cause/);
+	assert.match(state, /NEW USER PROMPT:\nactually ship the CLI exporter instead/);
+
+	const capped = composePromptState(goal, "x".repeat(5000));
+	assert.ok(capped.includes("x".repeat(4000)));
+	assert.ok(!capped.includes("x".repeat(4001)));
+});
+
+test("parseMoved: noul answer, threshold gate, malformed", () => {
+	assert.deepEqual(parseMoved({ goal_moved: { noul: 0.9, confidence: 0.8 } }, 0.7), { moved: true, p: 0.9, confidence: 0.8 });
+	assert.deepEqual(parseMoved({ goal_moved: { noul: 0.5 } }, 0.7), { moved: false, p: 0.5, confidence: 1 });
+	assert.equal(parseMoved({}, 0.7), null);
+	assert.equal(parseMoved({ goal_moved: { noul: "high" } }, 0.7), null);
+	assert.equal(parseMoved(null, 0.7), null);
+});
+
+test("promptMovedText: marker, stale goal, re-pin instruction", () => {
+	const text = promptMovedText(GOAL, 0.87);
+	assert.ok(text.startsWith(NUDGE_MARKER));
+	assert.match(text, /goal moved \(p=0\.87\)/);
+	assert.match(text, /SESSION GOAL: ship the login fix/);
+	assert.match(text, /pin_goal/);
+	assert.match(text, /amend_goalspec/);
+});
+
+test("nudgeIsPromptMoved: only prompt-time goal_moved details match", () => {
+	assert.equal(nudgeIsPromptMoved({ source: "prompt", verdict: "goal_moved" }), true);
+	assert.equal(nudgeIsPromptMoved({ verdict: "goal_moved" }), false);
+	assert.equal(nudgeIsPromptMoved(undefined), false);
+});
+
+test("lastNudge exposes details of the live nudge", () => {
+	const entry = {
+		id: nextId(),
+		type: "custom_message",
+		customType: COURSE_CHECK_TYPE,
+		content: "x",
+		details: { source: "prompt", verdict: "goal_moved" },
+	} as unknown as SessionEntry;
+	const live = lastNudge([entry]);
+	assert.equal(live?.id, entry.id);
+	assert.deepEqual(live?.details, { source: "prompt", verdict: "goal_moved" });
 });
