@@ -34,10 +34,10 @@ const HELP = {
 	},
 	verifierAgreement: {
 		title: "Verifier agreement",
-		what: "How often the local Jev verifier matched an independent frontier model's verdict on a sampled curator proposal. Low agreement means one of the two is miscalibrated.",
-		formula: "agree ÷ samples, from verifier-ab records.",
+		what: "How often the frontier gate agreed with the local Jev verifier on sampled curator proposals, split by direction: a conservative override (frontier retains what Jev approved) only costs savings; a dangerous override (frontier approves what Jev held) would risk loss. Low agreement here mostly measures frontier conservatism, not Jev error — the frontier vetoes anything 'plausibly' needed while Jev proves per-line coverage.",
+		formula: "shadow-path samples: agree ÷ samples, disagreements labelled by direction; path=escalation rows report how often the frontier converted an escalated hold into savings.",
 		source: "~/.pi/agent/jev-decisions/jev-curator.jsonl, decision=verifier-ab.",
-		action: "The sharpest signal on this page. Inspect the disagreements in the Ledger, then either tighten Jev's gate criteria or stop paying for frontier checks that keep overruling it.",
+		action: "Dangerous > 0 is the alarm — inspect those rows first. For conservative overrides, scan the veto reasons in the Ledger: concrete dropped facts → widen the line scorer so repair can pull the lines in; vague 'plausibly needed' → the frontier is over-retaining proven-covered extracts.",
 	},
 	rulePrecision: {
 		title: "Rule precision",
@@ -83,10 +83,10 @@ const HELP = {
 	},
 	escalations: {
 		title: "Frontier escalations",
-		what: "How often the curator's verifier was unsure enough to pay for a frontier-model check, and how many goal-relevant lines the repair pass recovered before emitting.",
-		formula: "escalations ÷ curator candidates; repairs = repaired ÷ verified.",
-		source: "jev-curator.jsonl (verifierModel containing frontier; jev-verify records with repaired and lostLines).",
-		action: "High escalation with high agreement means the frontier check earns its keep. High escalation with low agreement means it second-guesses without improving — reconsider the verifier protocol.",
+		what: "How often the curator's verifier escalated an uncertain case to the frontier model, how many of those the frontier converted into savings, and how many goal-relevant lines the repair pass recovered before emitting.",
+		formula: "escalations ÷ curator candidates, summed per item from verifier-batch records; repairs = repaired ÷ verified.",
+		source: "jev-curator.jsonl (verifier-batch escalated counts; verifier-ab path=escalation for frontier conversions; jev-verify records with repaired and lostLines).",
+		action: "Escalation buys savings, not safety — a local retainFull is equally loss-free. If the frontier converts few escalations, the escalation gate is too loose: card-gate holds below JEVCURATOR_CARD_ESCALATE_MIN_PROB and zero-savings head/tail fallbacks are already gated locally.",
 	},
 	userCorrections: {
 		title: "User corrections",
@@ -898,9 +898,9 @@ async function impactPage(view, ctx) {
 			meter({
 				label: "Verifier agreement",
 				value: q.verifierAgreement,
-				tone: qualityTone(q.verifierAgreement),
-				detail: q.verifierAbTotal ? `${fmtInt(q.verifierAbAgree)} of ${fmtInt(q.verifierAbTotal)} frontier samples agreed` : "no A/B samples in range",
-				tip: "Jev's approval vs an independent frontier check on sampled curator proposals.",
+				tone: q.verifierAbDangerous > 0 ? "error" : "ok",
+				detail: q.verifierAbTotal ? `${fmtInt(q.verifierAbAgree)} of ${fmtInt(q.verifierAbTotal)} agreed · ${fmtInt(q.verifierAbDangerous)} dangerous · ${fmtInt(q.verifierAbConservative)} conservative overrides` : "no A/B samples in range",
+				tip: "Frontier verdict vs the Jev protocol on sampled proposals. Conservative overrides cost savings, not correctness; dangerous ones risk loss.",
 				help: HELP.verifierAgreement,
 			}),
 			meter({
@@ -943,8 +943,8 @@ async function impactPage(view, ctx) {
 				label: "Frontier escalations",
 				value: escalationRate,
 				tone: qualityTone(escalationRate, { invert: true }),
-				detail: `${fmtInt(q.verifierEscalations)} of ${fmtInt(d.curator.candidates)} candidates · ${fmtInt(q.repairs.repaired)}/${fmtInt(q.repairs.verified)} repairs · ${fmtInt(q.repairs.lostLines)} lines recovered`,
-				tip: "How often the Jev verifier needed a frontier check, and how many goal-relevant lines the repair pass recovered before emitting.",
+				detail: `${fmtInt(q.verifierEscalations)} of ${fmtInt(d.curator.candidates)} candidates${q.verifierEscalationSamples ? ` · frontier converted ${fmtInt(q.verifierEscalationSaved)}/${fmtInt(q.verifierEscalationSamples)} to savings` : ""} · ${fmtInt(q.repairs.repaired)}/${fmtInt(q.repairs.verified)} repairs · ${fmtInt(q.repairs.lostLines)} lines recovered`,
+				tip: "How often the Jev verifier needed a frontier check, how many of those the frontier converted to savings, and how many goal-relevant lines the repair pass recovered before emitting.",
 				help: HELP.escalations,
 			}),
 			meter({
@@ -1223,7 +1223,7 @@ async function impactPage(view, ctx) {
 		benefitBadge.textContent = `net ≈ ${fmtCost(grossBenefit - (benefitModel.jev?.cost ?? 0))}`;
 		const q = d.quality;
 		const tones = [
-			qualityTone(q.verifierAgreement),
+			q.verifierAbDangerous > 0 ? "error" : "ok",
 			qualityTone(q.rulePrecision.rate),
 			qualityTone(q.routerVerdicts.good + q.routerVerdicts.bad > 0 ? q.routerVerdicts.good / (q.routerVerdicts.good + q.routerVerdicts.bad) : null),
 			qualityTone(q.guardClean.rate),
@@ -1674,7 +1674,7 @@ async function curatorPage(view, ctx) {
 		kpi({ label: "Tokens condensed", value: fmtCompact(d.tokensOneTime), sub: `≈${fmtCompact(d.tokensCarried)} not re-read over later calls${d.tokensPromptPct != null ? ` · prompts ${fmtPct(d.tokensPromptPct, 1)} smaller` : ""}`, valueClass: "good" }),
 		kpi({ label: "Frontier escalations", value: fmtInt(d.escalations), sub: `${fmtPct(d.escalationRate, 1)} of candidates needed a frontier check` }),
 		kpi({ label: "Repairs", value: `${fmtInt(d.repairs.repaired)}/${fmtInt(d.repairs.verified)}`, sub: `${fmtInt(d.repairs.lostLines)} goal-relevant lines recovered` }),
-		kpi({ label: "Verifier agreement", value: fmtPct(d.agreement.rate, 0), sub: `${fmtInt(d.agreement.hits)}/${fmtInt(d.agreement.samples)} frontier samples agreed` }),
+		kpi({ label: "Verifier agreement", value: fmtPct(d.agreement.rate, 0), sub: `${fmtInt(d.agreement.hits)}/${fmtInt(d.agreement.samples)} agreed · ${fmtInt(d.agreement.dangerous ?? 0)} dangerous · ${fmtInt(d.agreement.conservative ?? 0)} conservative` }),
 		kpi({ label: "Verifier cost / emit", value: fmtCost(d.costPerEmit ?? 0), sub: `${fmtCost(d.verifierCost)} priced from logged usage`, help: HELP.curatorRange }),
 	]);
 	const overviewSankey = htmlRegion((d) => (Object.keys(d.fates.nodes ?? {}).length ? sankey({ columns: d.fates.columns, nodes: d.fates.nodes, links: d.fates.links, height: 250 }) : '<div class="empty">No classified candidates in this range.</div>'));

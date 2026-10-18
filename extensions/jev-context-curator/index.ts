@@ -174,6 +174,7 @@ const CFG = {
 	verifierMode: CONFIG.verifierMode === "jev" || CONFIG.verifierMode === "frontier" ? CONFIG.verifierMode : "hybrid",
 	covMin: CONFIG.covMin,
 	cardBgProb: CONFIG.cardBgProb,
+	cardEscalateMinProb: CONFIG.cardEscalateMinProb,
 	verifyMaxLines: CONFIG.verifyMaxLines,
 	repairSlack: CONFIG.repairSlack,
 	verifierShadowPct: CONFIG.verifierShadowPct,
@@ -1216,7 +1217,17 @@ async function jevVerifyItem(item: VerifyItem): Promise<ItemCoverage> {
 		if (role.role === "background" && role.prob >= CFG.cardBgProb && role.conf >= CFG.minConf) {
 			return { verdict: "useExtract", reason: `background card at p=${role.prob.toFixed(2)}`, repaired: false, lostLines: [], covs: [], escalate: false, degraded: false };
 		}
+		// escalation buys savings, not safety — below the measured frontier-yield
+		// band the frontier retains ~90% of these anyway, so keep the evidence locally
+		if (role.prob < CFG.cardEscalateMinProb) {
+			return { verdict: "retainFull", reason: `background p=${role.prob.toFixed(2)} below card gate and below escalation band — retained locally`, repaired: false, lostLines: [], covs: [], escalate: false, degraded: false };
+		}
 		return { verdict: "retainFull", reason: `background p=${role.prob.toFixed(2)} below card gate — uncertain`, repaired: false, lostLines: [], covs: [], escalate: true, degraded: false };
+	}
+	// a fallback that kept the whole source saves nothing: approval would emit a
+	// zero-delta replacement, so retain locally instead of paying for a frontier check
+	if (proposal.method === "headtail-fallback" && !proposal.scoringDegraded && proposal.text.slice(proposal.text.indexOf("\n") + 1) === item.cand.text) {
+		return { verdict: "retainFull", reason: "head/tail fallback kept the full source — no savings to verify", repaired: false, lostLines: [], covs: [], escalate: false, degraded: false };
 	}
 	// no line-scoring evidence to verify against — the frontier must judge
 	if (proposal.scoringDegraded || proposal.method === "headtail-fallback") {
@@ -1280,6 +1291,7 @@ async function verifyBatch(ctx: ExtensionContext, batch: VerifyItem[]): Promise<
 			covs: cov.covs.length ? cov.covs.map((x) => `${x.n}:${x.cov.toFixed(2)}`).slice(0, 12) : undefined,
 			repaired: cov.repaired || undefined,
 			verdict: cov.verdict,
+			escalate: cov.escalate,
 			reason: cov.reason,
 			degraded: cov.degraded || undefined,
 			verifierMode: CFG.verifierMode,
@@ -1309,6 +1321,17 @@ async function verifyBatch(ctx: ExtensionContext, batch: VerifyItem[]): Promise<
 	const fr = await frontierVerify(ctx, frontierBatch, regretNote());
 	for (const b of escalate) {
 		const d = fr.verdicts.get(b.cand.entryId);
+		if (d) {
+			logShadowLine({
+				decision: "verifier-ab",
+				path: "escalation",
+				entryId: b.cand.entryId,
+				jev: "retainFull",
+				frontier: d.verdict,
+				agree: d.verdict === "retainFull",
+				frontierReason: d.reason,
+			});
+		}
 		verdicts.set(
 			b.cand.entryId,
 			d ?? { id: b.cand.entryId, verdict: "retainFull", reason: fr.ok ? "frontier omitted escalated candidate — fail-safe retainFull" : `frontier escalation failed (${fr.error}) — fail-safe retainFull` },
@@ -1321,6 +1344,7 @@ async function verifyBatch(ctx: ExtensionContext, batch: VerifyItem[]): Promise<
 			shadowStats.shadowAb++;
 			logShadowLine({
 				decision: "verifier-ab",
+				path: "shadow",
 				entryId: b.cand.entryId,
 				jev: j.verdict,
 				frontier: d.verdict,

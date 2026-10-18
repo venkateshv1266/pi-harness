@@ -17,6 +17,7 @@ export interface CuratorConfig {
 	verifyRawCap: number;
 	covMin: number;
 	cardBgProb: number;
+	cardEscalateMinProb: number;
 	verifyMaxLines: number;
 	repairSlack: number;
 	verifierShadowPct: number;
@@ -130,6 +131,7 @@ const CURATOR_ENV_SPECS: CuratorEnvSpec[] = [
 	{ key: "verifyRawCap", env: "JEVCURATOR_VERIFY_RAW_CAP", defaultValue: 60000 },
 	{ key: "covMin", env: "JEVCURATOR_COV_MIN", defaultValue: 0.5 },
 	{ key: "cardBgProb", env: "JEVCURATOR_CARD_BG_PROB", defaultValue: 0.8 },
+	{ key: "cardEscalateMinProb", env: "JEVCURATOR_CARD_ESCALATE_MIN_PROB", defaultValue: 0.6 },
 	{ key: "verifyMaxLines", env: "JEVCURATOR_VERIFY_MAX_LINES", defaultValue: 30 },
 	{ key: "repairSlack", env: "JEVCURATOR_REPAIR_SLACK", defaultValue: 1.5 },
 	{ key: "verifierShadowPct", env: "JEVCURATOR_VERIFIER_SHADOW_PCT", defaultValue: 0.15 },

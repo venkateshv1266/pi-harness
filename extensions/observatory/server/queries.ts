@@ -612,7 +612,11 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	let curatorRetain = 0;
 	let verifierAbTotal = 0;
 	let verifierAbAgree = 0;
+	let verifierAbDangerous = 0;
+	let verifierAbConservative = 0;
 	let verifierEscalations = 0;
+	let verifierEscalationSamples = 0;
+	let verifierEscalationSaved = 0;
 	let repairsVerified = 0;
 	let repairsRepaired = 0;
 	let repairsLostLines = 0;
@@ -622,10 +626,18 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 		if (row.kind === "shadow") curatorCandidates += 1;
 		if (data.verifierVerdict === "retainFull") curatorRetain += 1;
 		if (data.decision === "verifier-ab" && typeof data.agree === "boolean") {
-			verifierAbTotal += 1;
-			if (data.agree) verifierAbAgree += 1;
+			if (data.path === "escalation") {
+				verifierEscalationSamples += 1;
+				if (data.frontier !== "retainFull") verifierEscalationSaved += 1;
+			} else {
+				// legacy rows have no path — all are shadow samples of Jev approvals
+				verifierAbTotal += 1;
+				if (data.agree) verifierAbAgree += 1;
+				else if (data.jev === "retainFull" && data.frontier !== "retainFull") verifierAbDangerous += 1;
+				else if (data.frontier === "retainFull") verifierAbConservative += 1;
+			}
 		}
-		if (typeof data.verifierModel === "string" && data.verifierModel.includes("frontier")) verifierEscalations += 1;
+		if (data.decision === "verifier-batch" && typeof data.escalated === "number") verifierEscalations += data.escalated;
 		if (data.decision === "jev-verify") {
 			repairsVerified += 1;
 			if (data.repaired === true) repairsRepaired += 1;
@@ -842,6 +854,10 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 		verifierAgreement: verifierAbTotal ? verifierAbAgree / verifierAbTotal : null,
 		verifierAbTotal,
 		verifierAbAgree,
+		verifierAbDangerous,
+		verifierAbConservative,
+		verifierEscalationSamples,
+		verifierEscalationSaved,
 		verifierEscalations,
 		repairs: {
 			verified: repairsVerified,
@@ -3145,7 +3161,7 @@ function summarizeWindow(db: Database, priceList: Price[], rules: Array<{ name: 
 	let agreementHits = 0;
 	for (const row of db.query<{ data: string }, [number, number]>("SELECT data FROM events WHERE system = 'curator' AND ts_ms BETWEEN ? AND ? LIMIT 40000").all(from, to)) {
 		const data = parseData(row);
-		if (data.decision === "verifier-ab" && typeof data.agree === "boolean") {
+		if (data.decision === "verifier-ab" && data.path !== "escalation" && typeof data.agree === "boolean") {
 			agreementSamples += 1;
 			if (data.agree) agreementHits += 1;
 		}
@@ -3275,7 +3291,7 @@ export function trends(db: Database, range: Range) {
 		}
 		if (row.system === "router" && data.outcome === "user_corrected") series.corrections[i] += 1;
 		if (row.system === "guard" && data.verdict === "blocked") series.guardBlocks[i] += 1;
-		if (row.system === "curator" && data.decision === "verifier-ab" && typeof data.agree === "boolean") {
+		if (row.system === "curator" && data.decision === "verifier-ab" && data.path !== "escalation" && typeof data.agree === "boolean") {
 			series.agreementSamples[i] += 1;
 			if (data.agree) series.agreementHits[i] += 1;
 		}
@@ -3573,6 +3589,10 @@ export function curatorOverview(db: Database, range: Range) {
 	let lostLines = 0;
 	let abSamples = 0;
 	let abAgree = 0;
+	let abDangerous = 0;
+	let abConservative = 0;
+	let abEscalationSamples = 0;
+	let abEscalationSaved = 0;
 	let verifierCost = 0;
 
 	for (const row of rows) {
@@ -3593,15 +3613,22 @@ export function curatorOverview(db: Database, range: Range) {
 			linkCounts.set(`role|${role}|verdict|${verdict}`, (linkCounts.get(`role|${role}|verdict|${verdict}`) ?? 0) + 1);
 		}
 		if (data.action === "emit" || row.kind === "emit-evidence") emits += 1;
-		if (typeof data.verifierModel === "string" && data.verifierModel.includes("frontier")) escalations += 1;
+		if (data.decision === "verifier-batch" && typeof data.escalated === "number") escalations += data.escalated;
 		if (data.decision === "jev-verify") {
 			verified += 1;
 			if (data.repaired === true) repaired += 1;
 			if (Array.isArray(data.lostLines)) lostLines += data.lostLines.length;
 		}
 		if (data.decision === "verifier-ab" && typeof data.agree === "boolean") {
-			abSamples += 1;
-			if (data.agree) abAgree += 1;
+			if (data.path === "escalation") {
+				abEscalationSamples += 1;
+				if (data.frontier !== "retainFull") abEscalationSaved += 1;
+			} else {
+				abSamples += 1;
+				if (data.agree) abAgree += 1;
+				else if (data.jev === "retainFull" && data.frontier !== "retainFull") abDangerous += 1;
+				else if (data.frontier === "retainFull") abConservative += 1;
+			}
 		}
 		if (data.decision === "verifier-batch") {
 			const usage = (data.usage ?? {}) as Record<string, unknown>;
@@ -3638,7 +3665,7 @@ export function curatorOverview(db: Database, range: Range) {
 		escalations,
 		escalationRate: candidates > 0 ? escalations / candidates : null,
 		repairs: { verified, repaired, lostLines, rate: verified > 0 ? repaired / verified : null },
-		agreement: { samples: abSamples, hits: abAgree, rate: abSamples > 0 ? abAgree / abSamples : null },
+		agreement: { samples: abSamples, hits: abAgree, rate: abSamples > 0 ? abAgree / abSamples : null, dangerous: abDangerous, conservative: abConservative, escalationSamples: abEscalationSamples, escalationSaved: abEscalationSaved },
 		verifierCost,
 		costPerEmit: emits > 0 ? verifierCost / emits : null,
 		tokensOneTime: metrics.tokensCondensed,

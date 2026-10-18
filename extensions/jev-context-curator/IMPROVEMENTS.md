@@ -183,6 +183,7 @@ post-compaction turns still know what exists and how to page it back.
 | `JEVCURATOR_VERIFIER` | `hybrid` | `hybrid` = Jev protocol + frontier escalation on uncertainty; `jev` = Jev-only (uncertain → retainFull); `frontier` = pre-change behavior. `/setup`-persisted. |
 | `JEVCURATOR_COV_MIN` | `0.5` | Coverage score below this = lost line (repair or escalate) |
 | `JEVCURATOR_CARD_BG_PROB` | `0.8` | Role-probability gate for Jev-approving background cards |
+| `JEVCURATOR_CARD_ESCALATE_MIN_PROB` | `0.6` | Card-gate holds below this role-probability retain locally instead of escalating to the frontier |
 | `JEVCURATOR_VERIFY_MAX_LINES` | `30` | Dropped relevant lines checked per source |
 | `JEVCURATOR_REPAIR_SLACK` | `1.5` | Repair re-render budget multiplier |
 | `JEVCURATOR_VERIFIER_SHADOW_PCT` | `0.15` | Jev-approved decisions also frontier-checked (logged only, ≤2/boundary) |
@@ -192,12 +193,32 @@ post-compaction turns still know what exists and how to page it back.
 | `JEVCURATOR_OVERFLOW_CAP` | `50` | Overflow queue bound |
 | `JEVCURATOR_REGISTRY_CAP` | `150` | Source-registry in-memory bound |
 
+## Escalation economics — measured, then gated (2026-10-18)
+
+14-day telemetry (1961 escalations of 5020 verified, 39%; 1995 frontier calls,
+6.3M in / 1.9M out tokens) shows most escalations buy nothing: the frontier
+retains ~80% of them, and the yield is concentrated where the local protocol
+is least sure for good reason.
+
+- Card-gate holds (`background p below gate`): the frontier converts 7%
+  (p<0.5), 11% (0.5–0.6), 13% (0.6–0.7) and 33% (≥0.7). Escalation now starts
+  at `JEVCURATOR_CARD_ESCALATE_MIN_PROB` (0.6): below the band the candidate
+  retains locally — equally loss-free, no frontier call.
+- Head/tail fallbacks whose excerpt kept the whole source (≤1800 chars) were
+  "approved" byte-identical 97% of the time — a zero-delta emit. Those now
+  retain locally too; truncated fallbacks still escalate (14% conversion).
+- `verifier-ab` rows carry `path` (`shadow` = sampled approval,
+  `escalation` = escalated hold), so the observatory can report the frontier's
+  conversion rate on escalations separately from shadow agreement; `jev-verify`
+  rows carry the escalate flag directly.
+
 ## How the loop closes
 
 Every decision already lands in `jev-curator.jsonl`. The new telemetry makes
 the system self-measuring: `jev-verify` lines carry per-line coverage,
 `…+repair` methods carry what was added back, `verifier-ab` lines carry
-frontier agreement on Jev approvals, and recalls of condensed sources carry
+frontier agreement on Jev approvals split by path (shadow vs escalation), and
+recalls of condensed sources carry
 regret. The acceptance question for this change set is not "does it save
 tokens" (Tier 4 will handle timing) but: **does verifier approval rate rise
 without a regret or agreement regression** — and every number needed to
