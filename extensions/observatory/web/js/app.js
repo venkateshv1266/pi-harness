@@ -16,8 +16,6 @@ const NAV = [
 	{ id: "askJev", label: "Ask Jev", icon: "spark" },
 	{ id: "ledger", label: "Jev Ledger", icon: "list" },
 	{ id: "curator", label: "Curator", icon: "scissors" },
-	{ id: "refine", label: "Refine", icon: "wand" },
-	{ id: "tuner", label: "Tuner", icon: "sliders" },
 	{ id: "sessions", label: "Sessions", icon: "chat" },
 	{ id: "extensions", label: "Extensions", icon: "puzzle" },
 	{ id: "health", label: "Health", icon: "pulse" },
@@ -47,7 +45,9 @@ function parseHash() {
 	const raw = window.location.hash.replace(/^#\/?/, "") || "overview";
 	const [pathPart, queryPart] = raw.split("?");
 	const params = Object.fromEntries(new URLSearchParams(queryPart ?? ""));
-	return { id: pathPart || "overview", params };
+	// The old Refine and Tuner pages were folded into Improvements; keep bookmarks working.
+	const legacy = pathPart === "refine" || pathPart === "tuner";
+	return { id: legacy ? "improvements" : pathPart || "overview", params };
 }
 
 let titleNode = null;

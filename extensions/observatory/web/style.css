@@ -500,3 +500,14 @@ pre.json { background: var(--panel-2); border: 1px solid var(--border); border-r
 @media (prefers-reduced-motion: reduce) {
 	* { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Improvements: command hints + collapsible loop diagnostics */
+.attn-hint { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 2px 10px; align-items: center; }
+.attn-hint .mono { color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; font-size: 11px; }
+.details { border-top: 1px solid var(--border); padding-top: 10px; }
+.details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 640; padding: 2px 0 8px; user-select: none; }
+.details > summary:hover { color: var(--text); }
+.details[open] > summary { margin-bottom: 6px; }
+
+/* Improvements: consistent vertical rhythm between sections */
+.stack { display: grid; gap: 14px; }
