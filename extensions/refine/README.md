@@ -3,8 +3,9 @@
 > Self-improvement loop for the harness itself: analyze a session trajectory, propose the
 > smallest harness edit that would measurably improve future sessions, score it with Jev, and
 > stage it for one-glance human approval. Since wave 1 the proposal vocabulary is the harness
-> surface, not just TTSR rules: **rule, note, memory, context, agent, skill, settings**.
-> `extension` proposals are reserved for wave 2 (compile + fake-pi smoke + safety gate).
+> surface, not just TTSR rules: **rule, note, memory, context, agent, skill, settings**; wave 2
+> adds **extension** — a new pi tool bundle that must pass a compile + fake-pi smoke + safety
+> gate and arm atomically with the trigger that makes agents use it.
 
 ## What it does
 
@@ -27,7 +28,7 @@
 | `agent` | `<name>.md` with `name`, `description`, optional `tools`/`model`/`thinking` | `~/.pi/agent/agents/` | evidence / role fit / novelty |
 | `skill` | `SKILL.md` with `name`, `description` | `~/.pi/agent/skills/<name>/SKILL.md` | evidence / reusability / novelty |
 | `settings` | `patch.json` (allowlisted primitive patch) | merged into `~/.pi/agent/settings.json` | evidence / precision / novelty (0.7 floors) |
-| `extension` | `index.ts` + `README.md` + trigger | wave 2 | not enabled |
+| `extension` | `index.ts` + `README.md` + `pairing.md` (TTSR rule) or `pairing.md` + `pairing.yaml` (context entry), plus `expectation: tool:<name>` / `command:<name>` | `~/.pi/agent/extensions/<name>/{index.ts,README.md}` **and** the pairing target under `rules/` or `contexts/`, atomically | compile + fake-pi smoke + safety scan; telemetry suppression hard-rejects |
 
 `utils/harness-surface.ts` is the single registry for this table: kind specs, per-kind
 validators, per-part floors, bundle hashing and the armed-harness digest.
@@ -39,7 +40,26 @@ validators, per-part floors, bundle hashing and the armed-harness digest.
 | `/refine [focus]` | Analyzes the full session trajectory (user/assistant text plus assistant tool calls). Sends it to the session model at high reasoning effort with the kind menu, recent memory lessons, and existing coverage. Each returned proposal is shown in an interactive overlay — Enter applies, Esc skips. Optional arg becomes a `focus` hint recorded in history. |
 | `/refine-history` | Lists applied refinements; selecting one (after confirmation) restores or removes every file that arm touched (from its pre-arm backup) and marks the entry rolled back. |
 | `/refine-review [discard]` | Reviews staged edits in a persistent two-panel reader: a capped list panel on top (one row per staged item with kind, tier and score) and the selected item's evidence, gate scores, arm targets and every file in the bundle in the large panel below — one overlay for the whole session, so navigating never flickers. Controls: ↑/↓ select, PgUp/PgDn or space scroll the bundle a page, j/k a line, Home/End or g/G jump, mouse wheel scrolls; Enter arms the selected item, `d d` rejects it (two-step confirm — the staged bundle is deleted and its bundle hash is recorded in `rejected.jsonl` so the auto loop will not re-stage identical content), and Esc closes the review leaving unreviewed items staged (viewed-but-undecided items are audited as kept-staged). With the `discard` argument, a selected item is rejected directly through a confirmation, without the overlay. |
-| `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (all proposable kinds), `name` (kebab-case slug), `title`, `evidence`, `files` (relative path → content). The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
+| `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (all proposable kinds), `name` (kebab-case slug), `title`, `evidence`, `files` (relative path → content), and `expectation` for extensions. The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
+
+## Extension adoption gate
+
+A proposed extension is inert until it passes `extensions/refine/extension-gate.ts`:
+
+1. **Compile** — the staged `index.ts` is typechecked in a scratch project against pi's real
+   declarations (the `verify-pi-extension-edits` mechanism). Only first-party errors are
+   reported; missing compile infrastructure fails closed.
+2. **Fake-pi smoke** — the source loads against a fake `ExtensionAPI`, registers its tools /
+   commands / boundary handlers, and every registered handler is fired with a synthetic event.
+   A module that throws, registers nothing, or crashes a handler fails.
+3. **Safety scan** — flags `child_process`, network egress, writes outside `~/.pi/agent/`, and
+   **hard-rejects** any reference to `jev-decisions/`, observatory adapters, or reassignment
+   of the outcomes loggers (anti-cheat: the loop may never blind its own instruments).
+
+The gate runs when an auto-proposed extension is staged (result recorded in
+`manifest.probe.gate`) and again on arm. Arming writes the source + README + pairing artifact
+as one transaction: if any target is taken or a write fails, nothing is armed. The review
+overlay shows each check and its result; a failed gate cannot be armed.
 
 ## Configuration
 
@@ -64,7 +84,8 @@ validators, per-part floors, bundle hashing and the armed-harness digest.
 
 - `~/.pi/agent/jev-decisions/refine/staging/<kind>/<name>/` — inert staged bundle:
   `manifest.json` (kind, name, title, evidence, score, parts, session, stagedAt, trigger,
-  tier, files) plus the proposed files under `files/`. The pre-wave-1
+  tier, files, optional expectation and `probe.gate` for extensions) plus the proposed files
+  under `files/`. The pre-wave-1
   `rules-staging/<name>.md` layout is migrated once at extension start.
 - `~/.pi/agent/jev-decisions/refine/notes/` — applied notes (passive markdown).
 - `~/.pi/agent/jev-decisions/refine/backups/<timestamp>-<kind>-<name>/` — pre-arm copies of
@@ -73,7 +94,8 @@ validators, per-part floors, bundle hashing and the armed-harness digest.
   into the auto loop's dedupe so identical proposals are not re-staged.
 - `~/.pi/agent/jev-decisions/refine/history.jsonl` — every apply/arm: id, timestamp, kind,
   name, primary path, `armed` targets with backup paths, evidence, source (`manual`/`auto`),
-  optional `focus`, the armed-harness digest, and `rolledBack` after a rollback.
+  optional `focus`, optional extension `expectation`, the armed-harness digest, and
+  `rolledBack` after a rollback.
 - `~/.pi/agent/jev-decisions/refine/auto-refine.jsonl` — audit log of every auto-loop
   decision: stage (`plan`/`jev`/`apply`/`review`), decision
   (`skipped`/`degraded`/`no-proposals`/`suppressed`/`staged`/`applied`/`duplicate`/`kept-staged`/`armed`/`discarded`/`error`),

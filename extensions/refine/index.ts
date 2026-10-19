@@ -24,6 +24,7 @@ import {
 	rollbackArm,
 	stageProposal,
 	toProposal,
+	updateStagedProbe,
 	type ArmResult,
 	type ArmTarget,
 	type Coverage,
@@ -31,6 +32,7 @@ import {
 	type Proposal,
 	type StagedItem,
 } from "./harness.ts";
+import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
 
 type HistoryEntry = {
 	id: string;
@@ -44,6 +46,7 @@ type HistoryEntry = {
 	source?: "auto" | "manual";
 	rolledBack?: boolean;
 	digest?: string;
+	expectation?: string;
 };
 
 type JevAnswer = { noul?: number; confidence?: number };
@@ -129,12 +132,13 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		'- "agent": a subagent definition with frontmatter name/description/tools/model/thinking. Use when delegation divides labor cleanly.',
 		'- "skill": a SKILL.md with frontmatter name/description and structured procedure steps. Use for a repeatable multi-step workflow.',
 		'- "settings": a narrow settings patch (patch.json) for modelRouter/courseCheck/decisionTuner/refine keys only; primitives only.',
+		'- "extension": a NEW pi extension bundle that gives agents a better tool. Requires "index.ts" (default-exported factory), "README.md", and a pairing trigger — either "pairing.md" (a TTSR rule that fires when the tool is relevant) or "pairing.md" + "pairing.yaml" (a context doc + registry fragment). Also requires "expectation": "tool:<name>" or "command:<name>" — the observable call that proves adoption. Never edit an existing extension; propose a note instead. The bundle is gated on compile + fake-pi smoke + safety scan before arming.',
 		"",
 		'"name" is a kebab-case slug. "title" is one-line. "evidence" MUST quote the exact trajectory line(s) plus one sentence on why it will recur.',
-		'"files" maps a RELATIVE path to full file content. rule/note/agent: one "<name>.md". memory: "entry.md". context: "<name>.md" + "entry.yaml". skill: "SKILL.md". settings: "patch.json".',
+		'"files" maps a RELATIVE path to full file content. rule/note/agent: one "<name>.md". memory: "entry.md". context: "<name>.md" + "entry.yaml". skill: "SKILL.md". settings: "patch.json". extension: "index.ts" + "README.md" + "pairing.md" (+ "pairing.yaml" for a context pairing).',
 		"",
 		"Respond with ONLY a JSON object, no markdown fences, in this exact shape:",
-		'{"proposals": [{"kind": "rule|note|memory|context|agent|skill|settings", "name": "...", "title": "...", "evidence": "...", "files": {"...": "..."}}]}',
+		'{"proposals": [{"kind": "rule|note|memory|context|agent|skill|settings|extension", "name": "...", "title": "...", "evidence": "...", "files": {"...": "..."}, "expectation": "tool:<name> (extension only)"}]}',
 		"",
 		"Rule file format:",
 		RULE_FORMAT,
@@ -144,7 +148,7 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		...(lessons.length > 0 ? lessons : ["(none)"]),
 		"</memory-lessons>",
 		"",
-		`Existing refine coverage (do NOT duplicate): rules: [${coverage.rules.join(", ") || "none"}]; notes: [${coverage.notes.join(", ") || "none"}]; contexts: [${coverage.contexts.join(", ") || "none"}]; agents: [${coverage.agents.join(", ") || "none"}]; skills: [${coverage.skills.join(", ") || "none"}]`,
+		`Existing refine coverage (do NOT duplicate): rules: [${coverage.rules.join(", ") || "none"}]; notes: [${coverage.notes.join(", ") || "none"}]; contexts: [${coverage.contexts.join(", ") || "none"}]; agents: [${coverage.agents.join(", ") || "none"}]; skills: [${coverage.skills.join(", ") || "none"}]; extensions: [${coverage.extensions.join(", ") || "none"}]`,
 		"Existing notes are passive records, not enforcement. If the trajectory shows one of those lessons being violated AGAIN, propose its rule version — promotion is expected, not duplication (the rule still needs a precise trigger).",
 		"Existing bodies (overlap check — never re-propose what an existing RULE already enforces; note bodies double as promotion candidates):",
 		bodies
@@ -254,6 +258,7 @@ const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext): Promis
 		container.addChild(border);
 		container.addChild(new Text(theme.fg("accent", theme.bold(`Refine proposal [${KIND_SPECS[proposal.kind].label}]: ${proposal.title}`)), 1, 0));
 		container.addChild(new Text(theme.fg("dim", `evidence: ${proposal.evidence}`), 1, 1));
+		if (proposal.expectation) container.addChild(new Text(theme.fg("dim", `expectation: ${proposal.expectation}`), 1, 0));
 		container.addChild(new Text(theme.fg("dim", `files: ${Object.keys(proposal.files).sort().join(", ")}`), 1, 0));
 		container.addChild(new Markdown(proposalContent(proposal), 1, 1, mdTheme));
 		container.addChild(new Text(theme.fg("dim", "Enter = apply, Esc = skip"), 1, 0));
@@ -281,6 +286,7 @@ type ReviewItem = {
 	content: string;
 	meta: StagedManifest | null;
 	armHint?: string[];
+	gate?: ExtensionGateResult;
 };
 
 const buildReviewDoc = (item: ReviewItem): string => {
@@ -297,6 +303,19 @@ const buildReviewDoc = (item: ReviewItem): string => {
 	}
 	if (item.armHint && item.armHint.length > 0) metaLines.push(`arm: ${item.armHint.join(" · ")}`);
 
+	const gateLines = item.gate
+		? [
+			"",
+			"### Validation gate",
+			"",
+			`- compile: ${item.gate.compile.ok ? "pass" : "FAIL"} — ${item.gate.compile.detail}`,
+			`- fake-pi smoke: ${item.gate.smoke.ok ? "pass" : "FAIL"} — ${item.gate.smoke.detail}`,
+			`- safety: ${item.gate.safety.ok ? "pass" : "FAIL"} — ${item.gate.safety.detail}`,
+			...(item.gate.warnings.length > 0 ? ["", ...item.gate.warnings.map((warning) => `  - warning: ${warning}`)] : []),
+			...(item.gate.reasons.length > 0 ? ["", ...item.gate.reasons.map((reason) => `  - blocker: ${reason}`)] : []),
+		]
+		: [];
+
 	const blocks = Object.keys(item.files)
 		.sort()
 		.map((rel) => {
@@ -306,7 +325,7 @@ const buildReviewDoc = (item: ReviewItem): string => {
 			return `### \`${rel}\`\n\n${fence}md\n${content}\n${fence}`;
 		});
 
-	return [`## ${item.title}`, "", evidence, "", ...metaLines, "", ...blocks].join("\n");
+	return [`## ${item.title}`, "", evidence, "", ...metaLines, ...gateLines, "", ...blocks].join("\n");
 };
 
 // Persistent two-panel review session: a capped list panel on top, the selected
@@ -566,6 +585,7 @@ const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx:
 		evidence: proposal.evidence,
 		source,
 		digest: harnessDigest(AGENT_ROOT),
+		expectation: proposal.expectation,
 	});
 
 	const hint =
@@ -703,6 +723,7 @@ const buildJevState = (proposals: Proposal[], trajectory: string, bodies: Covera
 		name: p.name,
 		title: p.title,
 		evidence: p.evidence,
+		expectation: p.expectation ?? null,
 		files: Object.fromEntries(Object.entries(p.files).map(([rel, content]) => [rel, content.slice(0, 4000)])),
 		content: proposalContent(p).slice(0, 4000),
 	})),
@@ -719,7 +740,7 @@ const KIND_QUESTION: Record<HarnessKind, string> = {
 	agent: "Does this subagent definition have a distinct role, a clear scope, and a tool allowlist narrow enough to be safe?",
 	skill: "Is this a repeatable multi-step workflow whose steps are concrete enough to follow without re-deriving them?",
 	settings: "Is this settings change narrowly scoped, reversible, and unlikely to degrade behavior if the assumption is wrong?",
-	extension: "",
+	extension: "Given the proposed extension source and its pairing artifact, is the trigger precise enough to surface the tool when it is genuinely useful, and does the expectation name the observable tool/command call that proves adoption?",
 };
 
 const buildJevQuestions = (proposals: Proposal[]): Record<string, unknown> => {
@@ -873,8 +894,16 @@ export default function (pi: ExtensionAPI) {
 			const tier = p.kind === "note" ? null : kindTier(p.kind, v.parts);
 			if (p.kind !== "note" && tier) {
 				if (await stageKind(p, v, sessionId, trigger, tier)) {
-					applied.push(`${p.kind} "${p.name}" staged (${tier})`);
-					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger });
+					let gateSummary: Record<string, unknown> | undefined;
+					if (p.kind === "extension") {
+						const gate = await runExtensionGate({ name: p.name, files: p.files, expectation: p.expectation });
+						await updateStagedProbe(REFINE_DIR, p.kind, p.name, { gate });
+						gateSummary = { ok: gate.ok, reasons: gate.reasons, warnings: gate.warnings };
+						applied.push(`extension "${p.name}" staged (${tier}, gate ${gate.ok ? "pass" : "fail"})`);
+					} else {
+						applied.push(`${p.kind} "${p.name}" staged (${tier})`);
+					}
+					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger, ...(gateSummary ? { gate: gateSummary } : {}) });
 				} else {
 					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, decision: "duplicate", trigger });
 				}
@@ -897,7 +926,25 @@ export default function (pi: ExtensionAPI) {
 		autoToolErrors.set(sig, (autoToolErrors.get(sig) ?? 0) + 1);
 	});
 
+	// The daily Improvements snapshot is materialized once: first turn of the
+	// session checks for today's file, then imports the observatory snapshot
+	// module lazily so refine still loads when observatory is not installed.
+	let snapshotDay = "";
+	const maybeDailySnapshot = (): void => {
+		const day = new Date().toISOString().slice(0, 10);
+		if (snapshotDay === day) return;
+		snapshotDay = day;
+		void import("../observatory/server/snapshots.ts")
+			.then((module) => {
+				module.ensureSnapshot(day);
+			})
+			.catch(() => {
+				// expected: observatory is not installed alongside refine
+			});
+	};
+
 	pi.on("turn_end", (_event, ctx) => {
+		maybeDailySnapshot();
 		if (!AUTO_ENABLED) return;
 		autoTurnCount++;
 		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
@@ -1045,6 +1092,7 @@ export default function (pi: ExtensionAPI) {
 
 			const items: ReviewItem[] = [];
 			for (const item of staged) {
+				const cachedGate = item.kind === "extension" ? (item.meta.probe as { gate?: ExtensionGateResult } | undefined)?.gate : undefined;
 				items.push({
 					kind: item.kind,
 					name: item.name,
@@ -1054,6 +1102,7 @@ export default function (pi: ExtensionAPI) {
 					content: item.content,
 					meta: item.meta,
 					armHint: await describeArm(AGENT_ROOT, item),
+					gate: item.kind === "extension" ? cachedGate ?? (await runExtensionGate({ name: item.name, files: item.files, expectation: item.meta.expectation })) : undefined,
 				});
 			}
 
@@ -1064,7 +1113,16 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.notify(`Staged edit "${item.kind} ${item.name}" is gone`, "warning");
 						return false;
 					}
-					const result = await armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item: stagedItem });
+					let gate: ExtensionGateResult | undefined;
+					if (stagedItem.kind === "extension") {
+						gate = await runExtensionGate({ name: stagedItem.name, files: stagedItem.files, expectation: stagedItem.meta.expectation });
+						if (!gate.ok) {
+							ctx.ui.notify(`Blocked "${item.name}" — validation gate: ${gate.reasons.join("; ")}`, "warning");
+							auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "gate-blocked", gate: { ok: false, reasons: gate.reasons, warnings: gate.warnings } });
+							return false;
+						}
+					}
+					const result = await armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item: stagedItem, gate });
 					if (!result.ok) {
 						ctx.ui.notify(`Skipped "${item.kind} ${item.name}" — ${result.reason}`, "warning");
 						auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "duplicate" });
@@ -1081,6 +1139,7 @@ export default function (pi: ExtensionAPI) {
 						evidence: item.evidence,
 						source: "auto",
 						digest: harnessDigest(AGENT_ROOT),
+						expectation: stagedItem.meta.expectation,
 					});
 					auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "armed", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
 					const hint = item.kind === "rule" || item.kind === "context" ? " — run /ttsr-reload to activate" : item.kind === "settings" ? " — applies from the next session" : "";
@@ -1109,10 +1168,10 @@ export default function (pi: ExtensionAPI) {
 		name: "refine_propose",
 		label: "Refine Propose",
 		description:
-			"Queue a harness improvement draft (TTSR rule, note, memory entry, context entry, subagent, skill, or settings patch) when you notice a recurring failure or a user correction. The user reviews and approves it via an overlay before anything is written.",
+			"Queue a harness improvement draft (TTSR rule, note, memory entry, context entry, subagent, skill, settings patch, or new pi extension) when you notice a recurring failure or a user correction. The user reviews and approves it via an overlay before anything is written.",
 		promptSnippet: "Queue a multi-kind harness edit from an observed recurring failure or correction; user approves via overlay",
 		promptGuidelines: [
-			"Use refine_propose when the same failure occurs 2+ times in this session or the user corrects an anti-pattern likely to recur. Pick the smallest kind that carries the edit: rule (stream trigger + recurrence), note (no matchable signature), memory (durable workspace fact, <=1200 chars), context (doc + registry fragment that fires when relevant), agent (delegation divides labor), skill (repeatable multi-step workflow), settings (narrow patch for modelRouter/courseCheck/decisionTuner/refine). Supply files as a relative path -> full content map; rule/note/agent use <name>.md, memory uses entry.md (frontmatter target: memory|user|failure, category), context uses <name>.md + entry.yaml, skill uses SKILL.md, settings uses patch.json.",
+			"Use refine_propose when the same failure occurs 2+ times in this session or the user corrects an anti-pattern likely to recur. Pick the smallest kind that carries the edit: rule (stream trigger + recurrence), note (no matchable signature), memory (durable workspace fact, <=1200 chars), context (doc + registry fragment that fires when relevant), agent (delegation divides labor), skill (repeatable multi-step workflow), settings (narrow patch for modelRouter/courseCheck/decisionTuner/refine), extension (new tool plus the trigger that makes agents use it). Supply files as a relative path -> full content map; rule/note/agent use <name>.md, memory uses entry.md (frontmatter target: memory|user|failure, category), context uses <name>.md + entry.yaml, skill uses SKILL.md, settings uses patch.json, extension uses index.ts + README.md + pairing.md (+ pairing.yaml for a context pairing) and requires expectation: tool:<name> or command:<name>.",
 		],
 		parameters: Type.Object({
 			kind: StringEnum(PROPOSABLE_KINDS),
@@ -1120,12 +1179,13 @@ export default function (pi: ExtensionAPI) {
 			title: Type.String({ description: "one-line summary" }),
 			evidence: Type.String({ description: "quoted trajectory line(s) justifying this edit plus why it will recur" }),
 			files: Type.Record(Type.String(), Type.String()),
+			expectation: Type.Optional(Type.String({ description: "extension only: machine-checkable usage signal, tool:<name> or command:<name>" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const proposal = toProposal(params);
 			if (!proposal) {
 				throw new Error(
-					`Invalid proposal: kind must be one of ${PROPOSABLE_KINDS.join(", ")}, name must be kebab-case, and the files bundle must pass that kind's validation (e.g. a rule needs frontmatter with condition/astCondition).`,
+					`Invalid proposal: kind must be one of ${PROPOSABLE_KINDS.join(", ")}, name must be kebab-case, and the files bundle must pass that kind's validation (e.g. a rule needs frontmatter with condition/astCondition; an extension needs index.ts + README.md + a pairing trigger and an expectation).`,
 				);
 			}
 			const coverage = await listCoverage(AGENT_ROOT, REFINE_DIR);
