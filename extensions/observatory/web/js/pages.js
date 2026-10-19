@@ -251,8 +251,8 @@ const HELP = {
 	},
 	refine: {
 		title: "Refine — the self-improvement loop",
-		what: "Every run of the background refinement loop: what it proposed, what it suppressed because the evidence was weak, what it wrote as a rule or a note, and what is staged waiting for you to arm it. Rules and notes are segregated because only rules have a lifecycle.",
-		formula: "Counts come from the loop's own audit log (refine/auto-refine.jsonl); artifacts come from its apply log (refine/history.jsonl); staging and notes are read from disk. A rule's state is derived: armed when a rule of that name exists in ~/.pi/agent/rules/, staged when it sits in the staging directory, rolled back when the apply log says so, otherwise proposed. Notes are written records.",
+		what: "Every run of the background refinement loop: what it proposed, what it suppressed because the evidence was weak, what it wrote as a rule or a note, and what is staged waiting for your review — arm it, keep it staged, or reject it in /refine-review. Rules and notes are segregated because only rules have a lifecycle.",
+		formula: "Counts come from the loop's own audit log (refine/auto-refine.jsonl); artifacts come from its apply log (refine/history.jsonl); staging and notes are read from disk. A rule's state is derived: armed when a rule of that name exists in ~/.pi/agent/rules/, staged when it sits in the staging directory, rolled back when the apply log says so, otherwise proposed. Rejected drafts leave no artifact — they remain only as `discarded` decisions in the audit log. Notes are written records.",
 		source: "~/.pi/agent/jev-decisions/refine/{auto-refine,history}.jsonl, ~/.pi/agent/jev-decisions/refine/{rules-staging,notes}/, ~/.pi/agent/rules/.",
 		action: "This is where new rules and notes are born. Read a staged rule before arming it (Meta shows the part scores), and check the suppressed count — a high suppression rate with few applies means the evidence bar is doing its job, not that the loop is broken. The gate calibration card below shows which proposals land in which band.",
 	},
@@ -2260,7 +2260,7 @@ async function refinePage(view, ctx) {
 
 	const kpis = gridRegion((d) => [
 		kpi({ label: "Runs audited", value: fmtInt(d.runs), sub: `${fmtInt(d.byKind.rule ?? 0)} rule · ${fmtInt(d.byKind.note ?? 0)} note proposals`, help: HELP.refine }),
-		kpi({ label: "Applied", value: fmtInt(d.byDecision.applied ?? 0), sub: `${fmtInt(d.byDecision.armed ?? 0)} armed · ${fmtInt(d.byDecision["kept-staged"] ?? 0)} kept staged` }),
+		kpi({ label: "Applied", value: fmtInt(d.byDecision.applied ?? 0), sub: `${fmtInt(d.byDecision.armed ?? 0)} armed · ${fmtInt(d.byDecision["kept-staged"] ?? 0)} kept staged · ${fmtInt(d.byDecision.discarded ?? 0)} rejected` }),
 		kpi({ label: "Suppressed", value: fmtInt(d.byDecision.suppressed ?? 0), sub: `${fmtInt(d.byDecision["no-proposals"] ?? 0)} runs found nothing worth proposing` }),
 		kpi({ label: "Degraded", value: fmtInt(d.degraded), sub: d.degraded > 0 ? "runs that fell back — check the reason" : "no fallbacks", valueClass: d.degraded > 0 ? "bad" : "good" }),
 		kpi({ label: "Rules live", value: fmtInt(d.liveRuleCount), sub: `avg loop latency ${fmtMs(d.avgLatencyMs)}` }),
@@ -2268,7 +2268,7 @@ async function refinePage(view, ctx) {
 	const decisions = nodeRegion((d) => bars(Object.entries(d.byDecision).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }));
 	const stages = nodeRegion((d) => bars(Object.entries(d.byStage).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }));
 	// Rules and notes are segregated: a rule has a lifecycle (proposed → staged →
-	// armed, or rolled back), a note is simply written down.
+	// armed, or rejected / rolled back), a note is simply written down.
 	const artifactSegSlot = h("div", { class: "seg" });
 	const artifactSlot = h("div", { class: "cardbody flush" });
 	let artifactTab = "rules";

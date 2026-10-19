@@ -3897,7 +3897,7 @@ export function refineOverview(db: Database, range: Range) {
 			source: typeof data.source === "string" ? data.source : null,
 			live: kind === "rule" ? liveRules.has(name) : true,
 			rolledBack: data.rolledBack === true,
-			// The lifecycle a rule passes through: proposed → staged → armed, or rolled back.
+			// The lifecycle a rule passes through: proposed → staged → armed, rejected, or rolled back.
 			state: data.rolledBack === true ? "rolled back" : kind === "note" ? "written" : liveRules.has(name) ? "armed" : stagedNames.has(name) ? "staged" : "proposed",
 		};
 	});

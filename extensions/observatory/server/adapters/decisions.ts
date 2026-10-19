@@ -378,7 +378,7 @@ export function decisionAdapters(): Adapter[] {
 		jsonlAdapter({
 			id: "refine",
 			title: "Refine",
-			description: "Rule/note refinement pipeline: staged, applied, suppressed and degraded outcomes.",
+			description: "Rule/note refinement pipeline: staged, applied, rejected, suppressed and degraded outcomes.",
 			file: "refine/auto-refine.jsonl",
 			map: refineMap,
 			panels: tablePanel("refine", "Refinements"),
