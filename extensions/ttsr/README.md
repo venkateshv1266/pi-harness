@@ -242,7 +242,26 @@ Multi-metavariables (`$$$ARGS`) match zero-or-more. If the native module fails t
 load, the extension degrades to regex-only and warns on session start.
 
 For other languages (Python, Rust, Go, …) install the matching `@ast-grep/lang-*`
-package and register it — see the `langFromPath` map in `index.ts`.
+package and register it — see the `langFromPath` map in `matcher.ts`.
+
+## Programmatic matching (probe API)
+
+`extensions/ttsr/matcher.ts` is the engine's parsing and matching core, extracted so
+other modules can evaluate a rule without booting pi. refine's probe engine uses it to
+measure a staged trigger over a fixture corpus:
+
+```ts
+import { initAstGrep, matchRules, parseRuleSource } from "../ttsr/matcher.ts";
+
+await initAstGrep(); // optional native AST support; regex works without it
+const rule = parseRuleSource(source, "my-rule.md");
+const hits = rule ? matchRules([rule], haystack, "tool", "src/foo.ts") : [];
+```
+
+`matchRules` is pure (scope/glob gating + OR'd conditions); runtime state — repeat
+suppression, read receipts, turn counters — stays in `index.ts`. `matchAstRules` needs
+the native module and a tool path; `synthesizeFragmentRules` in `registry.ts` compiles a
+standalone registry fragment the same way the live registry does.
 
 ## Commands
 

@@ -353,6 +353,40 @@ export function buildContextRules(cwd: string, trusted: boolean): { rules: Synth
 	return { rules, entries, warnings, digest };
 }
 
+/**
+ * Synthesize rules from a standalone staged fragment (refine's context bundle).
+ * The doc path is recorded as the read target; unspecified gate fields default
+ * the same way a hand-written advisory entry does. Returns [] for a malformed
+ * fragment — validateBundle already rejects those before staging.
+ */
+export function synthesizeFragmentRules(fragment: string, fallbackId: string, docPath: string): SynthesizedRule[] {
+	let raw: unknown;
+	try {
+		raw = parseYaml(fragment);
+	} catch {
+		// expected: malformed YAML is rejected at stage-write; probing just yields no rules
+		return [];
+	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+	const rec = raw as Record<string, unknown>;
+	const gate = (rec.gate && typeof rec.gate === "object" ? rec.gate : {}) as RegistryGate;
+	const entry: LoadedEntry = {
+		id: typeof rec.id === "string" ? rec.id : fallbackId,
+		origin: "user",
+		registryFile: "<staged>",
+		tier: rec.tier === "gated" || rec.tier === "index-only" ? rec.tier : "advisory",
+		onFail: rec.onFail === "fire" || rec.onFail === "degrade" ? rec.onFail : "suppress",
+		gateMode: gate.mode === "none" ? "none" : "necessity",
+		threshold: typeof gate.threshold === "number" ? gate.threshold : 0.8,
+		criteria: {},
+		resolvedReads: [docPath],
+		when: typeof rec.when === "string" ? rec.when : undefined,
+		subagents: rec.subagents === true,
+		triggers: Array.isArray(rec.triggers) ? (rec.triggers as RegistryTrigger[]) : [],
+	};
+	return synthesizeRules(entry);
+}
+
 export function contextListText(entries: LoadedEntry[]): string {
 	if (entries.length === 0) return "Context registry is empty.";
 	const rows = entries.map((e) => {
