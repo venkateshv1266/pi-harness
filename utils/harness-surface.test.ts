@@ -10,9 +10,11 @@ import {
 	bundleHash,
 	contentHash,
 	describeSettingsPatch,
+	extensionPairing,
 	harnessDigest,
 	primaryContent,
 	validateBundle,
+	validateExpectation,
 	validateSettingsPatch,
 } from "./harness-surface.ts";
 
@@ -79,10 +81,49 @@ test("settings bundles parse patch.json", () => {
 	assert.equal(broken.ok, false);
 });
 
-test("extension proposals are rejected until the wave-2 gate exists", () => {
-	const result = validateBundle("extension", "new-tool", { "index.ts": "export default () => {};" });
-	assert.equal(result.ok, false);
-	if (!result.ok) assert.match(result.error, /wave 2/);
+test("extension bundles pair source with a trigger and require both docs", () => {
+	const source = "import type { ExtensionAPI } from \"@earendil-works/pi-coding-agent\";\nexport default function (pi: ExtensionAPI) { void pi; }\n";
+	const readme = "A tiny tool that does one thing.\n";
+	const rule = "---\nname: use-new-tool\ncondition: [\"manual step\"]\n---\nUse the new tool when a manual step repeats.\n";
+	const good = validateBundle("extension", "new-tool", { "index.ts": source, "README.md": readme, "pairing.md": rule });
+	assert.equal(good.ok, true);
+
+	const noReadme = validateBundle("extension", "new-tool", { "index.ts": source, "pairing.md": rule });
+	assert.equal(noReadme.ok, false);
+	if (!noReadme.ok) assert.match(noReadme.error, /README\.md/);
+
+	const noPairing = validateBundle("extension", "new-tool", { "index.ts": source, "README.md": readme });
+	assert.equal(noPairing.ok, false);
+	if (!noPairing.ok) assert.match(noPairing.error, /pairing\.md/);
+
+	const noDefault = validateBundle("extension", "new-tool", { "index.ts": "export const x = 1;", "README.md": readme, "pairing.md": rule });
+	assert.equal(noDefault.ok, false);
+
+	const contextDocs = {
+		"pairing.md": "How and when to use the new tool.\n",
+		"pairing.yaml": "id: new-tool-context\nfile: new-tool-context.md\ntier: advisory\ntriggers: [\"new tool\"]\n",
+	};
+	assert.equal(validateBundle("extension", "new-tool", { "index.ts": source, "README.md": readme, ...contextDocs }).ok, true);
+});
+
+test("extension pairing resolves a rule or a context entry", () => {
+	const rule = extensionPairing({ "pairing.md": "---\nname: use-x\nastCondition: [\"foo()\"]\n---\nBody\n" });
+	assert.equal(rule.ok, true);
+	if (rule.ok && rule.pairing.kind === "rule") assert.equal(rule.pairing.name, "use-x");
+
+	const context = extensionPairing({ "pairing.md": "Doc", "pairing.yaml": "id: x-context\nfile: x-context.md\ntier: advisory\n" });
+	assert.equal(context.ok, true);
+	if (context.ok && context.pairing.kind === "context") assert.equal(context.pairing.name, "x-context");
+
+	const mismatchedFile = extensionPairing({ "pairing.md": "Doc", "pairing.yaml": "id: x-context\nfile: other.md\ntier: advisory\n" });
+	assert.equal(mismatchedFile.ok, false);
+});
+
+test("extension expectation is a machine-checkable tool or command pattern", () => {
+	assert.equal(validateExpectation("tool:json_diff"), null);
+	assert.equal(validateExpectation("command:json-diff"), null);
+	assert.match(validateExpectation("") ?? "", /expectation/);
+	assert.match(validateExpectation("run the tool") ?? "", /tool:<name>/);
 });
 
 test("bundle path traversal is rejected", () => {
@@ -147,7 +188,7 @@ test("harnessDigest is stable, path-sorted and excludes disabled files", () => {
 
 test("kind specs agree on proposable kinds and floors", () => {
 	assert.equal(KIND_SPECS.rule.autoProposable, true);
-	assert.equal(KIND_SPECS.extension.autoProposable, false);
+	assert.equal(KIND_SPECS.extension.autoProposable, true);
 	for (const spec of Object.values(KIND_SPECS)) {
 		for (const part of spec.parts) {
 			if (part === "novelty") continue;

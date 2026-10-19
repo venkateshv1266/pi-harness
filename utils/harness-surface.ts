@@ -6,10 +6,10 @@
  * is. Dependency-free by design: pure data + pure functions, with the agent root
  * supplied by the caller.
  *
- * Wave 1 enables rule, note, memory, context, agent, skill and settings.
- * `extension` is reserved for wave 2, where its bundle gets the compile +
- * fake-pi smoke + safety gate; validation rejects it today rather than
- * half-arming it.
+ * All eight kinds are enabled. `extension` bundles carry `index.ts` +
+ * `README.md` plus a pairing artifact (a TTSR rule or a context entry) that
+ * lands atomically with the source; the compile + fake-pi smoke + safety gate
+ * lives in extensions/refine/extension-gate.ts and runs before arming.
  *
  * Frontmatter is parsed strictly here (missing frontmatter is an error), which
  * is why this does not reuse jev-memory's tolerant parseFrontmatter.
@@ -172,6 +172,61 @@ export function validateSettingsPatch(patch: unknown): string | null {
 	return null;
 }
 
+/**
+ * An extension is only adopted when the trigger that makes it relevant lands
+ * with it: either a TTSR rule (pairing.md) or a context doc + registry fragment
+ * (pairing.md + pairing.yaml). Tool without trigger rots unused.
+ */
+export type ExtensionPairing =
+	| { kind: "rule"; name: string; content: string }
+	| { kind: "context"; name: string; doc: string; entry: string };
+
+export function extensionPairing(files: ProposalFiles): { ok: true; pairing: ExtensionPairing } | { ok: false; error: string } {
+	const doc = files["pairing.md"];
+	const entry = files["pairing.yaml"];
+	if (typeof doc !== "string" || !doc.trim()) {
+		return { ok: false, error: "extension bundle needs pairing.md — a TTSR rule or a context doc that fires when the tool is relevant" };
+	}
+
+	if (entry !== undefined) {
+		if (typeof entry !== "string" || !entry.trim()) return { ok: false, error: "pairing.yaml is empty" };
+		const id = /^\s*id\s*:\s*["']?([a-z0-9-]+)["']?\s*$/m.exec(entry)?.[1];
+		if (!id || !isSlug(id)) return { ok: false, error: "pairing.yaml must declare a kebab-case id" };
+		if (!new RegExp(`^\\s*file\\s*:\\s*["']?${id}\\.md["']?\\s*$`, "m").test(entry)) {
+			return { ok: false, error: `pairing.yaml must declare file: ${id}.md` };
+		}
+		if (!/^\s*tier\s*:/m.test(entry) && !/^\s*triggers\s*:/m.test(entry)) {
+			return { ok: false, error: "pairing.yaml needs a tier or at least one trigger" };
+		}
+		return { ok: true, pairing: { kind: "context", name: id, doc, entry } };
+	}
+
+	const fm = frontmatter(doc);
+	if (!fm) return { ok: false, error: "pairing.md (TTSR rule) is missing YAML frontmatter" };
+	const ruleName = keyValue(fm.head, "name");
+	if (!ruleName || !isSlug(ruleName)) return { ok: false, error: "pairing.md frontmatter needs a kebab-case `name`" };
+	if (!/^(condition|astCondition)\s*:/m.test(fm.head)) return { ok: false, error: "pairing.md needs a `condition` or `astCondition` trigger" };
+	if (!fm.body.trim()) return { ok: false, error: "pairing.md has no reminder body" };
+	return { ok: true, pairing: { kind: "rule", name: ruleName, content: doc } };
+}
+
+/** Machine-checkable usage signal, e.g. `tool:json_diff` — read by the tuner later. */
+export function validateExpectation(value: unknown): string | null {
+	if (typeof value !== "string" || !value.trim()) return "extension proposals need an expectation (tool:<name> or command:<name>)";
+	if (!/^(tool|command):[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value.trim())) return "expectation must be tool:<name> or command:<name>";
+	return null;
+}
+
+function validateExtension(_name: string, files: ProposalFiles): string | null {
+	const index = files["index.ts"];
+	if (typeof index !== "string" || !index.trim()) return "extension bundle must contain index.ts";
+	if (!/export\s+default\s+(?:async\s+)?(?:function|\()/.test(index)) return "index.ts must default-export a pi extension factory";
+	const readme = files["README.md"];
+	if (typeof readme !== "string" || !readme.trim()) return "extension bundle must contain README.md";
+	const pairing = extensionPairing(files);
+	return pairing.ok ? null : pairing.error;
+}
+
 function validateSettings(_name: string, files: ProposalFiles): string | null {
 	if (Object.keys(files).length !== 1) return "a settings bundle is exactly one file";
 	const raw = files["patch.json"];
@@ -259,12 +314,12 @@ export const KIND_SPECS: Record<HarnessKind, KindSpec> = {
 	extension: {
 		kind: "extension",
 		label: "pi extension",
-		autoProposable: false,
+		autoProposable: true,
 		behavioral: true,
 		parts: ["evidence", "trigger", "novelty"],
 		floors: { evidence: 0.7, trigger: 0.7, novelty: 0.6 },
 		primaryFile: () => "index.ts",
-		validate: () => "extension proposals are gated until wave 2 (compile + fake-pi smoke + safety scan)",
+		validate: validateExtension,
 	},
 };
 
@@ -332,6 +387,8 @@ export interface StagedManifest {
 	trigger: string;
 	tier?: "ready" | "near-miss";
 	files: ProposalFiles;
+	/** Extension usage signal (`tool:<name>` / `command:<name>`), read by the daily snapshot. */
+	expectation?: string;
 	probe?: Record<string, unknown>;
 }
 
