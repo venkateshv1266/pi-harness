@@ -20,16 +20,20 @@ import {
 	bundleHash,
 	contentHash,
 	describeSettingsPatch,
+	extensionPairing,
 	isSlug,
 	primaryContent,
 	stagingDir,
 	stagingFilesDir,
 	validateBundle,
+	validateExpectation,
 	validateSettingsPatch,
+	type ExtensionPairing,
 	type HarnessKind,
 	type ProposalFiles,
 	type StagedManifest,
 } from "../../utils/harness-surface.ts";
+import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
 
 export const MEMORY_DELIMITER = "\n§\n";
 
@@ -39,6 +43,8 @@ export type Proposal = {
 	title: string;
 	evidence: string;
 	files: ProposalFiles;
+	/** Extension-only usage signal: `tool:<name>` or `command:<name>`. */
+	expectation?: string;
 };
 
 export type Coverage = {
@@ -47,6 +53,7 @@ export type Coverage = {
 	contexts: string[];
 	agents: string[];
 	skills: string[];
+	extensions: string[];
 	staged: string[];
 };
 
@@ -100,6 +107,8 @@ export function toProposal(input: unknown): Proposal | null {
 
 	const validation = validateBundle(kind, name, files);
 	if (!validation.ok) return null;
+	const expectation = typeof raw.expectation === "string" ? raw.expectation.trim() : undefined;
+	if (kind === "extension" && validateExpectation(expectation)) return null;
 
 	return {
 		kind,
@@ -107,6 +116,7 @@ export function toProposal(input: unknown): Proposal | null {
 		title: typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : name,
 		evidence: typeof raw.evidence === "string" && raw.evidence.trim() ? raw.evidence.trim() : "(no evidence provided)",
 		files,
+		expectation,
 	};
 }
 
@@ -140,6 +150,7 @@ export function dedupeProposals(proposals: Proposal[], coverage: Coverage): Prop
 		context: new Set(coverage.contexts),
 		agent: new Set(coverage.agents),
 		skill: new Set(coverage.skills),
+		extension: new Set(coverage.extensions),
 	} as Partial<Record<HarnessKind, Set<string>>>;
 	const staged = new Set(coverage.staged);
 	return proposals.filter((p) => {
@@ -165,6 +176,19 @@ async function subdirNames(dir: string): Promise<string[]> {
 		const out: string[] = [];
 		for (const entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory() && existsSync(join(dir, entry.name, "SKILL.md"))) out.push(entry.name);
+		}
+		return out;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+}
+
+async function extensionNames(dir: string): Promise<string[]> {
+	try {
+		const out: string[] = [];
+		for (const entry of await readdir(dir, { withFileTypes: true })) {
+			if (entry.isDirectory() && existsSync(join(dir, entry.name, "index.ts"))) out.push(entry.name);
 		}
 		return out;
 	} catch (error) {
@@ -233,6 +257,7 @@ export async function listCoverage(agentRoot: string, refineRoot: string): Promi
 		contexts: await contextIds(join(agentRoot, "contexts")),
 		agents: await mdNames(join(agentRoot, "agents")),
 		skills: await subdirNames(join(agentRoot, "skills")),
+		extensions: await extensionNames(join(agentRoot, "extensions")),
 		staged: await stagedKeys(refineRoot),
 	};
 }
@@ -271,6 +296,7 @@ export function manifestFor(p: Proposal, meta: Omit<StagedManifest, "kind" | "na
 		title: p.title,
 		evidence: p.evidence,
 		files: p.files,
+		...(p.expectation ? { expectation: p.expectation } : {}),
 		...meta,
 	};
 }
@@ -287,6 +313,21 @@ export async function stageProposal(refineRoot: string, p: Proposal, manifest: S
 	}
 	await writeFile(join(dir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 	return true;
+}
+
+/** Merge a probe result (extension gate, later rule probes) into a staged manifest. */
+export async function updateStagedProbe(refineRoot: string, kind: HarnessKind, name: string, probe: Record<string, unknown>): Promise<void> {
+	const file = join(stagingDir(refineRoot, kind, name), "manifest.json");
+	let manifest: StagedManifest;
+	try {
+		manifest = JSON.parse(await readFile(file, "utf8")) as StagedManifest;
+	} catch (error) {
+		// expected: the item was discarded between staging and the probe write
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	manifest.probe = { ...(manifest.probe ?? {}), ...probe };
+	await writeFile(file, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 async function readStagedBundle(refineRoot: string, kind: HarnessKind, name: string): Promise<StagedItem | null> {
@@ -439,10 +480,12 @@ export type ArmOptions = {
 	refineRoot: string;
 	item: StagedItem;
 	timestamp?: string;
+	/** Cached gate result; arm runs the gate itself when absent. */
+	gate?: ExtensionGateResult;
 };
 
 /** Arm one staged bundle. Writes a pre-arm backup for every target it touches. */
-export async function armProposal({ agentRoot, refineRoot, item, timestamp }: ArmOptions): Promise<ArmResult> {
+export async function armProposal({ agentRoot, refineRoot, item, timestamp, gate }: ArmOptions): Promise<ArmResult> {
 	const stamp = timestamp ?? new Date().toISOString().replace(/[:.]/g, "-");
 	const backupDir = join(refineRoot, "backups", `${stamp}-${item.kind}-${item.name}`);
 	const armed: ArmTarget[] = [];
@@ -513,6 +556,44 @@ export async function armProposal({ agentRoot, refineRoot, item, timestamp }: Ar
 		const backup = await backupFile(refineRoot, backupDir, target);
 		await atomicWrite(target, `${JSON.stringify(next, null, 2)}\n`);
 		armed.push({ target, backup });
+	} else if (item.kind === "extension") {
+		const pairing = extensionPairing(item.files);
+		if (!pairing.ok) return { ok: false, reason: pairing.error };
+		const result = gate ?? (await runExtensionGate({ name: item.name, files: item.files, expectation: item.meta.expectation }));
+		if (!result.ok) return { ok: false, reason: `validation gate failed — ${result.reasons.join("; ")}` };
+
+		const extensionDir = join(agentRoot, "extensions", item.name);
+		const extensionDirExisted = existsSync(extensionDir);
+		const writes: { target: string; content: string }[] = [
+			{ target: join(extensionDir, "index.ts"), content: item.files["index.ts"] },
+			{ target: join(extensionDir, "README.md"), content: item.files["README.md"] },
+		];
+		if (pairing.pairing.kind === "rule") {
+			writes.push({ target: join(agentRoot, "rules", `${pairing.pairing.name}.md`), content: pairing.pairing.content });
+		} else {
+			writes.push({ target: join(agentRoot, "contexts", `${pairing.pairing.name}.md`), content: pairing.pairing.doc });
+			writes.push({ target: join(agentRoot, "contexts", "entries", `${pairing.pairing.name}.yaml`), content: pairing.pairing.entry });
+		}
+		const blocked = checkFree(writes.map((write) => write.target));
+		if (blocked) return { ok: false, reason: blocked };
+
+		const created: string[] = [];
+		try {
+			for (const write of writes) {
+				const backup = await backupFile(refineRoot, backupDir, write.target);
+				await atomicWrite(write.target, write.content.endsWith("\n") ? write.content : `${write.content}\n`);
+				created.push(write.target);
+				armed.push({ target: write.target, backup });
+			}
+		} catch (error) {
+			for (const target of created) {
+				await unlink(target).catch(() => {
+					// expected: best-effort cleanup after a partial arm
+				});
+			}
+			if (!extensionDirExisted) await rm(extensionDir, { recursive: true, force: true });
+			return { ok: false, reason: `arm failed after ${created.length} file(s); nothing was armed: ${error instanceof Error ? error.message : String(error)}` };
+		}
 	} else {
 		return { ok: false, reason: `${item.kind} arming is not implemented yet` };
 	}
@@ -562,6 +643,17 @@ export async function rollbackArm(entry: { kind: HarnessKind; name: string; arme
 /** Arm-target preview used by the review overlay. */
 export async function describeArm(agentRoot: string, item: StagedItem): Promise<string[]> {
 	if (item.kind === "settings") return previewArm(agentRoot, item);
+	if (item.kind === "extension") {
+		const pairing = extensionPairing(item.files);
+		if (!pairing.ok) return [pairing.error];
+		return [
+			`write ${join(agentRoot, "extensions", item.name, "index.ts")}`,
+			`write ${join(agentRoot, "extensions", item.name, "README.md")}`,
+			pairing.pairing.kind === "rule"
+				? `pair rule ${pairing.pairing.name} → ${join(agentRoot, "rules", `${pairing.pairing.name}.md`)}`
+				: `pair context ${pairing.pairing.name} → ${join(agentRoot, "contexts", `${pairing.pairing.name}.md`)} + entries/`,
+		];
+	}
 	if (item.kind === "memory") {
 		const entry = parseMemoryEntry(item.files["entry.md"] ?? "");
 		return entry ? [`append to ${memoryTargetFile(agentRoot, entry.target)}`, `target: ${entry.target}`] : ["unparsable entry.md"];

@@ -20,6 +20,7 @@ import {
 	type Proposal,
 	type StagedItem,
 } from "./harness.ts";
+import type { ExtensionGateResult } from "./extension-gate.ts";
 
 const roots = () => {
 	const root = mkdtempSync(join(tmpdir(), "refine-harness-"));
@@ -45,6 +46,28 @@ const ruleProposal = (name = "no-reinvent"): Proposal => ({
 	files: { [`${name}.md`]: `---\nname: ${name}\ncondition: ["rewrite the parser"]\n---\nReuse the existing parser.\n` },
 });
 
+const extensionProposal = (name = "json-diff"): Proposal => ({
+	kind: "extension",
+	name,
+	title: "JSON diff tool",
+	evidence: "User asked twice for a structural JSON diff",
+	expectation: "tool:json_diff",
+	files: {
+		"index.ts": "import type { ExtensionAPI } from \"@earendil-works/pi-coding-agent\";\nexport default function (pi: ExtensionAPI) { void pi; }\n",
+		"README.md": "Structural JSON diff helper.\n",
+		"pairing.md": "---\nname: use-json-diff\ncondition: [\"compare .json files\"]\n---\nUse the json_diff tool instead of eyeballing large JSON.\n",
+	},
+});
+
+const gatePass: ExtensionGateResult = {
+	ok: true,
+	reasons: [],
+	warnings: [],
+	compile: { ok: true, detail: "injected" },
+	smoke: { ok: true, detail: "injected", tools: ["json_diff"], commands: [], handlers: [] },
+	safety: { ok: true, detail: "injected", flags: [] },
+};
+
 test("toProposal accepts legacy content and bundle shapes", () => {
 	const legacy = toProposal({ kind: "rule", name: "no-reinvent", title: "t", evidence: "e", content: "---\nname: no-reinvent\ncondition: [\"x\"]\n---\nbody\n" });
 	assert.ok(legacy);
@@ -54,6 +77,25 @@ test("toProposal accepts legacy content and bundle shapes", () => {
 	assert.ok(bundle);
 
 	assert.equal(toProposal({ kind: "extension", name: "x", files: { "index.ts": "export {}" } }), null);
+	const extension = toProposal({
+		kind: "extension",
+		name: "json-diff",
+		title: "t",
+		evidence: "e",
+		expectation: "tool:json_diff",
+		files: {
+			"index.ts": "export default function () {}",
+			"README.md": "readme",
+			"pairing.md": "---\nname: use-json-diff\ncondition: [\"diff json\"]\n---\nUse it.\n",
+		},
+	});
+	assert.ok(extension);
+	assert.equal(extension?.expectation, "tool:json_diff");
+	assert.equal(toProposal({
+		kind: "extension",
+		name: "json-diff",
+		files: { "index.ts": "export default function () {}", "README.md": "readme", "pairing.md": "---\nname: use-json-diff\ncondition: [\"x\"]\n---\nbody\n" },
+	}), null);
 	assert.equal(toProposal({ kind: "rule", name: "Bad Name", content: "x" }), null);
 	assert.equal(toProposal({ kind: "rule", name: "no-trigger", content: "---\nname: no-trigger\n---\nbody\n" }), null);
 });
@@ -72,14 +114,14 @@ test("parseProposals tolerates fences and drops invalid items", () => {
 });
 
 test("dedupeProposals removes coverage collisions across kinds and staging", () => {
-	const coverage = { rules: ["a"], notes: ["b"], contexts: ["c"], agents: ["d"], skills: ["e"], staged: ["rule:f", "note:g"] };
+	const coverage = { rules: ["a"], notes: ["b"], contexts: ["c"], agents: ["d"], skills: ["e"], extensions: ["f"], staged: ["rule:g", "note:h"] };
 	const proposals = [
 		{ ...ruleProposal("a") },
-		{ ...ruleProposal("f") },
-		toProposal({ kind: "note", name: "g", title: "t", evidence: "e", content: "x" })!,
+		{ ...ruleProposal("g") },
 		toProposal({ kind: "note", name: "h", title: "t", evidence: "e", content: "x" })!,
+		toProposal({ kind: "note", name: "i", title: "t", evidence: "e", content: "x" })!,
 	];
-	assert.deepEqual(dedupeProposals(proposals, coverage).map((p) => p.name), ["h"]);
+	assert.deepEqual(dedupeProposals(proposals, coverage).map((p) => p.name), ["i"]);
 });
 
 test("stage -> list -> arm -> rollback for a rule", async () => {
@@ -234,6 +276,7 @@ test("listCoverage finds every armed kind", async () => {
 		mkdirSync(join(agentRoot, "agents"), { recursive: true });
 		mkdirSync(join(agentRoot, "skills", "release"), { recursive: true });
 		mkdirSync(join(agentRoot, "contexts", "entries"), { recursive: true });
+		mkdirSync(join(agentRoot, "extensions", "json-diff"), { recursive: true });
 		mkdirSync(join(refineRoot, "notes"), { recursive: true });
 		writeFileSync(join(agentRoot, "rules", "a.md"), "---\nname: a\ncondition: [x]\n---\nbody\n");
 		writeFileSync(join(agentRoot, "rules", "b.md.disabled"), "disabled");
@@ -241,6 +284,7 @@ test("listCoverage finds every armed kind", async () => {
 		writeFileSync(join(agentRoot, "skills", "release", "SKILL.md"), "---\nname: release\ndescription: d\n---\nbody\n");
 		writeFileSync(join(agentRoot, "contexts", "registry.yaml"), "contexts:\n  - id: c1\n    file: c1.md\n");
 		writeFileSync(join(agentRoot, "contexts", "entries", "c2.yaml"), "id: c2\nfile: c2.md\n");
+		writeFileSync(join(agentRoot, "extensions", "json-diff", "index.ts"), "export default () => {};\n");
 		writeFileSync(join(refineRoot, "notes", "n.md"), "note");
 
 		const coverage = await listCoverage(agentRoot, refineRoot);
@@ -248,6 +292,7 @@ test("listCoverage finds every armed kind", async () => {
 		assert.deepEqual(coverage.notes, ["n"]);
 		assert.deepEqual(coverage.agents, ["x"]);
 		assert.deepEqual(coverage.skills, ["release"]);
+		assert.deepEqual(coverage.extensions, ["json-diff"]);
 		assert.deepEqual(coverage.contexts.sort(), ["c1", "c2"]);
 	} finally {
 		cleanup();
@@ -278,4 +323,94 @@ test("proposalHash is stable across key order and changes with content", () => {
 	assert.equal(proposalHash(a), proposalHash(b));
 	const c: Proposal = { ...a, files: { "a.md": `${a.files["a.md"]}\nmore` } };
 	assert.notEqual(proposalHash(a), proposalHash(c));
+});
+
+test("extension arm pairs source with its TTSR trigger and rolls both back", async () => {
+	const { agentRoot, refineRoot, cleanup } = roots();
+	try {
+		const p = extensionProposal();
+		assert.ok(await stageProposal(refineRoot, p, { ...meta, kind: "extension", name: p.name, title: p.title, evidence: p.evidence, files: p.files, expectation: p.expectation, tier: "ready" }));
+		const item = (await listStaged(refineRoot)).find((entry) => entry.kind === "extension");
+		assert.ok(item);
+		if (!item) return;
+
+		const hints = await describeArm(agentRoot, item);
+		assert.ok(hints.some((hint) => hint.includes("rules/use-json-diff.md")));
+
+		const armed = await armProposal({ agentRoot, refineRoot, item, timestamp: "ext1", gate: gatePass });
+		assert.equal(armed.ok, true);
+		if (!armed.ok) return;
+		assert.equal(existsSync(join(agentRoot, "extensions", "json-diff", "index.ts")), true);
+		assert.equal(existsSync(join(agentRoot, "extensions", "json-diff", "README.md")), true);
+		assert.equal(existsSync(join(agentRoot, "rules", "use-json-diff.md")), true);
+
+		const rollback = await rollbackArm({ kind: "extension", name: "json-diff", armed: armed.armed });
+		assert.equal(rollback.ok, true);
+		assert.equal(existsSync(join(agentRoot, "extensions", "json-diff", "index.ts")), false);
+		assert.equal(existsSync(join(agentRoot, "rules", "use-json-diff.md")), false);
+	} finally {
+		cleanup();
+	}
+});
+
+test("extension arm pairs a context entry and rolls both files back", async () => {
+	const { agentRoot, refineRoot, cleanup } = roots();
+	try {
+		const p = extensionProposal();
+		p.files = {
+			"index.ts": p.files["index.ts"],
+			"README.md": p.files["README.md"],
+			"pairing.md": "When comparing large JSON payloads, read this doc first.\n",
+			"pairing.yaml": "id: json-diff-context\nfile: json-diff-context.md\ntier: advisory\ntriggers: [\"compare json\"]\n",
+		};
+		assert.ok(await stageProposal(refineRoot, p, { ...meta, kind: "extension", name: p.name, title: p.title, evidence: p.evidence, files: p.files, expectation: p.expectation, tier: "ready" }));
+		const item = (await listStaged(refineRoot)).find((entry) => entry.kind === "extension");
+		assert.ok(item);
+		if (!item) return;
+		const armed = await armProposal({ agentRoot, refineRoot, item, timestamp: "ext2", gate: gatePass });
+		assert.equal(armed.ok, true);
+		if (!armed.ok) return;
+		assert.equal(existsSync(join(agentRoot, "contexts", "json-diff-context.md")), true);
+		assert.equal(existsSync(join(agentRoot, "contexts", "entries", "json-diff-context.yaml")), true);
+		await rollbackArm({ kind: "extension", name: "json-diff", armed: armed.armed });
+		assert.equal(existsSync(join(agentRoot, "contexts", "json-diff-context.md")), false);
+		assert.equal(existsSync(join(agentRoot, "contexts", "entries", "json-diff-context.yaml")), false);
+	} finally {
+		cleanup();
+	}
+});
+
+test("a failed gate arms nothing", async () => {
+	const { agentRoot, refineRoot, cleanup } = roots();
+	try {
+		const p = extensionProposal();
+		await stageProposal(refineRoot, p, { ...meta, kind: "extension", name: p.name, title: p.title, evidence: p.evidence, files: p.files, expectation: p.expectation, tier: "ready" });
+		const item = (await listStaged(refineRoot)).find((entry) => entry.kind === "extension");
+		assert.ok(item);
+		if (!item) return;
+		const armed = await armProposal({ agentRoot, refineRoot, item, timestamp: "ext3", gate: { ...gatePass, ok: false, reasons: ["compile: boom"] } });
+		assert.equal(armed.ok, false);
+		assert.equal(existsSync(join(agentRoot, "extensions", "json-diff", "index.ts")), false);
+		assert.equal(existsSync(join(agentRoot, "rules", "use-json-diff.md")), false);
+	} finally {
+		cleanup();
+	}
+});
+
+test("a taken pairing target blocks the whole extension arm", async () => {
+	const { agentRoot, refineRoot, cleanup } = roots();
+	try {
+		mkdirSync(join(agentRoot, "rules"), { recursive: true });
+		writeFileSync(join(agentRoot, "rules", "use-json-diff.md"), "existing\n");
+		const p = extensionProposal();
+		await stageProposal(refineRoot, p, { ...meta, kind: "extension", name: p.name, title: p.title, evidence: p.evidence, files: p.files, expectation: p.expectation, tier: "ready" });
+		const item = (await listStaged(refineRoot)).find((entry) => entry.kind === "extension");
+		assert.ok(item);
+		if (!item) return;
+		const armed = await armProposal({ agentRoot, refineRoot, item, timestamp: "ext4", gate: gatePass });
+		assert.equal(armed.ok, false);
+		assert.equal(existsSync(join(agentRoot, "extensions", "json-diff", "index.ts")), false);
+	} finally {
+		cleanup();
+	}
 });
