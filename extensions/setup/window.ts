@@ -65,6 +65,8 @@ export class SetupWindow implements Component, Focusable {
 
 	private flash: { text: string; ok: boolean } | undefined;
 	private changes: string[] = [];
+	/** Right-pane toggle option rows (value → absolute y) for mouse hit-testing. */
+	private toggleHits = new Map<string, number>();
 
 	// layout memo for mouse hit-testing
 	private bodyTop = 4;
@@ -530,7 +532,17 @@ export class SetupWindow implements Component, Focusable {
 		if (event.type !== "click" && event.type !== "press") return undefined;
 		const localRow = event.y;
 		if (localRow < this.bodyTop || localRow >= this.bodyTop + this.bodyRows) return undefined;
-		if (event.x > this.leftW) return undefined;
+		if (event.x > this.leftW) {
+			const row = this.currentRow();
+			if (this.mode === "browse" && row?.item.kind === "toggle") {
+				for (const [value, y] of this.toggleHits) {
+					if (y !== localRow) continue;
+					if (value !== safeGet(row.item, this.ctx)) void this.applyValue(row, value);
+					return { handled: true };
+				}
+			}
+			return undefined;
+		}
 		const rows = this.visibleRows();
 		const idx = this.scroll + (localRow - this.bodyTop);
 		if (idx >= rows.length) return undefined;
@@ -568,6 +580,7 @@ export class SetupWindow implements Component, Focusable {
 		const leftGapW = this.leftW - 1;
 		const rightGapW = rightW - 2;
 		const leftLines = this.renderLeft(leftGapW, this.bodyRows);
+		this.toggleHits.clear();
 		const rightLines = this.renderRight(rightGapW, this.bodyRows);
 		for (let i = 0; i < this.bodyRows; i++) {
 			const l = truncateToWidth(leftLines[i] ?? "", leftGapW, "");
@@ -808,7 +821,9 @@ export class SetupWindow implements Component, Focusable {
 			return lines;
 		}
 		push(theme.fg("accent", theme.bold(prettyRef(row.item.label))));
-		if (row.item.kind !== "info") push(theme.fg("muted", `current: ${prettyRef(safeGet(row.item, this.ctx))}`));
+		if (row.item.kind !== "info" && row.item.kind !== "toggle") {
+			push(theme.fg("muted", `current: ${prettyRef(safeGet(row.item, this.ctx))}`));
+		}
 		push("");
 		for (const l of wrapTextWithAnsi(row.item.detail, w - 1)) push(l);
 		push("");
@@ -817,6 +832,24 @@ export class SetupWindow implements Component, Focusable {
 		}
 		if (row.item.owner) push(theme.fg("dim", `set by: ${row.item.owner}`));
 		if (row.item.removable) push(theme.fg("dim", "⌫ removes this entry"));
+		if (row.item.kind === "toggle") {
+			const cur = safeGet(row.item, this.ctx);
+			push("");
+			push(theme.fg("accent", "state"));
+			for (const opt of [
+				{ value: "on", label: "enabled" },
+				{ value: "off", label: "disabled" },
+			]) {
+				if (lines.length >= rows) break;
+				const isCur = opt.value === cur;
+				this.toggleHits.set(opt.value, this.bodyTop + lines.length);
+				push(
+					(isCur ? theme.fg("success", "● ") : "  ") +
+						(isCur ? theme.fg("text", opt.label) : theme.fg("muted", opt.label)),
+				);
+			}
+			push(theme.fg("dim", "enter or click toggles"));
+		}
 		if (row.item.kind === "enum" && !row.item.detail.includes("\n")) {
 			push("");
 			for (const opt of this.resolveOptions(row.item)) {
@@ -864,7 +897,8 @@ export class SetupWindow implements Component, Focusable {
 		push(theme.fg("accent", "Keys"));
 		push(theme.fg("muted", "  ↑/↓ or j/k    move within a section"));
 		push(theme.fg("muted", "  ←/→           previous / next section"));
-		push(theme.fg("muted", "  enter         edit the selected setting"));
+		push(theme.fg("muted", "  enter         edit the selected setting (toggles on/off items)"));
+		push(theme.fg("muted", "  click         enabled/disabled in the right pane flips a toggle"));
 		push(theme.fg("muted", "  ⌫ / del       remove the selected entry (mapping, override, package)"));
 		push(theme.fg("muted", "  /             filter settings across all sections"));
 		push(theme.fg("muted", "  g / G         jump to top / bottom"));

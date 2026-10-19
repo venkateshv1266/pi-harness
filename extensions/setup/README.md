@@ -22,6 +22,7 @@ Outside the TUI (`ctx.mode !== "tui"`), `/setup` prints every section and curren
 | Packages | Installed pi packages and marketplace plugins | pi core packages · `/plugins` |
 | Commands | Every slash command in the session, sorted by source | per-item source |
 | Rules | TTSR rule files and their triggers/scopes | [ttsr](../ttsr/README.md) · `/ttsr` |
+| Skills | Every discovered skill, with an enable/disable toggle | pi skills · `/skill:<name>` |
 | MCP | Configured MCP servers | pi core MCP · `/mcp` |
 
 ## Commands and tools
@@ -44,6 +45,9 @@ The extension itself has no settings or env vars. It reads and writes these file
 | `~/.pi/agent/mcp.json` | Display only; edit the file to change servers |
 | `~/.pi/agent/themes/` | Custom `*.json` themes offered alongside `dark`/`light` |
 | `~/.pi/agent/rules/*.md`, `<project>/.pi/rules/*.md` | Display only; TTSR rules with parsed frontmatter |
+| `SKILL.md` files under the skill roots | Enable/disable toggles — disabling renames the file to `SKILL.md.disabled` (standalone `name.md` → `name.md.disabled`), enabling renames it back |
+
+The Skills section scans the same roots pi loads from: `~/.pi/agent/skills`, `<project>/.pi/skills`, `~/.agents/skills`, `<project>/.agents/skills`, `~/.claude/skills`, `<project>/.claude/skills`, `~/.pi/agent/jev-memory/skills`, and the project's `~/.pi/agent/projects-memory/<project>/skills`. Skills reached through a symlink are listed once, under the first root that resolves them. Package/plugin skills are not listed individually — toggle the whole plugin in Packages.
 
 Settings keys written to `~/.pi/agent/settings.json` (defaults as shown in the UI):
 
@@ -93,7 +97,7 @@ Title bar (`⚙ pi setup — <section>`) with a tab strip of section names; left
 | `?` | Help screen |
 | `esc` | Cancel edit · clear filter · close window |
 
-Editors per item kind: **toggle** flips on enter; **enum** cycles with `←`/`→` or opens a pick list; **model** opens a type-to-filter model picker, optionally followed by a thinking-level step (`no suffix` or one of the six levels); **model-pair** runs two sequential picks (primary, then target) joined as `primary>target`; **number**/**text** open an input line — numbers are validated and clamped to `min`/`max`. Failed edits flash `✗ …` and are not recorded; a failed contributor appears as a `Broken` section with the error.
+Editors per item kind: **toggle** flips on enter (the right pane lists `enabled`/`disabled` with the current state marked, and clicking either line flips it); **enum** cycles with `←`/`→` or opens a pick list; **model** opens a type-to-filter model picker, optionally followed by a thinking-level step (`no suffix` or one of the six levels); **model-pair** runs two sequential picks (primary, then target) joined as `primary>target`; **number**/**text** open an input line — numbers are validated and clamped to `min`/`max`. Failed edits flash `✗ …` and are not recorded; a failed contributor appears as a `Broken` section with the error.
 
 ### Contributing a section
 

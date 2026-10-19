@@ -1,7 +1,9 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { TIER_DEFAULT_ROLE } from "../model-router.ts";
 import { roleSettingRef } from "../../utils/model-role.ts";
 import * as io from "./io.ts";
@@ -866,6 +868,204 @@ function mcpSection(): SetupSection {
 	};
 }
 
+// ─── Skills ─────────────────────────────────────────────────────────────────
+
+const SKILL_FILE = "SKILL.md";
+const DISABLED_SUFFIX = ".disabled";
+
+interface SkillEntry {
+	name: string;
+	file: string;
+	root: string;
+	enabled: boolean;
+}
+
+function isDirectoryEntry(dir: string, entry: Dirent): boolean {
+	if (entry.isDirectory()) return true;
+	if (!entry.isSymbolicLink()) return false;
+	try {
+		return statSync(join(dir, entry.name)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function canonicalPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
+/** jev-memory keys project stores by cwd basename, or by repo-root name once a .git exists. */
+function projectStoreNames(cwd: string): string[] {
+	const names = new Set<string>([basename(cwd)]);
+	let dir = cwd;
+	for (let i = 0; i < 12; i++) {
+		if (existsSync(join(dir, ".git"))) {
+			names.add(basename(dir));
+			break;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return [...names].filter(Boolean);
+}
+
+function skillRoots(): { label: string; dir: string }[] {
+	const home = homedir();
+	const cwd = process.cwd();
+	const roots = [
+		{ label: "user", dir: join(home, ".pi", "agent", "skills") },
+		{ label: "project", dir: join(cwd, ".pi", "skills") },
+		{ label: "user · agents", dir: join(home, ".agents", "skills") },
+		{ label: "project · agents", dir: join(cwd, ".agents", "skills") },
+		{ label: "user · claude", dir: join(home, ".claude", "skills") },
+		{ label: "project · claude", dir: join(cwd, ".claude", "skills") },
+		{ label: "user · memory", dir: join(home, ".pi", "agent", "jev-memory", "skills") },
+	];
+	for (const name of projectStoreNames(cwd)) {
+		roots.push({
+			label: `project · memory (${name})`,
+			dir: join(home, ".pi", "agent", "projects-memory", name, "skills"),
+		});
+	}
+	return roots;
+}
+
+/** Mirrors pi's loader: a dir holding SKILL.md is one skill (no recursion); otherwise walk subdirs and take root-level .md files. */
+function scanSkillRoot(dir: string, root: string, out: SkillEntry[], seen: Set<string>, depth = 0): void {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+
+	const enabledFile = entries.find((e) => e.name === SKILL_FILE);
+	const disabledFile = entries.find((e) => e.name === `${SKILL_FILE}${DISABLED_SUFFIX}`);
+	if (enabledFile || disabledFile) {
+		const key = canonicalPath(dir);
+		if (!seen.has(key)) {
+			seen.add(key);
+			out.push({
+				name: basename(dir),
+				file: join(dir, enabledFile ? SKILL_FILE : `${SKILL_FILE}${DISABLED_SUFFIX}`),
+				root,
+				enabled: Boolean(enabledFile),
+			});
+		}
+		return;
+	}
+
+	for (const entry of entries) {
+		if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+		const full = join(dir, entry.name);
+		if (isDirectoryEntry(dir, entry)) {
+			if (depth < 8) scanSkillRoot(full, root, out, seen, depth + 1);
+			continue;
+		}
+		if (depth > 0) continue;
+		const enabled = entry.name.endsWith(".md");
+		const name = enabled
+			? entry.name.slice(0, -".md".length)
+			: entry.name.endsWith(`.md${DISABLED_SUFFIX}`)
+				? entry.name.slice(0, -(`.md${DISABLED_SUFFIX}`).length)
+				: "";
+		if (!name) continue;
+		const key = canonicalPath(full);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push({ name, file: full, root, enabled });
+	}
+}
+
+function skillFrontmatter(file: string): { name?: string; description?: string } {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return {};
+	}
+	const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+	if (!fm) return {};
+	const yaml = fm[1];
+	const unquote = (s: string): string => s.trim().replace(/^["']|["']$/g, "");
+	const name = yaml.match(/^name:\s*(.+)$/m)?.[1];
+	const descLine = yaml.match(/^description:\s*(.*)$/m);
+	let description: string | undefined;
+	if (descLine) {
+		const inline = descLine[1].trim();
+		if (/^[>|][+-]?$/.test(inline)) {
+			const tail = yaml.slice(yaml.indexOf(descLine[0]) + descLine[0].length).split(/\r?\n/);
+			const parts: string[] = [];
+			for (const line of tail) {
+				if (!line.trim()) continue;
+				if (!/^\s+\S/.test(line)) break;
+				parts.push(line.trim());
+			}
+			description = parts.join(" ");
+		} else if (inline) {
+			description = unquote(inline);
+		}
+	}
+	return { name: name ? unquote(name) : undefined, description };
+}
+
+function skillItem(entry: SkillEntry, disambiguate: boolean): SetupItem {
+	const meta = skillFrontmatter(entry.file);
+	const name = meta.name?.trim() || entry.name;
+	const baseFile = entry.file.endsWith(DISABLED_SUFFIX) ? entry.file.slice(0, -DISABLED_SUFFIX.length) : entry.file;
+	const disabledFile = `${baseFile}${DISABLED_SUFFIX}`;
+	return {
+		id: `skill:${baseFile}`,
+		label: disambiguate ? `${name} · ${entry.root}` : name,
+		detail: [
+			meta.description || "(no description — pi does not load a skill without one)",
+			`Source: ${entry.root}`,
+			`File: ${entry.file}`,
+			entry.enabled
+				? `Enabled — loaded at startup and available as /skill:${name}.`
+				: `Disabled — renamed to ${basename(entry.file)}; pi skips this directory at startup.`,
+		]
+			.join("\n"),
+		effect: "next start · /reload",
+		owner: `skills · /skill:${name}`,
+		kind: "toggle",
+		get: () => (entry.enabled ? "on" : "off"),
+		apply: async (_ctx, value) => {
+			const enable = value === "on";
+			const from = enable ? disabledFile : baseFile;
+			const to = enable ? baseFile : disabledFile;
+			if (!existsSync(from)) return `✗ ${name}: ${from} not found`;
+			try {
+				renameSync(from, to);
+			} catch (error) {
+				return `✗ ${name}: ${error instanceof Error ? error.message : String(error)}`;
+			}
+			return `skill ${name} ${enable ? "enabled" : "disabled"}`;
+		},
+	};
+}
+
+function skillsSection(): SetupSection {
+	const entries: SkillEntry[] = [];
+	const seen = new Set<string>();
+	for (const root of skillRoots()) scanSkillRoot(root.dir, root.label, entries, seen);
+	entries.sort((a, b) => a.name.localeCompare(b.name) || a.root.localeCompare(b.root));
+	const counts = new Map<string, number>();
+	for (const entry of entries) counts.set(entry.name, (counts.get(entry.name) ?? 0) + 1);
+	return {
+		id: "skills",
+		title: "Skills",
+		detail:
+			"Every discovered skill. Toggling off renames SKILL.md to SKILL.md.disabled so pi skips it at startup; toggling on restores it. Package/plugin skills are enabled per plugin in Packages.",
+		items: entries.map((entry) => skillItem(entry, (counts.get(entry.name) ?? 0) > 1)),
+	};
+}
+
 // ─── Export ─────────────────────────────────────────────────────────────────
 
 export function builtinSections(pi: ExtensionAPI, ctx: ExtensionCommandContext): SetupSection[] {
@@ -880,6 +1080,7 @@ export function builtinSections(pi: ExtensionAPI, ctx: ExtensionCommandContext):
 		packageSection(),
 		commandsSection(pi),
 		rulesSection(),
+		skillsSection(),
 		mcpSection(),
 	];
 }
