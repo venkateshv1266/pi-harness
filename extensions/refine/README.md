@@ -40,6 +40,7 @@ validators, per-part floors, bundle hashing and the armed-harness digest.
 | `/refine [focus]` | Analyzes the full session trajectory (user/assistant text plus assistant tool calls). Sends it to the session model at high reasoning effort with the kind menu, recent memory lessons, and existing coverage. Each returned proposal is shown in an interactive overlay — Enter applies, Esc skips. Optional arg becomes a `focus` hint recorded in history. |
 | `/refine-history` | Lists applied refinements; selecting one (after confirmation) restores or removes every file that arm touched (from its pre-arm backup) and marks the entry rolled back. |
 | `/refine-review [discard]` | Reviews staged edits in a persistent two-panel reader: a capped list panel on top (one row per staged item with kind, tier and score) and the selected item's evidence, gate scores, arm targets and every file in the bundle in the large panel below — one overlay for the whole session, so navigating never flickers. Controls: ↑/↓ select, PgUp/PgDn or space scroll the bundle a page, j/k a line, Home/End or g/G jump, mouse wheel scrolls; Enter arms the selected item, `d d` rejects it (two-step confirm — the staged bundle is deleted and its bundle hash is recorded in `rejected.jsonl` so the auto loop will not re-stage identical content), and Esc closes the review leaving unreviewed items staged (viewed-but-undecided items are audited as kept-staged). With the `discard` argument, a selected item is rejected directly through a confirmation, without the overlay. |
+| `/refine-probe` | Measures every staged rule/context entry against the probe corpus on demand, writes the results into their manifests and logs one probe decision. Prints one line per item plus the corpus-wide hit rate and false-positive count. |
 | `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (all proposable kinds), `name` (kebab-case slug), `title`, `evidence`, `files` (relative path → content), and `expectation` for extensions. The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
 
 ## Probes (stage 1)
@@ -62,6 +63,12 @@ Two measurement paths keep the result honest for rules the corpus has never seen
 Results land in `manifest.probe.rules` (per staged item; context bundles are probed through their
 synthesized triggers) and in the probe decision stream. AST-only rules record `astSkipped` when the
 native matcher is unavailable instead of failing silently.
+
+Cadence: a rule/context item is probed the moment it is staged, the first turn of each UTC day runs
+a sweep over everything still staged (date-guarded by `probe/last-sweep.json`, best-effort so it can
+never break a turn), and `/refine-probe` runs it on demand. The review overlay shows the measurement
+under the Jev tier — both are kept, never silently overridden: the tier is the paper judgement, the
+probe line is what the trigger actually did, and a false positive is flagged in red.
 
 ## Extension adoption gate
 
@@ -121,7 +128,12 @@ overlay shows each check and its result; a failed gate cannot be armed.
 - `~/.pi/agent/jev-decisions/refine/auto-refine.jsonl` — audit log of every auto-loop
   decision: stage (`plan`/`jev`/`apply`/`review`), decision
   (`skipped`/`degraded`/`no-proposals`/`suppressed`/`staged`/`applied`/`duplicate`/`kept-staged`/`armed`/`discarded`/`error`),
-  score and parts, tier, kind, latency, trigger, and error text.
+  score and parts, tier, kind, latency, trigger, and error text. `apply` lines for rules/contexts
+  also carry the measured `probe` verdict (hits, misses, false positives, pass rate).
+- `~/.pi/agent/jev-decisions/refine/probe/last-sweep.json` — date guard for the daily probe sweep.
+- `~/.pi/agent/jev-decisions/probe.jsonl` — probe decision stream (one record per stage-write
+  probe, sweep or `/refine-probe` run) with per-rule verdicts; the Improvements snapshot aggregates
+  its rule hit rate.
 - Live homes: `rules/` (ttsr), `agents/`, `skills/`, `contexts/` (+ `contexts/entries/*.yaml`
   fragments), `jev-memory/`, and `settings.json`. Refine only writes there after human arming
   or an explicit `/refine`/`refine_propose` approval.

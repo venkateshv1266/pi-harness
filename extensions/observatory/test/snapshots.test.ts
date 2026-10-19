@@ -63,6 +63,22 @@ const fixture = (): { root: string; sources: SnapshotSources; cleanup: () => voi
 		jsonl([{ id: "p1", kind: "prune", system: "ttsr", target: "no-y", status: "applied", createdAt: "2026-10-18T09:00:00.000Z", decidedAt: "2026-10-19T09:00:00.000Z" }]),
 	);
 	writeFileSync(
+		join(sources.decisionsRoot, "probe.jsonl"),
+		jsonl([
+			{
+				ts: "2026-10-19T10:15:00.000Z",
+				kind: "decision",
+				system: "probe",
+				source: "sweep",
+				corpusSize: 15,
+				rules: [
+					{ name: "no-x", kind: "rule", verdict: "pass", expected: 2, hits: 2, misses: 0, falsePositives: 0, passRate: 1 },
+					{ name: "ctx-y", kind: "context", verdict: "false-positive", expected: 0, hits: 0, misses: 0, falsePositives: 1, passRate: 0 },
+				],
+			},
+		]),
+	);
+	writeFileSync(
 		join(sources.sessionsRoot, "2026-10-19", "s1.jsonl"),
 		jsonl([
 			{ ts: "2026-10-19T10:20:00.000Z", type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "json_diff", arguments: { a: 1 } }] } },
@@ -88,6 +104,11 @@ test("computeSnapshot derives the day strip fields from raw streams", () => {
 		assert.equal(snapshot.probe.evaluated, 3);
 		assert.equal(snapshot.probe.passed, 1);
 		assert.equal(snapshot.probe.rate, 1 / 3);
+		assert.equal(snapshot.probe.rules.runs, 1);
+		assert.equal(snapshot.probe.rules.expected, 2);
+		assert.equal(snapshot.probe.rules.hits, 2);
+		assert.equal(snapshot.probe.rules.falsePositives, 1);
+		assert.equal(snapshot.probe.rules.passRate, 1);
 		assert.equal(snapshot.ruleOutcomes.survived, 2);
 		assert.equal(snapshot.ruleOutcomes.retried, 1);
 		assert.equal(snapshot.ruleOutcomes.repeated, 1);
@@ -100,6 +121,7 @@ test("computeSnapshot derives the day strip fields from raw streams", () => {
 		assert.match(snapshot.digest ?? "", /^[0-9a-f]{16}$/);
 		assert.deepEqual(snapshot.ledger.length > 0, true);
 		assert.match(snapshot.ledger.join("\n"), /Armed 2: rule no-x, agent explorer/);
+		assert.match(snapshot.ledger.join("\n"), /Probes: 2\/2 hit, 1 false-pos/);
 	} finally {
 		cleanup();
 	}
@@ -142,6 +164,10 @@ test("improvementsView compares N against N-1 with percentage-point deltas", () 
 		assert.equal(survival?.from, 1);
 		assert.equal(survival?.to, 0.5);
 		assert.equal(survival?.delta, -50);
+		const ruleProbeRate = view.compare.metrics.find((metric) => metric.key === "ruleProbeRate");
+		assert.ok(ruleProbeRate);
+		assert.equal(ruleProbeRate?.from, null);
+		assert.equal(ruleProbeRate?.to, 1);
 
 		const armed = view.compare.metrics.find((metric) => metric.key === "armed");
 		assert.equal(armed?.from, 1);

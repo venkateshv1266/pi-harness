@@ -2324,13 +2324,20 @@ async function refinePage(view, ctx) {
 									.join(" · ")
 							: null;
 						const gate = entry.gateOk == null ? null : entry.gateOk ? "gate pass" : `gate fail: ${(entry.gateReasons ?? []).join("; ")}`;
-						const tone = entry.gateOk === false ? "err" : entry.tier === "near-miss" ? "warn" : entry.tier === "ready" ? "ok" : "info";
+						const probe = entry.probe
+							? entry.probe.expected > 0
+								? `probe ${entry.probe.hits}/${entry.probe.expected} hit, ${entry.probe.falsePositives} false-pos`
+								: entry.probe.verdict === "unmeasured"
+									? "probe unmeasured"
+									: `probe ${entry.probe.verdict}, ${entry.probe.falsePositives} false-pos`
+							: null;
+						const tone = entry.gateOk === false || entry.probe?.verdict === "false-positive" ? "err" : entry.tier === "near-miss" ? "warn" : entry.tier === "ready" ? "ok" : "info";
 						return h(
 							"div",
 							{ class: "item" },
 							h("div", { class: "t" }, entry.tier ? entry.tier.replace("near-miss", "near") : fmtCompact(entry.chars)),
 							h("div", { class: `dot ${tone}` }),
-							h("div", {}, h("div", { class: "title mono", style: { fontSize: "12px" } }, `${entry.kind ?? "rule"} · ${entry.name}`), h("div", { class: "sub" }, [parts, gate, `${entry.fileCount ?? 1} file(s)`, entry.evidence ?? entry.preview].filter(Boolean).join(" — "))),
+							h("div", {}, h("div", { class: "title mono", style: { fontSize: "12px" } }, `${entry.kind ?? "rule"} · ${entry.name}`), h("div", { class: "sub" }, [parts, probe, gate, `${entry.fileCount ?? 1} file(s)`, entry.evidence ?? entry.preview].filter(Boolean).join(" — "))),
 							h(
 								"div",
 								{ style: { display: "flex", gap: "6px" } },

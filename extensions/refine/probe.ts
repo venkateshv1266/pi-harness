@@ -331,6 +331,49 @@ function aggregate(probes: RuleProbe[], name: string, kind: ProbeTarget["kind"])
 
 export type StagedProbe = { kind: HarnessKind; name: string; probe: RuleProbe };
 
+/** Targets contributed by one staged item (a context can synthesize several rules). */
+function targetsFor(item: StagedItem): { targets: ProbeTarget[]; names: string[] } {
+	if (item.kind === "rule") return { targets: [{ kind: "rule", name: item.name, source: item.content }], names: [item.name] };
+	if (item.kind !== "context") return { targets: [], names: [] };
+	const fragment = item.files["entry.yaml"];
+	if (typeof fragment !== "string") return { targets: [], names: [] };
+	const synthesized = synthesizeFragmentRules(fragment, item.name, `${item.name}.md`);
+	return {
+		targets: synthesized.map((rule) => ({ kind: "context", name: rule.name, source: rule.source })),
+		names: synthesized.map((rule) => rule.name),
+	};
+}
+
+/** Probe one staged item and persist its result into the manifest. */
+export async function probeItem(
+	refineRoot: string,
+	item: StagedItem,
+	opts: { corpus?: Fixture[]; ast?: boolean; persist?: boolean } = {},
+): Promise<RuleProbe> {
+	const corpus = opts.corpus ?? (await loadCorpus());
+	const { targets, names } = targetsFor(item);
+	const report = await probeRules(targets, corpus, { ast: opts.ast });
+	const probe = aggregate(
+		names.map((name) => report.rules.find((rule) => rule.name === name)).filter((entry): entry is RuleProbe => entry !== undefined),
+		item.name,
+		item.kind === "context" ? "context" : "rule",
+	);
+	if (opts.persist !== false) await updateStagedProbe(refineRoot, item.kind, item.name, { rules: probe });
+	return probe;
+}
+
+/** Probe one staged item by kind/name. Returns null when it is no longer staged. */
+export async function probeOne(
+	refineRoot: string,
+	kind: HarnessKind,
+	name: string,
+	opts: { corpus?: Fixture[]; ast?: boolean } = {},
+): Promise<RuleProbe | null> {
+	const item = (await listStaged(refineRoot)).find((entry) => entry.kind === kind && entry.name === name);
+	if (!item) return null;
+	return probeItem(refineRoot, item, opts);
+}
+
 /** Probe every staged rule/context, persisting per-item results into manifests. */
 export async function probeStaged(
 	refineRoot: string,
@@ -342,16 +385,10 @@ export async function probeStaged(
 	const owners: { item: StagedItem; names: string[] }[] = [];
 
 	for (const item of staged) {
-		if (item.kind === "rule") {
-			targets.push({ kind: "rule", name: item.name, source: item.content });
-			owners.push({ item, names: [item.name] });
-		} else if (item.kind === "context") {
-			const fragment = item.files["entry.yaml"];
-			if (typeof fragment !== "string") continue;
-			const synthesized = synthesizeFragmentRules(fragment, item.name, `${item.name}.md`);
-			for (const rule of synthesized) targets.push({ kind: "context", name: rule.name, source: rule.source });
-			owners.push({ item, names: synthesized.map((rule) => rule.name) });
-		}
+		const owned = targetsFor(item);
+		if (owned.targets.length === 0) continue;
+		targets.push(...owned.targets);
+		owners.push({ item, names: owned.names });
 	}
 
 	const report = await probeRules(targets, corpus, { ast: opts.ast });
@@ -381,6 +418,7 @@ export function logProbe(report: ProbeReport, source: "stage" | "sweep" | "comma
 			name: rule.name,
 			kind: rule.kind,
 			verdict: rule.verdict,
+			expected: rule.expected,
 			hits: rule.hits,
 			misses: rule.misses,
 			falsePositives: rule.falsePositives,

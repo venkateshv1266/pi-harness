@@ -33,6 +33,7 @@ import {
 	type StagedItem,
 } from "./harness.ts";
 import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
+import { logProbe, markProbeSweep, probeLine, probeOne, probeStaged, probeSweepDue, type RuleProbe } from "./probe.ts";
 
 type HistoryEntry = {
 	id: string;
@@ -287,6 +288,8 @@ type ReviewItem = {
 	meta: StagedManifest | null;
 	armHint?: string[];
 	gate?: ExtensionGateResult;
+	/** Measured corpus result for rule/context items (paper score stays in meta.parts). */
+	probe?: RuleProbe;
 };
 
 const buildReviewDoc = (item: ReviewItem): string => {
@@ -302,6 +305,7 @@ const buildReviewDoc = (item: ReviewItem): string => {
 		metaLines.push(`tier ${item.meta.tier ?? "—"} · loop trigger ${item.meta.trigger} · staged ${item.meta.stagedAt}`);
 	}
 	if (item.armHint && item.armHint.length > 0) metaLines.push(`arm: ${item.armHint.join(" · ")}`);
+	if (item.probe) metaLines.push(probeLine(item.probe));
 
 	const gateLines = item.gate
 		? [
@@ -895,15 +899,24 @@ export default function (pi: ExtensionAPI) {
 			if (p.kind !== "note" && tier) {
 				if (await stageKind(p, v, sessionId, trigger, tier)) {
 					let gateSummary: Record<string, unknown> | undefined;
+					let probeSummary: Record<string, unknown> | undefined;
 					if (p.kind === "extension") {
 						const gate = await runExtensionGate({ name: p.name, files: p.files, expectation: p.expectation });
 						await updateStagedProbe(REFINE_DIR, p.kind, p.name, { gate });
 						gateSummary = { ok: gate.ok, reasons: gate.reasons, warnings: gate.warnings };
 						applied.push(`extension "${p.name}" staged (${tier}, gate ${gate.ok ? "pass" : "fail"})`);
+					} else if (p.kind === "rule" || p.kind === "context") {
+						const probe = await probeOne(REFINE_DIR, p.kind, p.name);
+						if (probe) {
+							probeSummary = { verdict: probe.verdict, hits: probe.hits, misses: probe.misses, falsePositives: probe.falsePositives, passRate: probe.passRate, astSkipped: probe.astSkipped };
+							applied.push(`${p.kind} "${p.name}" staged (${tier}, probe ${probe.verdict})`);
+						} else {
+							applied.push(`${p.kind} "${p.name}" staged (${tier})`);
+						}
 					} else {
 						applied.push(`${p.kind} "${p.name}" staged (${tier})`);
 					}
-					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger, ...(gateSummary ? { gate: gateSummary } : {}) });
+					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger, ...(gateSummary ? { gate: gateSummary } : {}), ...(probeSummary ? { probe: probeSummary } : {}) });
 				} else {
 					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, decision: "duplicate", trigger });
 				}
@@ -943,8 +956,24 @@ export default function (pi: ExtensionAPI) {
 			});
 	};
 
+	let probeDay = "";
+	const maybeProbeSweep = (): void => {
+		const day = new Date().toISOString().slice(0, 10);
+		if (probeDay === day) return;
+		probeDay = day;
+		void (async () => {
+			if (!(await probeSweepDue(REFINE_DIR, day))) return;
+			const { report } = await probeStaged(REFINE_DIR);
+			logProbe(report, "sweep");
+			await markProbeSweep(REFINE_DIR, day);
+		})().catch(() => {
+			// expected: probing is best-effort and must never break the turn
+		});
+	};
+
 	pi.on("turn_end", (_event, ctx) => {
 		maybeDailySnapshot();
+		maybeProbeSweep();
 		if (!AUTO_ENABLED) return;
 		autoTurnCount++;
 		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
@@ -1064,6 +1093,22 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("refine-probe", {
+		description: "Measure staged rules and context entries against the probe corpus",
+		handler: async (_args, ctx) => {
+			const { report, items } = await probeStaged(REFINE_DIR);
+			logProbe(report, "command");
+			if (items.length === 0) {
+				ctx.ui.notify("No staged rules or context entries to probe", "info");
+				return;
+			}
+			const lines = items.map((item) => `${item.kind} ${item.name}: ${probeLine(item.probe)}`);
+			const rate = report.summary.passRate === null ? "—" : `${Math.round(report.summary.passRate * 100)}%`;
+			lines.push(`summary: ${rate} over ${report.corpusSize} fixtures · ${report.summary.falsePositives} false-pos`);
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+
 	pi.registerCommand("refine-review", {
 		description: "Review staged harness edits in a two-panel reader — select with ↑/↓, arm, reject, or close; 'discard' arg rejects directly",
 		handler: async (args, ctx) => {
@@ -1093,6 +1138,7 @@ export default function (pi: ExtensionAPI) {
 			const items: ReviewItem[] = [];
 			for (const item of staged) {
 				const cachedGate = item.kind === "extension" ? (item.meta.probe as { gate?: ExtensionGateResult } | undefined)?.gate : undefined;
+				const cachedProbe = item.kind === "rule" || item.kind === "context" ? (item.meta.probe as { rules?: RuleProbe } | undefined)?.rules : undefined;
 				items.push({
 					kind: item.kind,
 					name: item.name,
@@ -1103,6 +1149,7 @@ export default function (pi: ExtensionAPI) {
 					meta: item.meta,
 					armHint: await describeArm(AGENT_ROOT, item),
 					gate: item.kind === "extension" ? cachedGate ?? (await runExtensionGate({ name: item.name, files: item.files, expectation: item.meta.expectation })) : undefined,
+					probe: cachedProbe,
 				});
 			}
 

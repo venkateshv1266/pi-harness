@@ -3908,6 +3908,7 @@ export function refineOverview(db: Database, range: Range) {
 		preview: string;
 		gateOk: boolean | null;
 		gateReasons: string[];
+		probe: { verdict: string | null; hits: number; expected: number; falsePositives: number; passRate: number | null } | null;
 		fileCount: number;
 		files: string[];
 	};
@@ -3928,6 +3929,16 @@ export function refineOverview(db: Database, range: Range) {
 				const first = rels[0];
 				const gate = recordOf(recordOf(manifest.probe)?.gate);
 				const gateReasons = Array.isArray(gate?.reasons) ? gate.reasons.filter((reason): reason is string => typeof reason === "string") : [];
+				const rules = recordOf(recordOf(manifest.probe)?.rules);
+				const probe = rules
+					? {
+						verdict: typeof rules.verdict === "string" ? rules.verdict : null,
+						hits: typeof rules.hits === "number" ? rules.hits : 0,
+						expected: typeof rules.expected === "number" ? rules.expected : 0,
+						falsePositives: typeof rules.falsePositives === "number" ? rules.falsePositives : 0,
+						passRate: typeof rules.passRate === "number" ? rules.passRate : null,
+					}
+					: null;
 				stagingRows.push({
 					kind,
 					name,
@@ -3943,6 +3954,7 @@ export function refineOverview(db: Database, range: Range) {
 					preview: first && typeof files[first] === "string" ? (files[first] as string).slice(0, 240) : "",
 					gateOk: typeof gate?.ok === "boolean" ? gate.ok : null,
 					gateReasons: gateReasons.slice(0, 3),
+					probe,
 					fileCount: rels.length,
 					files: rels.sort(),
 				});
@@ -3970,6 +3982,7 @@ export function refineOverview(db: Database, range: Range) {
 			preview: entry.preview,
 			gateOk: null,
 			gateReasons: [],
+			probe: null,
 			fileCount: 1,
 			files: [`${entry.name}.md`],
 		});

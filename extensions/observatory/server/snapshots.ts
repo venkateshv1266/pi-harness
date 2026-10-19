@@ -46,7 +46,13 @@ export type Snapshot = {
 	pruned: string[];
 	staged: { total: number; byKind: Record<string, number>; gatePass: number; gateFail: number };
 	rejected: number;
-	probe: { evaluated: number; passed: number; rate: number | null; note: string };
+	probe: {
+		evaluated: number;
+		passed: number;
+		rate: number | null;
+		note: string;
+		rules: { runs: number; evaluated: number; expected: number; hits: number; misses: number; falsePositives: number; unmeasured: number; passRate: number | null };
+	};
 	ruleOutcomes: RuleOutcomeMix;
 	extensions: { armed: number; used: string[]; silent: string[]; unknown: string[]; detail: ExtensionUsage[] };
 	lessons: { added: number; recalled: number; libraryPresent: boolean };
@@ -246,6 +252,7 @@ export function computeSnapshot(date: string, sources: SnapshotSources): Snapsho
 	const audit = readJsonl(join(sources.refineRoot, "auto-refine.jsonl"));
 	const ttsr = readJsonl(join(sources.decisionsRoot, "ttsr-jev.jsonl"));
 	const tuner = readJsonl(join(sources.decisionsRoot, "decision-tuner", "proposals.jsonl"));
+	const probeLog = readJsonl(join(sources.decisionsRoot, "probe.jsonl"));
 
 	const armedEntries = history.filter((entry) => inWindow(entry.timestamp, start, end) && entry.rolledBack !== true);
 	const armed = tallyByKind(armedEntries);
@@ -272,6 +279,20 @@ export function computeSnapshot(date: string, sources: SnapshotSources): Snapsho
 	}
 
 	const gateAudit = dayAudit.filter((entry) => entry.gate && typeof (entry.gate as { ok?: unknown }).ok === "boolean");
+	const probeRecords = probeLog.filter((entry) => entry.kind === "decision" && entry.system === "probe" && inWindow(entry.ts, start, end));
+	const probeTotals = { runs: probeRecords.length, evaluated: 0, expected: 0, hits: 0, misses: 0, falsePositives: 0, unmeasured: 0, passRate: null as number | null };
+	for (const record of probeRecords) {
+		const rules = Array.isArray(record.rules) ? record.rules.filter(isRecord) : [];
+		probeTotals.evaluated += rules.length;
+		for (const rule of rules) {
+			if (typeof rule.expected === "number") probeTotals.expected += rule.expected;
+			if (typeof rule.hits === "number") probeTotals.hits += rule.hits;
+			if (typeof rule.misses === "number") probeTotals.misses += rule.misses;
+			if (typeof rule.falsePositives === "number") probeTotals.falsePositives += rule.falsePositives;
+			if (rule.verdict === "unmeasured") probeTotals.unmeasured += 1;
+		}
+	}
+	probeTotals.passRate = probeTotals.expected > 0 ? probeTotals.hits / probeTotals.expected : null;
 	const rejected = dayAudit.filter((entry) => entry.decision === "discarded" || entry.decision === "gate-blocked").length;
 
 	const outcomes = ttsr.filter((entry) => entry.kind === "outcome" && inWindow(entry.ts, start, end));
@@ -314,6 +335,7 @@ export function computeSnapshot(date: string, sources: SnapshotSources): Snapsho
 	if (rolledBack.length > 0) ledger.push(`Rolled back ${rolledBack.length}: ${rolledBack.join(", ")}`);
 	if (pruned.length > 0) ledger.push(`Pruned ${pruned.length}: ${pruned.join(", ")}`);
 	if (stagedEntries.length > 0) ledger.push(`Staged ${stagedEntries.length} (gate ${gatePass} pass / ${gateFail} fail)`);
+	if (probeTotals.expected > 0) ledger.push(`Probes: ${probeTotals.hits}/${probeTotals.expected} hit, ${probeTotals.falsePositives} false-pos`);
 	if (rejected > 0) ledger.push(`Rejected ${rejected}`);
 	if (mix.total > 0) {
 		ledger.push(`Rules: ${mix.survived} survived, ${mix.retried} retried, ${mix.user_corrected} corrected, ${mix.repeated} repeated, ${mix.unresolved} unresolved`);
@@ -342,7 +364,8 @@ export function computeSnapshot(date: string, sources: SnapshotSources): Snapsho
 			evaluated: gateAudit.length,
 			passed: gateAudit.filter((entry) => (entry.gate as { ok?: unknown }).ok === true).length,
 			rate: gateAudit.length > 0 ? gateAudit.filter((entry) => (entry.gate as { ok?: unknown }).ok === true).length / gateAudit.length : null,
-			note: "extension gate results; rule probes land in wave 3",
+			note: "extension gate pass rate; rule probes measured over the fixture corpus",
+			rules: probeTotals,
 		},
 		ruleOutcomes: mix,
 		extensions: { armed: extensionDetail.length, used, silent, unknown, detail: extensionDetail },
@@ -414,6 +437,7 @@ export function improvementsView(options: { date?: string; sources?: SnapshotSou
 		{ key: "pruned", label: "Pruned", from: previous?.counts.pruned ?? null, to: latest?.counts.pruned ?? null, delta: deltaCount(previous?.counts.pruned ?? null, latest?.counts.pruned ?? null), unit: "count" },
 		{ key: "staged", label: "Staged", from: previous?.staged.total ?? null, to: latest?.staged.total ?? null, delta: deltaCount(previous?.staged.total ?? null, latest?.staged.total ?? null), unit: "count" },
 		{ key: "probeRate", label: "Gate pass rate", from: previous?.probe.rate ?? null, to: latest?.probe.rate ?? null, delta: pp(previous?.probe.rate ?? null, latest?.probe.rate ?? null), unit: "pp" },
+		{ key: "ruleProbeRate", label: "Rule probe hit rate", from: previous?.probe.rules?.passRate ?? null, to: latest?.probe.rules?.passRate ?? null, delta: pp(previous?.probe.rules?.passRate ?? null, latest?.probe.rules?.passRate ?? null), unit: "pp" },
 		{ key: "ruleSurvival", label: "Rule survival", from: previous ? rateOf(previous) : null, to: latest ? rateOf(latest) : null, delta: pp(previous ? rateOf(previous) : null, latest ? rateOf(latest) : null), unit: "pp" },
 		{ key: "extensionsUsed", label: "Extensions used", from: previous?.extensions.used.length ?? null, to: latest?.extensions.used.length ?? null, delta: deltaCount(previous?.extensions.used.length ?? null, latest?.extensions.used.length ?? null), unit: "count" },
 		{ key: "extensionsSilent", label: "Extensions silent", from: previous?.extensions.silent.length ?? null, to: latest?.extensions.silent.length ?? null, delta: deltaCount(previous?.extensions.silent.length ?? null, latest?.extensions.silent.length ?? null), unit: "count" },
