@@ -63,6 +63,20 @@ parallel `mapPool`, and typed answer accessors. Auth resolves `JEV_API_KEY` →
 `isReadonlyCommand()` — the read-only command allowlist shared by `ask_jev`'s
 `command` parameter and `jev-guard`'s fast path.
 
+## harness-surface.ts
+
+The editable harness surface as data: one `KIND_SPECS` registry for every kind of
+edit refine can propose (`rule`, `note`, `memory`, `context`, `agent`, `skill`,
+`settings`, plus the wave-2 `extension` slot), each with a static bundle
+validator, per-kind Jev floors, and its conventional primary file. Also exports
+`validateBundle` / `primaryContent`, order-independent `bundleHash` (dedupe),
+`contentHash` (legacy), the staging layout helpers, the allowlisted-primitive
+`validateSettingsPatch` / `applySettingsPatch` / `describeSettingsPatch`, and
+`harnessDigest(agentRoot)` — a stable digest of the armed harness (rules,
+agents, skills, contexts, extensions, memory, settings; `.disabled` excluded)
+recorded whenever anything arms, so "the harness changed today" is provable.
+Tests: `node --test utils/harness-surface.test.ts`.
+
 ## model-role.ts
 
 Model-role resolution shared by the subagent engines, `summarize`, and the
