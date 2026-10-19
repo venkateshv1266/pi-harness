@@ -100,6 +100,17 @@ test("an applied prune distils a do-not-repropose lesson", () => {
 	assert.match(lesson.lesson, /pruned/);
 });
 
+test("an extension prune distils an adoption lesson", () => {
+	const sources: ExperienceSources = {
+		...emptySources(),
+		tuner: [{ kind: "prune", status: "applied", system: "extensions", target: "silent-tool", evidence: "armed 20d ago; no tool:silent_tool call", decidedAt: "2026-10-19T12:00:00.000Z" }],
+	};
+	const lesson = distillLesson(sources);
+	assert.ok(lesson);
+	assert.equal(lesson.domain, "extension-adoption");
+	assert.match(lesson.lesson, /adoption signal/);
+});
+
 test("cue dedupe collapses near-identical situations", async () => {
 	const { libraryRoot } = roots();
 	const first = await writeLesson(libraryRoot, {

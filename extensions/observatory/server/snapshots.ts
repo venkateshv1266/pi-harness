@@ -206,10 +206,23 @@ function sessionFiles(root: string, modifiedAfter: number): string[] {
 	return files;
 }
 
-type ObservedUsage = { toolCalls: Map<string, number>; commandMentions: Map<string, number>; byDay: Map<string, number> };
+type ObservedUsage = {
+	toolCalls: Map<string, number>;
+	commandMentions: Map<string, number>;
+	byDay: Map<string, number>;
+	lastToolDay: Map<string, string>;
+	lastCommandDay: Map<string, string>;
+};
+
+function trackLast(map: Map<string, string>, name: string, ts: unknown): void {
+	const day = typeof ts === "string" ? ts.slice(0, 10) : "";
+	if (!day) return;
+	const prior = map.get(name);
+	if (!prior || day > prior) map.set(name, day);
+}
 
 function scanSessions(root: string, since: number, until: number): ObservedUsage {
-	const observed: ObservedUsage = { toolCalls: new Map(), commandMentions: new Map(), byDay: new Map() };
+	const observed: ObservedUsage = { toolCalls: new Map(), commandMentions: new Map(), byDay: new Map(), lastToolDay: new Map(), lastCommandDay: new Map() };
 	for (const file of sessionFiles(root, since - DAY_MS)) {
 		for (const record of readJsonl(file)) {
 			const message = record.message as { role?: unknown; content?: unknown } | undefined;
@@ -224,6 +237,7 @@ function scanSessions(root: string, since: number, until: number): ObservedUsage
 				const typed = block as { type?: unknown; name?: unknown; text?: unknown };
 				if (typed.type === "toolCall" && typeof typed.name === "string") {
 					observed.toolCalls.set(typed.name, (observed.toolCalls.get(typed.name) ?? 0) + 1);
+					trackLast(observed.lastToolDay, typed.name, record.ts);
 					const day = typeof record.ts === "string" ? record.ts.slice(0, 10) : "";
 					if (day) observed.byDay.set(day, (observed.byDay.get(day) ?? 0) + 1);
 				}
@@ -238,8 +252,11 @@ function commandMentionsOf(text: string): string[] {
 	return [...text.matchAll(/(?:^|\s)\/([a-z][a-z0-9-]+)/g)].map((match) => match[1]);
 }
 
-function count(names: string[], observed: ObservedUsage, _ts: unknown): void {
-	for (const name of names) observed.commandMentions.set(name, (observed.commandMentions.get(name) ?? 0) + 1);
+function count(names: string[], observed: ObservedUsage, ts: unknown): void {
+	for (const name of names) {
+		observed.commandMentions.set(name, (observed.commandMentions.get(name) ?? 0) + 1);
+		trackLast(observed.lastCommandDay, name, ts);
+	}
 }
 
 function extensionUsed(expectation: string | null, observed: ObservedUsage, armDay: string, untilDay: string): boolean {
@@ -253,6 +270,45 @@ function extensionUsed(expectation: string | null, observed: ObservedUsage, armD
 		for (const [day] of observed.byDay) if (day >= armDay && day <= untilDay) return true;
 	}
 	return false;
+}
+
+export type ExtensionUsageWindow = {
+	name: string;
+	expectation: string;
+	armedAt: string;
+	used: boolean;
+	lastUsedDay: string | null;
+};
+
+/**
+ * Extension adoption over a configurable window. computeSnapshot keeps its
+ * 8-day view; the tuner asks for 30 days so its 14-day silent gate is measured
+ * rather than assumed.
+ */
+export function extensionUsageWindow(until: Date, sources: SnapshotSources = defaultSources(), lookbackDays = 30): ExtensionUsageWindow[] {
+	const end = until.getTime();
+	const start = end - lookbackDays * DAY_MS;
+	const history = readJsonl(join(sources.refineRoot, "history.jsonl"));
+	const observed = scanSessions(sources.sessionsRoot, start, end);
+	const untilDay = until.toISOString().slice(0, 10);
+	const out: ExtensionUsageWindow[] = [];
+	for (const entry of history) {
+		if (entry.kind !== "extension" || entry.rolledBack === true) continue;
+		if (typeof entry.timestamp !== "string" || Date.parse(entry.timestamp) >= end) continue;
+		const expectation = typeof entry.expectation === "string" ? entry.expectation : null;
+		if (!expectation) continue;
+		const [kind, target] = expectation.split(":") as [string, string];
+		if (!target) continue;
+		const used = extensionUsed(expectation, observed, entry.timestamp.slice(0, 10), untilDay);
+		out.push({
+			name: String(entry.name),
+			expectation,
+			armedAt: entry.timestamp,
+			used,
+			lastUsedDay: kind === "tool" ? observed.lastToolDay.get(target) ?? null : observed.lastCommandDay.get(target) ?? null,
+		});
+	}
+	return out;
 }
 
 function previousSnapshotFile(sources: SnapshotSources, date: string): string | null {

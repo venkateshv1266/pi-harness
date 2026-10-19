@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { collectReport, type Report } from "../../utils/decision-analysis.ts";
 import { newId } from "../../utils/jev-outcomes.ts";
+import { defaultSources, extensionUsageWindow, type ExtensionUsageWindow } from "../observatory/server/snapshots.ts";
 import { renderMarkdown, renderSummary, writeReportFile } from "../decisions-report.ts";
 
 const TUNER_DIR = join(homedir(), ".pi", "agent", "jev-decisions", "decision-tuner");
@@ -39,6 +40,8 @@ export interface Proposal {
 	system: string;
 	target: string;
 	file?: string;
+	/** Extension-prune measurement: days armed without an observed use. */
+	silentDays?: number;
 	evidence: string;
 	createdAt: string;
 	status: "open" | "applied" | "dismissed";
@@ -205,6 +208,101 @@ export function collectProposals(report: Report, cwd: string, existing: Proposal
 	return out;
 }
 
+// ─── Harness-gate proposals ───────────────────────────────────────────────
+
+const recordOf = (value: unknown): Record<string, unknown> | null =>
+	value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+function readJsonlFile(file: string): Record<string, unknown>[] {
+	try {
+		return readFileSync(file, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.flatMap((line) => {
+				try {
+					const parsed = recordOf(JSON.parse(line));
+					return parsed ? [parsed] : [];
+				} catch {
+					// expected: a truncated final line from a concurrent writer
+					return [];
+				}
+			});
+	} catch {
+		// expected: refine has not written its audit yet
+		return [];
+	}
+}
+
+export type RefineFloors = { trigger: number; nearMiss: number };
+
+/**
+ * Propose floor changes only when measurement disagrees with the paper score:
+ * rules clearing the trigger floor that the corpus measured as false positives,
+ * or rules below the floor that measured clean. Advisory (`config`) always.
+ */
+export function collectRefineProposals(audit: Record<string, unknown>[], existing: Proposal[], floors: RefineFloors): Proposal[] {
+	const out: Proposal[] = [];
+	let highTriggerFalsePositives = 0;
+	let lowTriggerClean = 0;
+	for (const entry of audit) {
+		if (entry.kind !== "rule") continue;
+		const parts = recordOf(entry.parts);
+		const probe = recordOf(entry.probe);
+		const trigger = typeof parts?.trigger === "number" ? parts.trigger : null;
+		const verdict = typeof probe?.verdict === "string" ? probe.verdict : null;
+		if (trigger === null || verdict === null) continue;
+		if (verdict === "false-positive" && trigger >= floors.trigger) highTriggerFalsePositives++;
+		if (verdict === "pass" && trigger < floors.trigger && entry.tier === "near-miss") lowTriggerClean++;
+	}
+	const push = (target: string, evidence: string): void => {
+		const proposal = makeProposal([...existing, ...out], "config", "refine", target, undefined, evidence);
+		if (proposal) out.push(proposal);
+	};
+	if (highTriggerFalsePositives >= 2) {
+		push("rule-trigger-floor-up", `${highTriggerFalsePositives} rule proposal(s) clearing the Jev trigger floor (≥${floors.trigger.toFixed(2)}) measured false positives on the probe corpus — raise REFINE_AUTO_RULE_TRIGGER_FLOOR`);
+	}
+	if (lowTriggerClean >= 3) {
+		push("rule-trigger-floor-down", `${lowTriggerClean} near-miss rule proposal(s) below the Jev trigger floor measured clean on the probe corpus — consider lowering REFINE_AUTO_RULE_TRIGGER_FLOOR`);
+	}
+	return out;
+}
+
+/** Rename an extension directory to `.disabled`; rename it back to re-enable. */
+export function disableExtension(dir: string): string | null {
+	if (!existsSync(dir)) return `Extension directory missing: ${dir}`;
+	if (existsSync(`${dir}.disabled`)) return `Already disabled: ${dir}.disabled (rename it back to re-enable)`;
+	renameSync(dir, `${dir}.disabled`);
+	return null;
+}
+
+/**
+ * Propose pruning an extension armed for at least `minSilentDays` with no
+ * observed use. The proposal records `silentDays`; apply refuses below 14, so a
+ * proposal surfaced early stays advisory until the measurement matures.
+ */
+export function collectExtensionPrunes(usage: ExtensionUsageWindow[], existing: Proposal[], extensionsDir: string, now = new Date(), minSilentDays = 14): Proposal[] {
+	const out: Proposal[] = [];
+	for (const entry of usage) {
+		if (entry.used) continue;
+		const armedMs = Date.parse(entry.armedAt);
+		if (!Number.isFinite(armedMs)) continue;
+		const silentDays = Math.floor((now.getTime() - armedMs) / (24 * 60 * 60 * 1000));
+		if (silentDays < minSilentDays) continue;
+		const proposal = makeProposal(
+			[...existing, ...out],
+			"prune",
+			"extensions",
+			entry.name,
+			join(extensionsDir, entry.name),
+			`armed ${silentDays}d ago; no ${entry.expectation} call observed in the 30d window`,
+		);
+		if (!proposal) continue;
+		proposal.silentDays = silentDays;
+		out.push(proposal);
+	}
+	return out;
+}
+
 // ─── Run + apply ─────────────────────────────────────────────────────────
 
 export interface TunerRun {
@@ -220,6 +318,14 @@ export function runTuner(cwd: string): TunerRun {
 	const report = collectReport(days, sinceMs);
 	const existing = readProposals();
 	const fresh = collectProposals(report, cwd, existing);
+	const refineAudit = readJsonlFile(join(homedir(), ".pi", "agent", "jev-decisions", "refine", "auto-refine.jsonl"));
+	const floors: RefineFloors = {
+		trigger: Number(process.env.REFINE_AUTO_RULE_TRIGGER_FLOOR ?? "0.5") || 0.5,
+		nearMiss: Number(process.env.REFINE_AUTO_NEAR_MISS_FLOOR ?? "0.4") || 0.4,
+	};
+	fresh.push(...collectRefineProposals(refineAudit, [...existing, ...fresh], floors));
+	const usage = extensionUsageWindow(new Date(), defaultSources(), 30);
+	fresh.push(...collectExtensionPrunes(usage, [...existing, ...fresh], join(homedir(), ".pi", "agent", "extensions")));
 	if (fresh.length) writeProposals([...existing, ...fresh]);
 	const reportPath = writeReportFile(renderMarkdown(report));
 	writeState({ ...readState(), lastRun: new Date().toISOString() });
@@ -238,6 +344,19 @@ export function applyProposal(id: string): string {
 	if (!p) return `No proposal ${id}`;
 	if (p.status !== "open") return `Proposal ${id} is already ${p.status}`;
 	if (p.kind !== "prune") return `Proposal ${id} is advisory (${p.kind}) — nothing is applied automatically. Evidence: ${p.evidence}`;
+	if (p.system === "extensions") {
+		if ((p.silentDays ?? 0) < 14) {
+			return `Proposal ${id} is advisory: measured silent for ${p.silentDays ?? 0}d, needs 14d. Evidence: ${p.evidence}`;
+		}
+		if (!p.file) return `Extension directory missing for ${p.target}`;
+		const error = disableExtension(p.file);
+		if (error) return error;
+		p.status = "applied";
+		p.decidedAt = new Date().toISOString();
+		writeProposals(list);
+		appendTunerAudit({ event: "apply", id, target: p.target, file: p.file, system: p.system, silentDays: p.silentDays });
+		return `Disabled extension ${p.target}: ${p.file} → ${p.file}.disabled (rename back to re-enable; /reload to apply)`;
+	}
 	if (!p.file || !existsSync(p.file)) return `Rule file missing for ${p.target}: ${p.file ?? "(none)"}`;
 	renameSync(p.file, `${p.file}.disabled`);
 	p.status = "applied";

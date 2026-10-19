@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { computeSnapshot, ensureSnapshot, improvementsView, snapshotPath, type SnapshotSources } from "../server/snapshots.ts";
+import { computeSnapshot, ensureSnapshot, extensionUsageWindow, improvementsView, snapshotPath, type SnapshotSources } from "../server/snapshots.ts";
 
 type Json = Record<string, unknown>;
 
@@ -92,6 +92,19 @@ const fixture = (): { root: string; sources: SnapshotSources; cleanup: () => voi
 	);
 	return { root, sources, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 };
+
+test("extensionUsageWindow measures adoption and last use", () => {
+	const { sources, cleanup } = fixture();
+	try {
+		const usage = extensionUsageWindow(new Date("2026-10-19T23:59:59.000Z"), sources, 30);
+		const jsonDiff = usage.find((entry) => entry.name === "json-diff");
+		assert.ok(jsonDiff);
+		assert.equal(jsonDiff?.used, true);
+		assert.equal(jsonDiff?.lastUsedDay, "2026-10-19");
+	} finally {
+		cleanup();
+	}
+});
 
 test("computeSnapshot derives the day strip fields from raw streams", () => {
 	const { sources, cleanup } = fixture();

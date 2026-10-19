@@ -36,6 +36,7 @@ import {
 import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
 import { logProbe, markProbeSweep, probeLine, probeOne, probeStaged, probeSweepDue, type RuleProbe } from "./probe.ts";
 import { recallLibraryText, runExperiencePass } from "./library.ts";
+import { applyProposal as applyTunerProposal, readProposals as readTunerProposals } from "../decision-tuner/index.ts";
 
 type HistoryEntry = {
 	id: string;
@@ -1025,6 +1026,20 @@ export default function (pi: ExtensionAPI) {
 			});
 	});
 
+	// Extension prunes are detected by the tuner (single owner); the review flow
+	// surfaces the open ones so a silent tool can be disabled from here too.
+	const reviewExtensionPrunes = async (ctx: ExtensionContext): Promise<void> => {
+		const prunes = readTunerProposals().filter((proposal) => proposal.status === "open" && proposal.system === "extensions" && proposal.kind === "prune");
+		for (const prune of prunes.slice(0, 3)) {
+			const confirmed = await ctx.ui.confirm(
+				"Disable a silent extension?",
+				`${prune.target} — ${prune.evidence}. The directory is renamed to .disabled; rename it back to re-enable.`,
+			);
+			if (!confirmed) continue;
+			ctx.ui.notify(applyTunerProposal(prune.id), "info");
+		}
+	};
+
 	pi.registerCommand("refine", {
 		description: "Review this session's trajectory and propose the smallest harness improvements (rules/notes)",
 		handler: async (args, ctx) => {
@@ -1144,6 +1159,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Review staged harness edits in a two-panel reader — select with ↑/↓, arm, reject, or close; 'discard' arg rejects directly",
 		handler: async (args, ctx) => {
 			const discard = args?.trim().toLowerCase() === "discard";
+			if (!discard) await reviewExtensionPrunes(ctx);
 			const staged = await listStaged(REFINE_DIR);
 			if (staged.length === 0) {
 				ctx.ui.notify("No staged harness edits to review", "info");

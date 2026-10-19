@@ -110,6 +110,9 @@ On session start, if the last run is older than `DECISION_TUNER_DAYS`
 | Proposal | Trigger (gates) | Action |
 |---|---|---|
 | **prune** | ≥20 evaluations, 0 delivered fires, 0 historical gate fires, not marked `safety: true`, not in `neverPrune` | **Applyable** — renames the rule file to `<name>.md.disabled` (reversible, never deletes); run `/ttsr-reload` to take effect |
+| **prune · extensions** | armed ≥14 days with no observed `tool:`/`command:` call in a 30-day session window | **Applyable** — renames `extensions/<name>/` to `<name>.disabled` (reversible, never deletes); run `/reload` to take effect. Before the 14-day measurement matures, apply reports it as advisory |
+| **config · refine/rule-trigger-floor-up** | ≥2 rule proposals that cleared the Jev trigger floor but measured false-positive on the probe corpus | **Advisory** — the paper score and the measurement disagree; raise `REFINE_AUTO_RULE_TRIGGER_FLOOR` |
+| **config · refine/rule-trigger-floor-down** | ≥3 near-miss rule proposals below the trigger floor that measured clean on the probe corpus | **Advisory** — consider lowering the floor so measured-good triggers are not suppressed |
 | **reword** | ≥3 resolved outcomes, ≥50% adverse (`retried`/`repeated`/`user_corrected`) | **Advisory** — the rule fires but doesn't stick; evidence is shown, you edit the trigger/body |
 | **config · router/tier-map** | acted routes followed by failing tests | **Advisory** — move the tier mapping or threshold in `settings.json` |
 | **config · curator/extract-guard** | `useExtract` verdicts without an emission | **Advisory** — the emission guard runs after the verifier; fix is guard ordering, not a tuner action |
@@ -125,13 +128,13 @@ extract logic). Advisory proposals have no apply step — only `dismiss`.
 /decision-tuner            status: enabled, interval, last run, open proposal count, paths
 /decision-tuner run        run now (analysis + proposals + regenerate report)
 /decision-tuner list       open proposals with ids and evidence
-/decision-tuner apply <id> apply a prune (advisory ids report why nothing happens)
+/decision-tuner apply <id> apply a prune (rule file or silent extension; advisory ids report why nothing happens)
 /decision-tuner dismiss <id> hide a proposal for 30 days
 ```
 
 ### Proposal lifecycle
 
-- **open** → **applied** (prune: file renamed) or **dismissed** (30-day cooldown).
+- **open** → **applied** (prune: rule file or extension directory renamed to `.disabled`) or **dismissed** (30-day cooldown).
 - Same `kind + system + target` is not re-proposed while open/applied, and not
   within 30 days of a dismissal.
 - Every run and decision is audited to `decision-tuner/tuner.jsonl`.

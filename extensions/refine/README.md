@@ -39,7 +39,7 @@ validators, per-part floors, bundle hashing and the armed-harness digest.
 |---|---|
 | `/refine [focus]` | Analyzes the full session trajectory (user/assistant text plus assistant tool calls). Sends it to the session model at high reasoning effort with the kind menu, recent memory lessons, and existing coverage. Each returned proposal is shown in an interactive overlay — Enter applies, Esc skips. Optional arg becomes a `focus` hint recorded in history. |
 | `/refine-history` | Lists applied refinements; selecting one (after confirmation) restores or removes every file that arm touched (from its pre-arm backup) and marks the entry rolled back. |
-| `/refine-review [discard]` | Reviews staged edits in a persistent two-panel reader: a capped list panel on top (one row per staged item with kind, tier and score) and the selected item's evidence, gate scores, arm targets and every file in the bundle in the large panel below — one overlay for the whole session, so navigating never flickers. Controls: ↑/↓ select, PgUp/PgDn or space scroll the bundle a page, j/k a line, Home/End or g/G jump, mouse wheel scrolls; Enter arms the selected item, `d d` rejects it (two-step confirm — the staged bundle is deleted and its bundle hash is recorded in `rejected.jsonl` so the auto loop will not re-stage identical content), and Esc closes the review leaving unreviewed items staged (viewed-but-undecided items are audited as kept-staged). With the `discard` argument, a selected item is rejected directly through a confirmation, without the overlay. |
+| `/refine-review [discard]` | Reviews staged edits in a persistent two-panel reader: a capped list panel on top (one row per staged item with kind, tier and score) and the selected item's evidence, gate scores, arm targets and every file in the bundle in the large panel below — one overlay for the whole session, so navigating never flickers. Controls: ↑/↓ select, PgUp/PgDn or space scroll the bundle a page, j/k a line, Home/End or g/G jump, mouse wheel scrolls; Enter arms the selected item, `d d` rejects it (two-step confirm — the staged bundle is deleted and its bundle hash is recorded in `rejected.jsonl` so the auto loop will not re-stage identical content), and Esc closes the review leaving unreviewed items staged (viewed-but-undecided items are audited as kept-staged). Before the staged list opens, any open 14-day silent-extension prune proposal from the tuner is offered for confirmation (apply renames the extension directory to `.disabled`, reversibly). With the `discard` argument, a selected item is rejected directly through a confirmation, without the overlay. |
 | `/refine-probe` | Measures every staged rule/context entry against the probe corpus on demand, writes the results into their manifests and logs one probe decision. Prints one line per item plus the corpus-wide hit rate and false-positive count. |
 | `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (all proposable kinds), `name` (kebab-case slug), `title`, `evidence`, `files` (relative path → content), and `expectation` for extensions. The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
 
@@ -96,7 +96,13 @@ rendered section is character-bounded (4k by default) before it enters `buildPro
 alongside the hermes memory lessons. Lesson ids that informed a proposal are recorded on its staged
 manifest (`recalled`) and carried into `history.jsonl` on arm, so the daily snapshot can show the
 lesson → proposal → arm → outcome lineage. The pass runs after arm and rollback, and nightly with
-the probe sweep.
+the probe sweep; a tuner extension prune distils an `extension-adoption` lesson, a pruned rule an
+`rule-triggers` one.
+
+**Not built (stage 2, stretch):** the headless `pi -p` replay rig over sandboxed repo snapshots
+WITH base-vs-candidate blind contrast through Jev and KEEP_BASE semantics. Stage 1 (this probe
+engine) measures a trigger against a fixture corpus; stage 2 would measure the whole candidate
+harness against a replayed session. It is deliberately out of scope for this build.
 
 ## Extension adoption gate
 

@@ -343,10 +343,15 @@ export function distillLesson(sources: ExperienceSources, now = new Date()): Les
 	for (const proposal of sources.tuner) {
 		if (str(proposal.kind) !== "prune" || str(proposal.status) !== "applied") continue;
 		const target = str(proposal.target) ?? "unknown";
+		const extension = str(proposal.system) === "extensions";
 		push({
-			domain: "rule-triggers",
-			cue: "rule trigger went many evaluations without a delivered fire and was pruned",
-			lesson: `Do not propose "${target}"-shaped triggers; it was pruned (${str(proposal.evidence) ?? "silent for the evaluation window"}). Prefer triggers with a measured corpus hit.`,
+			domain: extension ? "extension-adoption" : "rule-triggers",
+			cue: extension
+				? "extension armed but never adopted was pruned"
+				: "rule trigger went many evaluations without a delivered fire and was pruned",
+			lesson: extension
+				? `Do not propose "${target}"-shaped extensions without a measurable adoption signal; it was armed and then pruned as silent (${str(proposal.evidence) ?? "no observed use"}).`
+				: `Do not propose "${target}"-shaped triggers; it was pruned (${str(proposal.evidence) ?? "silent for the evaluation window"}). Prefer triggers with a measured corpus hit.`,
 			evidence: [target],
 			confidence: 0.8,
 		}, proposal.decidedAt ?? proposal.createdAt);
