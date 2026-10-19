@@ -42,6 +42,27 @@ validators, per-part floors, bundle hashing and the armed-harness digest.
 | `/refine-review [discard]` | Reviews staged edits in a persistent two-panel reader: a capped list panel on top (one row per staged item with kind, tier and score) and the selected item's evidence, gate scores, arm targets and every file in the bundle in the large panel below — one overlay for the whole session, so navigating never flickers. Controls: ↑/↓ select, PgUp/PgDn or space scroll the bundle a page, j/k a line, Home/End or g/G jump, mouse wheel scrolls; Enter arms the selected item, `d d` rejects it (two-step confirm — the staged bundle is deleted and its bundle hash is recorded in `rejected.jsonl` so the auto loop will not re-stage identical content), and Esc closes the review leaving unreviewed items staged (viewed-but-undecided items are audited as kept-staged). With the `discard` argument, a selected item is rejected directly through a confirmation, without the overlay. |
 | `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (all proposable kinds), `name` (kebab-case slug), `title`, `evidence`, `files` (relative path → content), and `expectation` for extensions. The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
 
+## Probes (stage 1)
+
+A Jev trigger score is a paper judgement. A probe is a measurement: `probe.ts` parses a staged
+rule's frontmatter (`condition` / `astCondition` / `scope` / `globs`) and runs ttsr's own matcher
+(`../ttsr/matcher.ts`) over `probe-corpus/corpus.json` — 15 scrubbed fixtures with planted traps
+(force-push, `console.log`, empty catch, `: any`, hardcoded keys, raw log dumps) and a real
+secrets-scrubbed correction excerpt.
+
+Two measurement paths keep the result honest for rules the corpus has never seen:
+
+- **explicit** — fixtures name a rule in `expect` / `mustNot`; the probe reports hits, misses and
+  false positives directly (this is how the seeded generic rules are scored).
+- **paired topics** — each topic has a positive and a negative fixture, and a rule is only scored
+  on a topic its own name or trigger text claims (`topicMembers`). A staged rule that fires on the
+  positive but also on the negative earns a false positive; one the corpus cannot speak to is
+  reported **unmeasured**, never given a fabricated rate.
+
+Results land in `manifest.probe.rules` (per staged item; context bundles are probed through their
+synthesized triggers) and in the probe decision stream. AST-only rules record `astSkipped` when the
+native matcher is unavailable instead of failing silently.
+
 ## Extension adoption gate
 
 A proposed extension is inert until it passes `extensions/refine/extension-gate.ts`:
@@ -84,7 +105,8 @@ overlay shows each check and its result; a failed gate cannot be armed.
 
 - `~/.pi/agent/jev-decisions/refine/staging/<kind>/<name>/` — inert staged bundle:
   `manifest.json` (kind, name, title, evidence, score, parts, session, stagedAt, trigger,
-  tier, files, optional expectation and `probe.gate` for extensions) plus the proposed files
+  tier, files, optional expectation, `probe.gate` for extensions and `probe.rules` for
+  rule/context probes) plus the proposed files
   under `files/`. The pre-wave-1
   `rules-staging/<name>.md` layout is migrated once at extension start.
 - `~/.pi/agent/jev-decisions/refine/notes/` — applied notes (passive markdown).

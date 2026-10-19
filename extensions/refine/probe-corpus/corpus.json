@@ -1,0 +1,215 @@
+[
+  {
+    "id": "force-push-positive",
+    "kind": "tool",
+    "toolName": "bash",
+    "content": "git push --force origin main",
+    "expect": [
+      "no-force-without-lease"
+    ],
+    "mustNot": [],
+    "topic": "force-push",
+    "polarity": "positive",
+    "note": "planted trap: the exact command the rule exists to stop",
+    "topicMembers": [
+      "force",
+      "lease"
+    ]
+  },
+  {
+    "id": "force-push-negative",
+    "kind": "tool",
+    "toolName": "bash",
+    "content": "git push --force-with-lease origin main",
+    "expect": [],
+    "mustNot": [
+      "no-force-without-lease"
+    ],
+    "topic": "force-push",
+    "polarity": "negative",
+    "note": "the safe form must not trip a force-push rule"
+  },
+  {
+    "id": "ts-any-positive",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/service.ts",
+    "content": "export function load(raw: unknown): any {\n\treturn raw as any;\n}\n",
+    "expect": [
+      "no-ts-any"
+    ],
+    "mustNot": [],
+    "topic": "ts-any",
+    "polarity": "positive",
+    "topicMembers": [
+      ": any",
+      "as any",
+      "ts-any"
+    ]
+  },
+  {
+    "id": "ts-any-negative",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/service.ts",
+    "content": "export function load(raw: unknown): unknown {\n\treturn raw;\n}\n",
+    "expect": [],
+    "mustNot": [
+      "no-ts-any"
+    ],
+    "topic": "ts-any",
+    "polarity": "negative"
+  },
+  {
+    "id": "hardcoded-key-positive",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/config.ts",
+    "content": "const apiKey = \"sk_test_0000000000000000000000\";\n",
+    "expect": [
+      "no-hardcoded-api-keys"
+    ],
+    "mustNot": [],
+    "topic": "hardcoded-keys",
+    "polarity": "positive",
+    "topicMembers": [
+      "api-key",
+      "apikey",
+      "api_key",
+      "secret-key",
+      "hardcoded"
+    ]
+  },
+  {
+    "id": "hardcoded-key-negative",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/config.ts",
+    "content": "const apiKey = process.env.API_KEY;\n",
+    "expect": [],
+    "mustNot": [
+      "no-hardcoded-api-keys"
+    ],
+    "topic": "hardcoded-keys",
+    "polarity": "negative"
+  },
+  {
+    "id": "raw-log-dump-positive",
+    "kind": "tool",
+    "toolName": "bash",
+    "content": "cat /var/log/payments.log",
+    "expect": [
+      "no-raw-log-dumps"
+    ],
+    "mustNot": [],
+    "topic": "raw-log-dump",
+    "polarity": "positive",
+    "note": "an unbounded dump into context",
+    "topicMembers": [
+      "raw-log",
+      "log-dump",
+      "ndjson",
+      "jsonl"
+    ]
+  },
+  {
+    "id": "raw-log-dump-negative",
+    "kind": "tool",
+    "toolName": "bash",
+    "content": "head -c 2000 /var/log/payments.log",
+    "expect": [],
+    "mustNot": [
+      "no-raw-log-dumps"
+    ],
+    "topic": "raw-log-dump",
+    "polarity": "negative",
+    "note": "bounded peek: the behaviour the rule should prefer"
+  },
+  {
+    "id": "console-log-positive",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/index.ts",
+    "content": "console.log(\"debug\", payload);\n",
+    "expect": [],
+    "mustNot": [],
+    "topic": "console-log",
+    "polarity": "positive",
+    "note": "measured for staged rules by topic; the live rule fires on the commit, not the code shape",
+    "topicMembers": [
+      "console"
+    ]
+  },
+  {
+    "id": "console-log-negative",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/index.ts",
+    "content": "logger.debug({ payload });\n",
+    "expect": [],
+    "mustNot": [],
+    "topic": "console-log",
+    "polarity": "negative"
+  },
+  {
+    "id": "empty-catch-positive",
+    "kind": "tool",
+    "toolName": "edit",
+    "toolPath": "src/worker.ts",
+    "content": "try {\n\trun();\n} catch (error) {}\n",
+    "expect": [],
+    "mustNot": [],
+    "topic": "empty-catch",
+    "polarity": "positive",
+    "note": "AST-measured when ast-grep is available",
+    "topicMembers": [
+      "empty-catch",
+      "empty catch"
+    ]
+  },
+  {
+    "id": "empty-catch-negative",
+    "kind": "tool",
+    "toolName": "edit",
+    "toolPath": "src/worker.ts",
+    "content": "try {\n\trun();\n} catch (error) {\n\tlogger.warn(error);\n}\n",
+    "expect": [],
+    "mustNot": [],
+    "topic": "empty-catch",
+    "polarity": "negative"
+  },
+  {
+    "id": "cleartimeout-positive",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/timer.ts",
+    "content": "if (timer) clearTimeout(timer);\n",
+    "expect": [],
+    "mustNot": [],
+    "topic": "cleartimeout",
+    "polarity": "positive",
+    "topicMembers": [
+      "cleartimeout",
+      "clear-timeout"
+    ]
+  },
+  {
+    "id": "cleartimeout-negative",
+    "kind": "tool",
+    "toolName": "write",
+    "toolPath": "src/timer.ts",
+    "content": "clearTimeout(timer);\n",
+    "expect": [],
+    "mustNot": [],
+    "topic": "cleartimeout",
+    "polarity": "negative"
+  },
+  {
+    "id": "trajectory-correction-secrets-scrubbed",
+    "kind": "text",
+    "content": "user: no, do not ship that — we said the lease variant, and the token in the diff is [redacted].\nassistant: You are right; I will amend with the lease flag and drop the credential.\n",
+    "expect": [],
+    "mustNot": [],
+    "note": "real correction excerpt, secrets scrubbed"
+  }
+]
