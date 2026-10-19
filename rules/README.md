@@ -16,7 +16,8 @@ installing, or override it with a same-named file in `~/.pi/agent/rules/`
 
 | Rule | Fires when | Effect |
 |---|---|---|
-| `amend-ci-fixes` | a `git commit -m` / `--message` / `-am` tool call | blocks; reminds to fold a trivial lint/format/type CI fixup into the previous commit with `--amend --no-edit` + force-with-lease |
+| `amend-ci-fixes` | any `git commit` that would add a new commit (Jev verify gate) | blocks only once a PR is already raised; reminds to fold the fixup into that PR's single commit with `--amend --no-edit` + force-with-lease |
+| `require-approval-before-git-write` | a `git commit` / `git push` tool call with no approval in the user's current instruction (Jev verify gate) | blocks; asks for explicit approval first, and stays quiet when the user already said to commit or push |
 | `no-force-without-lease` | a force flag on `git push` without `--with-lease` | blocks; reminds to use `--force-with-lease` |
 
 ## Secrets and safety

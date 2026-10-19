@@ -66,6 +66,55 @@ interface JevAnswer {
 
 const INJECTION_TYPE = "ttsr-injection";
 
+// ─── Session digest helpers ───────────────────────────────────────────────
+
+export interface SessionEntryLike {
+	type: string;
+	customType?: string;
+	data?: unknown;
+	message?: { role?: string; content?: unknown };
+}
+
+function messageTextOf(msg: { content?: unknown }): string {
+	if (typeof msg.content === "string") return msg.content;
+	if (!Array.isArray(msg.content)) return "";
+	return msg.content
+		.map((b) => (b && typeof b === "object" && (b as { type?: string; text?: string }).type === "text" ? String((b as { text?: string }).text ?? "") : ""))
+		.filter(Boolean)
+		.join("\n");
+}
+
+const PR_URL_RE = /github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)/;
+const BRANCH_RES = [/On branch ([\w./-]+)/, /Switched to (?:a new )?branch '([\w./-]+)'/, /Already on '([\w./-]+)'/];
+
+/** PR + branch evidence from the session tail, so verify gates can see "a PR is already raised". */
+export function repoContext(entries: SessionEntryLike[]): string | null {
+	let pr: string | null = null;
+	let branch: string | null = null;
+	const from = Math.max(0, entries.length - 120);
+	for (let i = entries.length - 1; i >= from && (!pr || !branch); i--) {
+		const e = entries[i];
+		if (e.type !== "message" || !e.message) continue;
+		const t = messageTextOf(e.message);
+		if (!t) continue;
+		if (!pr) {
+			const m = t.match(PR_URL_RE);
+			if (m) pr = `#${m[1]}`;
+		}
+		if (!branch) {
+			for (const re of BRANCH_RES) {
+				const m = t.match(re);
+				if (m) {
+					branch = m[1];
+					break;
+				}
+			}
+		}
+	}
+	if (!pr && !branch) return null;
+	return `SESSION GIT CONTEXT: ${branch ? `branch=${branch}` : "branch=unknown"}, ${pr ? `pr=${pr}` : "pr=none-seen-in-session"}`;
+}
+
 // ─── Extension ───────────────────────────────────────────────────────────
 
 export default async function ttsrExtension(pi: ExtensionAPI) {
@@ -84,7 +133,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	let compliance = new Map<string, { pushes: number; escalated: boolean; reads: string[]; tier: string }>();
 	let pushesThisTurn = 0;
 	let verifyCache = new Map<string, Verdict>();
-	let digestCache: { turn: number; text: string; source: string } | null = null;
+	let digestCache: { turn: number; variant: string; text: string; source: string } | null = null;
 	let gapCounters = new Map<string, number>();
 	let turnCount = 0;
 
@@ -505,13 +554,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		return s.length > n ? s.slice(0, n) + "…" : s;
 	}
 
-	interface SessionEntryLike {
-		type: string;
-		customType?: string;
-		data?: unknown;
-		message?: { role?: string; content?: unknown };
-	}
-
 	function readSessionEntries(ctx: ExtensionContextLike): SessionEntryLike[] {
 		try {
 			const sm = ctx.sessionManager as unknown as { getEntries?(): SessionEntryLike[]; getBranch?(): SessionEntryLike[] } | undefined;
@@ -519,15 +561,6 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		} catch {
 			return [];
 		}
-	}
-
-	function messageTextOf(msg: { content?: unknown }): string {
-		if (typeof msg.content === "string") return msg.content;
-		if (!Array.isArray(msg.content)) return "";
-		return msg.content
-			.map((b) => (b && typeof b === "object" && (b as { type?: string; text?: string }).type === "text" ? String((b as { text?: string }).text ?? "") : ""))
-			.filter(Boolean)
-			.join("\n");
 	}
 
 	function goalspecText(data: unknown): string | null {
@@ -563,8 +596,14 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		return null;
 	}
 
-	function sessionDigest(ctx: ExtensionContextLike): { turn: number; text: string; source: string } {
-		if (digestCache && digestCache.turn === turnCount) return digestCache;
+	interface DigestOptions {
+		/** Tool-scope verifies judge an action (commit, push, edit): they need the current instruction and repo state. */
+		actionContext?: boolean;
+	}
+
+	function sessionDigest(ctx: ExtensionContextLike, opts: DigestOptions = {}): { turn: number; text: string; source: string } {
+		const variant = opts.actionContext ? "action" : "task";
+		if (digestCache && digestCache.turn === turnCount && digestCache.variant === variant) return digestCache;
 		const entries = readSessionEntries(ctx);
 		const pins: string[] = [];
 		let goalspec: string | null = null;
@@ -593,16 +632,26 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 			text = `PINNED GOAL: ${clip(pins[pins.length - 1], 400)}`;
 			source = "fallback:goal-pin";
 		} else {
-			const u = lastUserText(entries);
-			text = u ? `LAST USER MESSAGE: ${u}` : "";
-			source = u ? "fallback:user-msg" : "none";
+			text = "";
+			source = "none";
 		}
-		digestCache = { turn: turnCount, text: clip(text, 2000), source };
+		// Only action gates get the raw user instruction + PR/branch evidence: they
+		// adjudicate "did the user authorize this", which task digests cannot answer.
+		if (opts.actionContext) {
+			const u = lastUserText(entries);
+			if (u) {
+				text = text ? `${text}\nLAST USER MESSAGE: ${u}` : `LAST USER MESSAGE: ${u}`;
+				if (source === "none") source = "fallback:user-msg";
+			}
+			const gitCtx = repoContext(entries);
+			if (gitCtx) text = text ? `${text}\n${gitCtx}` : gitCtx;
+		}
+		digestCache = { turn: turnCount, variant, text: clip(text, 2600), source };
 		return digestCache;
 	}
 
-	function withDigest(ctx: ExtensionContextLike, eventText: string): { text: string; source: string } {
-		const d = sessionDigest(ctx);
+	function withDigest(ctx: ExtensionContextLike, eventText: string, opts: DigestOptions = {}): { text: string; source: string } {
+		const d = sessionDigest(ctx, opts);
 		return {
 			text: d.text ? `SESSION DIGEST (${d.source}):\n${d.text}\n\n${eventText}` : eventText,
 			source: d.source,
@@ -892,7 +941,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		const hits = dedupRules([...regexHits, ...astHits]);
 		if (hits.length === 0) return;
 
-		const digest = withDigest(ctx, `TOOL CALL (${event.toolName}):\n${scrubSecrets(serializeToolInput(event.toolName, input)).slice(0, 24000)}`);
+		const digest = withDigest(ctx, `TOOL CALL (${event.toolName}):\n${scrubSecrets(serializeToolInput(event.toolName, input)).slice(0, 24000)}`, { actionContext: true });
 		const verdicts = hits.some((r) => r.verify)
 			? await runVerify(hits, digest.text, "tool", digest.source)
 			: null;

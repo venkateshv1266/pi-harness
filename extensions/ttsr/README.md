@@ -205,6 +205,12 @@ verify: {"type":"noul","instructions":"Is this actually X?","threshold":0.8,"onF
   and are re-checked if the buffer grows ≥2000 chars since the last check.
 - Matched text is sent as a bounded window around the first match (tool inputs
   capped at 24k chars) after scrubbing obvious secret shapes.
+- Gate state is a session digest (GoalSpec → goal pin → last user message) plus
+  the matched event. Tool-scope *action* gates additionally get
+  `LAST USER MESSAGE:` and `SESSION GIT CONTEXT: branch=…, pr=#N`
+  (or `pr=none-seen-in-session`), so a rule can judge authorization and whether
+  a PR is already raised. Text/thinking gates deliberately omit both: user prose
+  is noise when the question is about the model's own output.
 
 ### Config (env)
 

@@ -1,18 +1,23 @@
 ---
 name: amend-ci-fixes
-condition: ["git commit -m", "git commit --message", "git commit -am"]
+condition: ["\\bgit\\s+commit\\b"]
+verify: {"type":"noul","instructions":"Should the amend rule fire? Answer yes ONLY when BOTH hold. (a) A pull request is already raised for this work: SESSION GIT CONTEXT shows pr=#N, or the session contains a PR URL / gh pr create output / gh pr view output for the current branch, or LAST USER MESSAGE clearly asks to update an open PR. (b) The TOOL CALL creates a plain new commit and does NOT already use --amend. Answer no when branch shows pr=none-seen-in-session and nothing else evidences an open PR (a first commit on a fresh branch is not a fixup), and no when the command already has --amend.","threshold":0.8,"onFail":"suppress"}
 scope: [tool]
 interrupt: true
 repeat: once
 ---
+Once a PR is raised, the branch keeps **one commit per PR**. Any follow-up
+fix — lint, prettier, formatting, type errors, CI failures, review comments —
+goes onto that PR's existing commit:
 
-# Amend trivial CI fixes into the previous commit
+```bash
+git commit --amend --no-edit
+git push --force-with-lease
+```
 
-For lint / prettier / formatting / type-error fixes that only address a CI
-check failure, **always** `git commit --amend --no-edit` and
-`git push --force-with-lease` (or `--force`). Do not create a separate commit
-for a trivial CI fixup.
+Never stack a standalone "fix lint" commit on top of a raised PR, and never
+use a plain `--force` push.
 
-This keeps history clean: one logical change per commit. A standalone "fix
-lint" commit is noise. The only exception is when the fix touches substantive
-logic, not just formatting/types.
+Before the PR exists, commit normally — the first commit is not a fixup, and
+this rule should not fire. Substantive new logic (not a fixup to the same
+change) also deserves its own commit rather than an amend.
