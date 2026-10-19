@@ -3,49 +3,52 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, matchesKey, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-type ProposalKind = "rule" | "note";
-
-type Proposal = {
-	kind: ProposalKind;
-	name: string;
-	title: string;
-	evidence: string;
-	content: string;
-};
+import { KIND_SPECS, PROPOSABLE_KINDS, harnessDigest, type HarnessKind, type StagedManifest } from "../../utils/harness-surface.ts";
+import {
+	armProposal,
+	contentHash,
+	dedupeProposals,
+	describeArm,
+	listCoverage,
+	listStaged,
+	migrateLegacyStaging,
+	parseProposals,
+	proposalContent,
+	proposalHash,
+	readCoverageBodies,
+	rollbackArm,
+	stageProposal,
+	toProposal,
+	type ArmResult,
+	type ArmTarget,
+	type Coverage,
+	type CoverageBodies,
+	type Proposal,
+	type StagedItem,
+} from "./harness.ts";
 
 type HistoryEntry = {
 	id: string;
 	timestamp: string;
-	kind: ProposalKind;
+	kind: HarnessKind;
 	name: string;
 	path: string;
+	armed?: ArmTarget[];
 	focus?: string;
 	evidence: string;
 	source?: "auto" | "manual";
 	rolledBack?: boolean;
+	digest?: string;
 };
 
 type JevAnswer = { noul?: number; confidence?: number };
 type JevAnswers = Record<string, JevAnswer | undefined>;
-type CoverageBody = { name: string; body: string };
 type JevParts = { evidence: number; trigger: number; novelty: number };
-type StagedMeta = {
-	name: string;
-	title: string;
-	evidence: string;
-	score: number;
-	parts: JevParts;
-	session: string;
-	stagedAt: string;
-	trigger: string;
-	tier?: "ready" | "near-miss";
-};
 
 type SessionEntry = {
 	type: string;
@@ -62,14 +65,12 @@ type ContentBlock = {
 	arguments?: Record<string, unknown>;
 };
 
-type Coverage = { rules: string[]; notes: string[] };
-
-const REFINE_DIR = join(homedir(), ".pi", "agent", "jev-decisions", "refine");
+const AGENT_ROOT = join(homedir(), ".pi", "agent");
+const REFINE_DIR = join(AGENT_ROOT, "jev-decisions", "refine");
 const NOTES_DIR = join(REFINE_DIR, "notes");
 const HISTORY_FILE = join(REFINE_DIR, "history.jsonl");
-const RULES_DIR = join(homedir(), ".pi", "agent", "rules");
-const HERMES_FAILURES = join(homedir(), ".pi", "agent", "pi-hermes-memory", "failures.md");
-const STAGING_DIR = join(REFINE_DIR, "rules-staging");
+const RULES_DIR = join(AGENT_ROOT, "rules");
+const HERMES_FAILURES = join(AGENT_ROOT, "pi-hermes-memory", "failures.md");
 const AUDIT_FILE = join(REFINE_DIR, "auto-refine.jsonl");
 const REJECTED_FILE = join(REFINE_DIR, "rejected.jsonl");
 
@@ -104,7 +105,7 @@ If you cannot write a precise condition/astCondition, use kind "note" instead.
 Never write always-apply guidance as a rule.
 `.trim();
 
-const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Coverage, bodies?: { rules: CoverageBody[]; notes: CoverageBody[] }, focus?: string): string =>
+const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Coverage, bodies?: CoverageBodies, focus?: string): string =>
 	[
 		"You are a refinement planner for a coding agent. Analyze the session trajectory below and propose the SMALLEST possible harness edit(s) that would measurably improve future sessions.",
 		"",
@@ -116,15 +117,24 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"",
 		"Propose AT MOST 2 edits. Prefer 0 or 1. Return {\"proposals\": []} if nothing clears this bar — single one-off events do NOT qualify.",
 		"",
-		"Each proposal has kind:",
-		'- "rule": a stream-triggered TTSR rule (format below). Choose ONLY when the anti-pattern has a precise trigger signature in agent output AND the trajectory shows the failure recurring 2+ times. Prefer astCondition (tool scope, mechanical patterns) over text regex — intent-level behavior has no reliable stream signature and belongs in a note.',
-		'- "note": a passive markdown note for observations with NO stream-matchable signature (environment facts, workflows, preferences). Content is plain markdown.',
+		"Two dimensions, kept separate so proposals do not overlap:",
+		"- INV (how the agent works): procedure, tool use, sequencing, completion discipline.",
+		"- DOM (what a practitioner knows): verified workspace facts, project conventions, infrastructure quirks. Prefer a named component (context entry, skill, agent) over prose.",
 		"",
-		'For "rule", content MUST be the complete file including frontmatter. For "note", content is the markdown body.',
-		'"name" is a kebab-case slug used as the filename. "title" is a one-line summary. "evidence" MUST quote the exact trajectory line(s) that justify the edit plus one sentence on why it will recur.',
+		"Kinds (pick the smallest one that carries the edit):",
+		'- "rule": a stream-triggered TTSR rule (format below). ONLY when the anti-pattern has a precise trigger signature in agent output AND it recurred 2+ times. Prefer astCondition over text regex; intent-level behavior belongs in a note.',
+		'- "note": passive markdown record for observations with no stream-matchable signature.',
+		'- "memory": one durable compact entry (<=1200 chars) with frontmatter target: memory|user|failure and category. Use for verified workspace facts, not task facts.',
+		'- "context": a doc plus a registry fragment entry.yaml (id, file, tier, triggers) that makes it fire when relevant.',
+		'- "agent": a subagent definition with frontmatter name/description/tools/model/thinking. Use when delegation divides labor cleanly.',
+		'- "skill": a SKILL.md with frontmatter name/description and structured procedure steps. Use for a repeatable multi-step workflow.',
+		'- "settings": a narrow settings patch (patch.json) for modelRouter/courseCheck/decisionTuner/refine keys only; primitives only.',
+		"",
+		'"name" is a kebab-case slug. "title" is one-line. "evidence" MUST quote the exact trajectory line(s) plus one sentence on why it will recur.',
+		'"files" maps a RELATIVE path to full file content. rule/note/agent: one "<name>.md". memory: "entry.md". context: "<name>.md" + "entry.yaml". skill: "SKILL.md". settings: "patch.json".',
 		"",
 		"Respond with ONLY a JSON object, no markdown fences, in this exact shape:",
-		'{"proposals": [{"kind": "rule" | "note", "name": "...", "title": "...", "evidence": "...", "content": "..."}]}',
+		'{"proposals": [{"kind": "rule|note|memory|context|agent|skill|settings", "name": "...", "title": "...", "evidence": "...", "files": {"...": "..."}}]}',
 		"",
 		"Rule file format:",
 		RULE_FORMAT,
@@ -134,11 +144,11 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		...(lessons.length > 0 ? lessons : ["(none)"]),
 		"</memory-lessons>",
 		"",
-		`Existing refine coverage (do NOT duplicate): rules: [${coverage.rules.join(", ") || "none"}]; notes: [${coverage.notes.join(", ") || "none"}]`,
+		`Existing refine coverage (do NOT duplicate): rules: [${coverage.rules.join(", ") || "none"}]; notes: [${coverage.notes.join(", ") || "none"}]; contexts: [${coverage.contexts.join(", ") || "none"}]; agents: [${coverage.agents.join(", ") || "none"}]; skills: [${coverage.skills.join(", ") || "none"}]`,
 		"Existing notes are passive records, not enforcement. If the trajectory shows one of those lessons being violated AGAIN, propose its rule version — promotion is expected, not duplication (the rule still needs a precise trigger).",
-		"Reminder bodies of the existing rules/notes (overlap check — never re-propose what an existing RULE already enforces; note bodies double as promotion candidates):",
+		"Existing bodies (overlap check — never re-propose what an existing RULE already enforces; note bodies double as promotion candidates):",
 		bodies
-			? [...bodies.rules.map((r) => `- rule ${r.name}: ${r.body}`), ...bodies.notes.map((n) => `- note ${n.name}: ${n.body}`)].join("\n") || "(none)"
+			? [...bodies.rules.map((r) => `- rule ${r.name}: ${r.body}`), ...bodies.others.map((o) => `- other ${o.name}: ${o.body}`)].join("\n") || "(none)"
 			: "(none)",
 		"",
 		focus ? `User focus for this run: ${focus}` : "",
@@ -171,56 +181,6 @@ const readHermesLessons = async (): Promise<string[]> => {
 		throw error;
 	}
 };
-
-const listCoverage = async (): Promise<Coverage> => {
-	const mdNames = async (dir: string): Promise<string[]> => {
-		try {
-			return (await readdir(dir)).filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""));
-		} catch (error) {
-			// expected: directory does not exist yet
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-			throw error;
-		}
-	};
-	return { rules: await mdNames(RULES_DIR), notes: await mdNames(NOTES_DIR) };
-};
-
-const readCoverageBodies = async (): Promise<{ rules: CoverageBody[]; notes: CoverageBody[] }> => {
-	const read = async (dir: string): Promise<CoverageBody[]> => {
-		try {
-			const files = (await readdir(dir)).filter((f) => f.endsWith(".md")).sort().slice(0, 30);
-			const out: CoverageBody[] = [];
-			for (const f of files) {
-				const raw = await readFile(join(dir, f), "utf8");
-				out.push({ name: f.replace(/\.md$/, ""), body: raw.replace(/\s+/g, " ").trim().slice(0, 300) });
-			}
-			return out;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-			throw error;
-		}
-	};
-	return { rules: await read(RULES_DIR), notes: await read(NOTES_DIR) };
-};
-
-const toProposal = (input: unknown): Proposal | null => {
-	if (!input || typeof input !== "object") return null;
-	const p = input as Partial<Proposal>;
-	if (p.kind !== "rule" && p.kind !== "note") return null;
-	if (typeof p.name !== "string" || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(p.name)) return null;
-	if (typeof p.content !== "string" || !p.content.trim()) return null;
-	if (p.kind === "rule" && !p.content.includes("condition") && !p.content.includes("astCondition")) return null;
-	return {
-		kind: p.kind,
-		name: p.name,
-		title: typeof p.title === "string" ? p.title : p.name,
-		evidence: typeof p.evidence === "string" ? p.evidence : "(no evidence provided)",
-		content: p.content.trim(),
-	};
-};
-
-export const dedupeProposals = (proposals: Proposal[], coverage: Coverage): Proposal[] =>
-	proposals.filter((p) => !coverage.rules.includes(p.name) && !coverage.notes.includes(p.name));
 
 const extractTextParts = (content: unknown): string[] => {
 	if (typeof content === "string") return [content];
@@ -264,34 +224,6 @@ const buildTrajectoryText = (entries: SessionEntry[]): string => {
 	return sections.join("\n\n").slice(-MAX_TRAJECTORY_CHARS);
 };
 
-export const parseProposals = (raw: string): Proposal[] => {
-	const jsonText = raw.replace(/^```(?:json)?\s*/m, "").replace(/```\s*$/m, "").trim();
-	const start = jsonText.indexOf("{");
-	const end = jsonText.lastIndexOf("}");
-	if (start === -1 || end <= start) return [];
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(jsonText.slice(start, end + 1));
-	} catch (error) {
-		if (error instanceof SyntaxError) return [];
-		throw error;
-	}
-
-	const proposals = (parsed as { proposals?: unknown }).proposals;
-	if (!Array.isArray(proposals)) return [];
-
-	const valid: Proposal[] = [];
-	for (const item of proposals) {
-		const proposal = toProposal(item);
-		if (proposal) valid.push(proposal);
-	}
-	return valid;
-};
-
-const proposalTargetPath = (proposal: Proposal): string =>
-	proposal.kind === "rule" ? join(RULES_DIR, `${proposal.name}.md`) : join(NOTES_DIR, `${proposal.name}.md`);
-
 const readHistory = async (): Promise<HistoryEntry[]> => {
 	try {
 		const raw = await readFile(HISTORY_FILE, "utf8");
@@ -320,9 +252,10 @@ const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext): Promis
 		const mdTheme = getMarkdownTheme();
 
 		container.addChild(border);
-		container.addChild(new Text(theme.fg("accent", theme.bold(`Refine proposal [${proposal.kind}]: ${proposal.title}`)), 1, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold(`Refine proposal [${KIND_SPECS[proposal.kind].label}]: ${proposal.title}`)), 1, 0));
 		container.addChild(new Text(theme.fg("dim", `evidence: ${proposal.evidence}`), 1, 1));
-		container.addChild(new Markdown(proposal.content, 1, 1, mdTheme));
+		container.addChild(new Text(theme.fg("dim", `files: ${Object.keys(proposal.files).sort().join(", ")}`), 1, 0));
+		container.addChild(new Markdown(proposalContent(proposal), 1, 1, mdTheme));
 		container.addChild(new Text(theme.fg("dim", "Enter = apply, Esc = skip"), 1, 0));
 		container.addChild(border);
 
@@ -339,23 +272,41 @@ const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext): Promis
 
 const fmtPart = (n: unknown): string => (typeof n === "number" ? n.toFixed(2) : "—");
 
-type ReviewItem = { name: string; title: string; evidence: string; content: string; meta: StagedMeta | null };
+type ReviewItem = {
+	kind: HarnessKind;
+	name: string;
+	title: string;
+	evidence: string;
+	files: Record<string, string>;
+	content: string;
+	meta: StagedManifest | null;
+	armHint?: string[];
+};
 
 const buildReviewDoc = (item: ReviewItem): string => {
-	const backtickRuns = item.content.match(/`+/g) ?? [];
-	const fence = "`".repeat(Math.max(3, ...backtickRuns.map((r) => r.length + 1)));
 	const evidence = item.evidence
 		.split("\n")
 		.map((line) => `> ${line}`)
 		.join("\n");
-	const metaLines: string[] = [];
+	const metaLines: string[] = [`kind ${KIND_SPECS[item.kind].label}`];
 	if (item.meta && typeof item.meta.score === "number" && item.meta.parts) {
 		metaLines.push(
-			`score ${item.meta.score.toFixed(2)} · evidence ${fmtPart(item.meta.parts.evidence)} · novelty ${fmtPart(item.meta.parts.novelty)} · trigger ${fmtPart(item.meta.parts.trigger)}`,
+			`score ${item.meta.score.toFixed(2)} · evidence ${fmtPart(item.meta.parts.evidence)} · novelty ${fmtPart(item.meta.parts.novelty)} · kind-signal ${fmtPart(item.meta.parts.trigger)}`,
 		);
 		metaLines.push(`tier ${item.meta.tier ?? "—"} · loop trigger ${item.meta.trigger} · staged ${item.meta.stagedAt}`);
 	}
-	return [`## ${item.title}`, "", evidence, "", ...metaLines, "", `${fence}md`, item.content, fence].join("\n");
+	if (item.armHint && item.armHint.length > 0) metaLines.push(`arm: ${item.armHint.join(" · ")}`);
+
+	const blocks = Object.keys(item.files)
+		.sort()
+		.map((rel) => {
+			const content = item.files[rel];
+			const backtickRuns = content.match(/`+/g) ?? [];
+			const fence = "`".repeat(Math.max(3, ...backtickRuns.map((r) => r.length + 1)));
+			return `### \`${rel}\`\n\n${fence}md\n${content}\n${fence}`;
+		});
+
+	return [`## ${item.title}`, "", evidence, "", ...metaLines, "", ...blocks].join("\n");
 };
 
 // Persistent two-panel review session: a capped list panel on top, the selected
@@ -366,8 +317,8 @@ const buildReviewDoc = (item: ReviewItem): string => {
 const showReviewSession = (
 	items: ReviewItem[],
 	ctx: ExtensionContext,
-	actions: { arm: (item: ReviewItem) => boolean; reject: (item: ReviewItem) => boolean },
-): Promise<{ keptStaged: { name: string; meta: StagedMeta | null }[] }> => {
+	actions: { arm: (item: ReviewItem) => Promise<boolean>; reject: (item: ReviewItem) => Promise<boolean> },
+): Promise<{ keptStaged: { kind: HarnessKind; name: string; meta: StagedManifest | null }[] }> => {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(`Refine: ${items.length} staged auto-refine rule(s) need interactive TUI review — skipped`, "warning");
 		return Promise.resolve({ keptStaged: [] });
@@ -384,7 +335,8 @@ const showReviewSession = (
 			let contentTotal = 0;
 			let contentPage = 1;
 			let pendingReject = false;
-			const viewed = new Map<string, StagedMeta | null>();
+			let pendingAction = false;
+			const viewed = new Map<string, StagedManifest | null>();
 			viewed.set(list[0].name, list[0].meta);
 
 			const horizontalChrome = 4;
@@ -414,9 +366,10 @@ const showReviewSession = (
 			};
 
 			const close = () => {
-				const keptStaged: { name: string; meta: StagedMeta | null }[] = [];
-				for (const [name, meta] of viewed) {
-					if (list.some((item) => item.name === name)) keptStaged.push({ name, meta });
+				const keptStaged: { kind: HarnessKind; name: string; meta: StagedManifest | null }[] = [];
+				for (const [key, meta] of viewed) {
+					const kept = list.find((item) => `${item.kind}:${item.name}` === key);
+					if (kept) keptStaged.push({ kind: kept.kind, name: kept.name, meta });
 				}
 				done({ keptStaged });
 			};
@@ -425,7 +378,7 @@ const showReviewSession = (
 			};
 			const showItem = (index: number) => {
 				sel = index;
-				viewed.set(list[sel].name, list[sel].meta);
+				viewed.set(`${list[sel].kind}:${list[sel].name}`, list[sel].meta);
 				contentMd = new Markdown(buildReviewDoc(list[sel]), 1, 1, getMarkdownTheme());
 				contentTop = 0;
 			};
@@ -438,8 +391,17 @@ const showReviewSession = (
 				}
 				showItem(Math.min(sel, list.length - 1));
 			};
-			const arm = () => decide(actions.arm(list[sel]));
-			const reject = () => decide(actions.reject(list[sel]));
+			const run = async (action: (item: ReviewItem) => Promise<boolean>) => {
+				if (pendingAction) return;
+				pendingAction = true;
+				try {
+					decide(await action(list[sel]));
+				} finally {
+					pendingAction = false;
+				}
+			};
+			const arm = () => void run(actions.arm);
+			const reject = () => void run(actions.reject);
 
 			const gutterBar = (row: number, viewport: number, total: number, offset: number): string => {
 				if (total <= viewport) return " ";
@@ -560,37 +522,61 @@ const appendHistory = (entry: HistoryEntry): void => {
 	appendFileSync(HISTORY_FILE, `${JSON.stringify(entry)}\n`, "utf8");
 };
 
-const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx: ExtensionContext, source: "auto" | "manual" = "manual"): Promise<void> => {
-	const targetPath = proposalTargetPath(proposal);
+const armDirect = async (proposal: Proposal): Promise<ArmResult> => {
+	const item: StagedItem = {
+		kind: proposal.kind,
+		name: proposal.name,
+		title: proposal.title,
+		evidence: proposal.evidence,
+		files: proposal.files,
+		content: proposalContent(proposal),
+		dir: "",
+		meta: {
+			kind: proposal.kind,
+			name: proposal.name,
+			title: proposal.title,
+			evidence: proposal.evidence,
+			files: proposal.files,
+			score: 0,
+			parts: {},
+			session: "manual",
+			stagedAt: new Date().toISOString(),
+			trigger: "manual",
+		},
+	};
+	return armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item });
+};
 
-	try {
-		await readFile(targetPath, "utf8");
-		ctx.ui.notify(`Skipped "${proposal.name}" — ${targetPath} already exists`, "warning");
+const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx: ExtensionContext, source: "auto" | "manual" = "manual"): Promise<void> => {
+	const result = await armDirect(proposal);
+	if (!result.ok) {
+		ctx.ui.notify(`Skipped "${proposal.name}" — ${result.reason}`, "warning");
 		return;
-	} catch (error) {
-		// expected: ENOENT means the target path is free to write
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
 
-	await mkdir(proposal.kind === "rule" ? RULES_DIR : NOTES_DIR, { recursive: true });
-	await writeFile(targetPath, `${proposal.content}\n`, "utf8");
-
-	const entry: HistoryEntry = {
+	const primary = result.targets[0];
+	appendHistory({
 		id: uuidv7(),
 		timestamp: new Date().toISOString(),
 		kind: proposal.kind,
 		name: proposal.name,
-		path: targetPath,
+		path: primary,
+		armed: result.armed,
 		focus,
 		evidence: proposal.evidence,
 		source,
-	};
-	appendHistory(entry);
+		digest: harnessDigest(AGENT_ROOT),
+	});
 
-	ctx.ui.notify(
-		proposal.kind === "rule" ? `Applied rule → ${targetPath} (verify with /ttsr)` : `Applied note → ${targetPath}`,
-		"info",
-	);
+	const hint =
+		proposal.kind === "rule"
+			? " — run /ttsr-reload to activate"
+			: proposal.kind === "context"
+				? " — run /ttsr-reload to activate"
+				: proposal.kind === "settings"
+					? " — applies from the next session"
+					: "";
+	ctx.ui.notify(`Applied ${KIND_SPECS[proposal.kind].label} "${proposal.name}" → ${primary}${hint}`, "info");
 };
 
 // ─── Auto-refine: background Jev-gated self-improvement loop ────────────────
@@ -677,20 +663,20 @@ const answerNoul = (answers: JevAnswers | null, key: string): number | null => {
 	return a && typeof a.noul === "number" ? a.noul : null;
 };
 
-const normalizeContent = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
-const hashContent = (s: string): string => createHash("sha256").update(normalizeContent(s)).digest("hex");
-
 const collectHashes = async (): Promise<Set<string>> => {
 	const hashes = new Set<string>();
-	for (const dir of [RULES_DIR, NOTES_DIR, STAGING_DIR]) {
+	for (const dir of [RULES_DIR, NOTES_DIR]) {
 		try {
 			for (const f of await readdir(dir)) {
 				if (!f.endsWith(".md")) continue;
-				hashes.add(hashContent(await readFile(join(dir, f), "utf8")));
+				hashes.add(contentHash(await readFile(join(dir, f), "utf8")));
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
+	}
+	for (const item of await listStaged(REFINE_DIR)) {
+		hashes.add(proposalHash({ kind: item.kind, name: item.name, title: item.title, evidence: item.evidence, files: item.files }));
 	}
 	try {
 		const raw = await readFile(REJECTED_FILE, "utf8");
@@ -705,18 +691,36 @@ const collectHashes = async (): Promise<Set<string>> => {
 	return hashes;
 };
 
-// A rejected draft is remembered by content hash so the auto loop cannot re-stage it.
-const recordRejected = (name: string, content: string): void => {
+// A rejected draft is remembered by bundle hash so the auto loop cannot re-stage it.
+const recordRejected = (kind: HarnessKind, name: string, proposal: Proposal): void => {
 	mkdirSync(REFINE_DIR, { recursive: true });
-	appendFileSync(REJECTED_FILE, `${JSON.stringify({ name, hash: hashContent(content), rejectedAt: new Date().toISOString() })}\n`, "utf8");
+	appendFileSync(REJECTED_FILE, `${JSON.stringify({ kind, name, hash: proposalHash(proposal), rejectedAt: new Date().toISOString() })}\n`, "utf8");
 };
 
-const buildJevState = (proposals: Proposal[], trajectory: string, bodies: { rules: CoverageBody[]; notes: CoverageBody[] }): Record<string, unknown> => ({
-	proposals: proposals.map((p) => ({ kind: p.kind, name: p.name, title: p.title, evidence: p.evidence, content: p.content.slice(0, 4000) })),
+const buildJevState = (proposals: Proposal[], trajectory: string, bodies: CoverageBodies): Record<string, unknown> => ({
+	proposals: proposals.map((p) => ({
+		kind: p.kind,
+		name: p.name,
+		title: p.title,
+		evidence: p.evidence,
+		files: Object.fromEntries(Object.entries(p.files).map(([rel, content]) => [rel, content.slice(0, 4000)])),
+		content: proposalContent(p).slice(0, 4000),
+	})),
 	trajectory: trajectory.slice(-12_000),
 	existing_rules: bodies.rules.map((r) => ({ name: r.name, body: r.body.slice(0, 300) })),
-	existing_notes: bodies.notes.map((n) => ({ name: n.name, body: n.body.slice(0, 300) })),
+	existing_other: bodies.others.map((n) => ({ name: n.name, body: n.body.slice(0, 300) })),
 });
+
+const KIND_QUESTION: Record<HarnessKind, string> = {
+	rule: "Given the proposed rule's condition/astCondition and the assistant output visible in `trajectory`, is the trigger precise enough to fire on genuine future instances of the anti-pattern while rarely firing on unrelated output?",
+	note: "",
+	memory: "Would this compact entry change future behavior, while staying a durable fact rather than this task's specifics?",
+	context: "Is the registry fragment's trigger precise enough that the doc is read when it is relevant, and rarely otherwise?",
+	agent: "Does this subagent definition have a distinct role, a clear scope, and a tool allowlist narrow enough to be safe?",
+	skill: "Is this a repeatable multi-step workflow whose steps are concrete enough to follow without re-deriving them?",
+	settings: "Is this settings change narrowly scoped, reversible, and unlikely to degrade behavior if the assumption is wrong?",
+	extension: "",
+};
 
 const buildJevQuestions = (proposals: Proposal[]): Record<string, unknown> => {
 	const questions: Record<string, unknown> = {};
@@ -725,37 +729,52 @@ const buildJevQuestions = (proposals: Proposal[]): Record<string, unknown> => {
 			type: "noul",
 			instructions: "Does `evidence` quote trajectory lines that genuinely show the user correcting the agent, the agent reworking output after a user demand, or the same failure recurring 2+ times? Judge from `trajectory`.",
 		};
-		if (p.kind === "rule") {
-			questions[`p${i}_trigger`] = {
-				type: "noul",
-				instructions: "Given the proposed rule's condition/astCondition and the assistant output visible in `trajectory`, is the trigger precise enough to fire on genuine future instances of the anti-pattern while rarely firing on unrelated output?",
-			};
-		}
+		const kindQuestion = KIND_QUESTION[p.kind];
+		if (kindQuestion) questions[`p${i}_trigger`] = { type: "noul", instructions: kindQuestion };
 		questions[`p${i}_redundant`] = {
 			type: "noul",
-			instructions: "Is all guidance in the proposal's `content` already enforced or recorded by `existing_rules` or `existing_notes`? A shared topic alone does not imply redundancy.",
+			instructions: "Is all guidance in the proposal's `content`/`files` already enforced or recorded by `existing_rules` or `existing_other`? A shared topic alone does not imply redundancy.",
 		};
 	}
 	return questions;
 };
 
-// Weakest-link score is recorded for the audit/calibration trail; rule gating is per-part floors.
+// Weakest-link score is recorded for the audit/calibration trail; gating is per-part floors.
 const scoreProposal = (p: Proposal, answers: JevAnswers | null, i: number): { score: number; parts: JevParts } | null => {
 	if (!answers) return null;
 	const evidence = answerNoul(answers, `p${i}_evidence`);
-	const trigger = p.kind === "rule" ? answerNoul(answers, `p${i}_trigger`) : 1;
+	const trigger = p.kind === "note" ? 1 : answerNoul(answers, `p${i}_trigger`);
 	const redundant = answerNoul(answers, `p${i}_redundant`);
 	if (evidence === null || trigger === null || redundant === null) return null;
 	return { score: Math.min(evidence, trigger, 1 - redundant), parts: { evidence, trigger, novelty: 1 - redundant } };
 };
 
-// Two-band rule gate: trigger parts empirically cap below a 0.8 weakest-link bar, so
+const floorFor = (kind: HarnessKind, part: "evidence" | "trigger" | "novelty"): number => {
+	if (kind === "rule") {
+		if (part === "evidence") return AUTO_RULE_EVIDENCE_FLOOR;
+		if (part === "novelty") return AUTO_RULE_NOVELTY_FLOOR;
+		if (part === "trigger") return AUTO_RULE_TRIGGER_FLOOR;
+	}
+	const env = process.env[`REFINE_AUTO_${kind.toUpperCase()}_${part.toUpperCase()}_FLOOR`];
+	return clamp01(env, KIND_SPECS[kind].floors[part] ?? 0.6);
+};
+
+const NOVELTY_EXEMPT: ReadonlySet<string> = new Set(["note"]);
+
+// Two-band gate: trigger parts empirically cap below a 0.8 weakest-link bar, so
 // per-part floors stage "ready" drafts and a lower band stages near-misses for review.
-export const ruleTier = (parts: JevParts): "ready" | "near-miss" | null => {
-	if (parts.evidence >= AUTO_RULE_EVIDENCE_FLOOR && parts.novelty >= AUTO_RULE_NOVELTY_FLOOR && parts.trigger >= AUTO_RULE_TRIGGER_FLOOR) return "ready";
+export const kindTier = (kind: HarnessKind, parts: JevParts): "ready" | "near-miss" | null => {
+	if (NOVELTY_EXEMPT.has(kind)) {
+		if (parts.evidence >= floorFor(kind, "evidence")) return "ready";
+	} else {
+		const ready = KIND_SPECS[kind].parts.every((part) => parts[part] >= floorFor(kind, part));
+		if (ready) return "ready";
+	}
 	if (Math.min(parts.evidence, parts.novelty) >= AUTO_NEAR_MISS_FLOOR) return "near-miss";
 	return null;
 };
+
+export const ruleTier = (parts: JevParts): "ready" | "near-miss" | null => kindTier("rule", parts);
 
 const auditAuto = (entry: Record<string, unknown>): void => {
 	try {
@@ -766,27 +785,27 @@ const auditAuto = (entry: Record<string, unknown>): void => {
 	}
 };
 
-const stageRule = (p: Proposal, v: { score: number; parts: JevParts }, session: string, trigger: string, tier: "ready" | "near-miss"): boolean => {
-	mkdirSync(STAGING_DIR, { recursive: true });
-	const target = join(STAGING_DIR, `${p.name}.md`);
-	if (existsSync(target)) return false;
-	writeFileSync(target, `${p.content}\n`, "utf8");
-	const meta: StagedMeta = {
+const stageKind = async (p: Proposal, v: { score: number; parts: JevParts }, session: string, trigger: string, tier: "ready" | "near-miss"): Promise<boolean> =>
+	stageProposal(REFINE_DIR, p, {
+		kind: p.kind,
 		name: p.name,
 		title: p.title,
 		evidence: p.evidence,
+		files: p.files,
 		score: v.score,
 		parts: v.parts,
 		session,
 		stagedAt: new Date().toISOString(),
 		trigger,
 		tier,
-	};
-	writeFileSync(join(STAGING_DIR, `${p.name}.meta.json`), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-	return true;
-};
+	});
 
 export default function (pi: ExtensionAPI) {
+	// One-time move of the pre-wave-1 rules-staging layout; staged items are inert either way.
+	void migrateLegacyStaging(REFINE_DIR).catch((error: unknown) => {
+		process.stderr.write(`[refine] legacy staging migration failed: ${error instanceof Error ? error.message : String(error)}\n`);
+	});
+
 	// ─── Background auto-refine loop state (per session) ───────────────
 	let autoTurnCount = 0;
 	let autoScanLen = 0;
@@ -805,7 +824,7 @@ export default function (pi: ExtensionAPI) {
 			auditAuto({ session: sessionId, stage: "plan", decision: "skipped", err: "no-model", trigger });
 			return;
 		}
-		const [lessons, coverage, bodies] = await Promise.all([readHermesLessons(), listCoverage(), readCoverageBodies()]);
+		const [lessons, coverage, bodies] = await Promise.all([readHermesLessons(), listCoverage(AGENT_ROOT, REFINE_DIR), readCoverageBodies(AGENT_ROOT, REFINE_DIR)]);
 
 		// Jev is the sole write gate: on degrade, skip the planner entirely — nothing can be written.
 		if (AUTO_JEV_KILL || !jevKey()) {
@@ -834,7 +853,7 @@ export default function (pi: ExtensionAPI) {
 			.join("\n");
 		const proposals = dedupeProposals(parseProposals(raw), coverage).slice(0, 3);
 		const hashes = await collectHashes();
-		const fresh = proposals.filter((p) => !hashes.has(hashContent(p.content)));
+		const fresh = proposals.filter((p) => !hashes.has(proposalHash(p)));
 		if (fresh.length === 0) {
 			auditAuto({ session: sessionId, stage: "plan", decision: "no-proposals", trigger });
 			return;
@@ -851,13 +870,13 @@ export default function (pi: ExtensionAPI) {
 				auditAuto({ session: sessionId, stage: "jev", kind: p.kind, name: p.name, decision: "suppressed", mode: "degraded", err: answers ? "malformed-answer" : "call-failed", latencyMs: latencyJev, trigger });
 				continue;
 			}
-			const tier = p.kind === "rule" ? ruleTier(v.parts) : null;
-			if (p.kind === "rule" && tier) {
-				if (stageRule(p, v, sessionId, trigger, tier)) {
-					applied.push(`rule "${p.name}" staged (${tier})`);
-					auditAuto({ session: sessionId, stage: "apply", kind: "rule", name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger });
+			const tier = p.kind === "note" ? null : kindTier(p.kind, v.parts);
+			if (p.kind !== "note" && tier) {
+				if (await stageKind(p, v, sessionId, trigger, tier)) {
+					applied.push(`${p.kind} "${p.name}" staged (${tier})`);
+					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger });
 				} else {
-					auditAuto({ session: sessionId, stage: "apply", kind: "rule", name: p.name, decision: "duplicate", trigger });
+					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, decision: "duplicate", trigger });
 				}
 			} else if (p.kind === "note" && v.score >= AUTO_NOTE_THRESHOLD) {
 				await applyProposal(p, undefined, ctx, "auto");
@@ -927,7 +946,7 @@ export default function (pi: ExtensionAPI) {
 
 			ctx.ui.notify("Refine: analyzing trajectory...", "info");
 
-			const [lessons, coverage, bodies] = await Promise.all([readHermesLessons(), listCoverage(), readCoverageBodies()]);
+			const [lessons, coverage, bodies] = await Promise.all([readHermesLessons(), listCoverage(AGENT_ROOT, REFINE_DIR), readCoverageBodies(AGENT_ROOT, REFINE_DIR)]);
 
 			let response;
 			try {
@@ -979,15 +998,13 @@ export default function (pi: ExtensionAPI) {
 			const entry = active.find((e) => `${e.kind} ${e.name} — ${e.timestamp}` === selected);
 			if (!entry) return;
 
-			const confirmed = await ctx.ui.confirm("Roll back refinement?", `${entry.kind} "${entry.name}" — delete ${entry.path}?`);
+			const confirmed = await ctx.ui.confirm("Roll back refinement?", `${entry.kind} "${entry.name}" — restore or remove the files armed from ${entry.path}?`);
 			if (!confirmed) return;
 
-			try {
-				await unlink(entry.path);
-			} catch (error) {
-				// expected: the file was already removed out-of-band
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				ctx.ui.notify(`File already gone: ${entry.path}`, "warning");
+			const rollback = await rollbackArm(entry);
+			if (!rollback.ok) {
+				ctx.ui.notify(`Rollback failed: ${rollback.reason ?? "unknown reason"}`, "warning");
+				return;
 			}
 
 			entry.rolledBack = true;
@@ -1001,88 +1018,89 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("refine-review", {
-		description: "Review staged auto-refine rules in a two-panel reader — select with ↑/↓, arm, reject, or close; 'discard' arg rejects directly",
+		description: "Review staged harness edits in a two-panel reader — select with ↑/↓, arm, reject, or close; 'discard' arg rejects directly",
 		handler: async (args, ctx) => {
 			const discard = args?.trim().toLowerCase() === "discard";
-			const staged = (await readdir(STAGING_DIR).catch(() => [] as string[])).filter((f) => f.endsWith(".md")).sort();
+			const staged = await listStaged(REFINE_DIR);
 			if (staged.length === 0) {
-				ctx.ui.notify("No staged auto-refine rules to review", "info");
+				ctx.ui.notify("No staged harness edits to review", "info");
 				return;
 			}
 			const sessionId = ctx.sessionManager.getSessionId();
 
 			if (discard) {
-				const selected = await ctx.ui.select("Discard which staged rule?", staged);
+				const labels = staged.map((s) => `${s.kind} ${s.name}`);
+				const selected = await ctx.ui.select("Discard which staged edit?", labels);
 				if (!selected) return;
-				const confirmed = await ctx.ui.confirm("Discard staged rule?", `"${selected}" will be deleted without arming.`);
+				const item = staged.find((s) => `${s.kind} ${s.name}` === selected);
+				if (!item) return;
+				const confirmed = await ctx.ui.confirm("Discard staged edit?", `"${item.kind} ${item.name}" will be deleted without arming.`);
 				if (!confirmed) return;
-				const name = selected.replace(/\.md$/, "");
-				const content = await readFile(join(STAGING_DIR, selected), "utf8").catch(() => "");
-				if (content) recordRejected(name, content);
-				await unlink(join(STAGING_DIR, selected)).catch(() => {});
-				await unlink(join(STAGING_DIR, `${name}.meta.json`)).catch(() => {});
-				auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "discarded" });
-				ctx.ui.notify(`Discarded "${name}"`, "info");
+				recordRejected(item.kind, item.name, { kind: item.kind, name: item.name, title: item.title, evidence: item.evidence, files: item.files });
+				await rm(item.dir, { recursive: true, force: true });
+				auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "discarded" });
+				ctx.ui.notify(`Discarded "${item.kind} ${item.name}"`, "info");
 				return;
 			}
 
 			const items: ReviewItem[] = [];
-			for (const file of staged) {
-				const name = file.replace(/\.md$/, "");
-				let meta: StagedMeta | null = null;
-				try {
-					meta = JSON.parse(await readFile(join(STAGING_DIR, `${name}.meta.json`), "utf8")) as StagedMeta;
-				} catch {
-					meta = null;
-				}
+			for (const item of staged) {
 				items.push({
-					name,
-					title: `${meta?.tier === "near-miss" ? "[near-miss] " : ""}${meta?.title ?? name}`,
-					evidence: meta?.evidence ?? "(staged by background auto-refine)",
-					content: (await readFile(join(STAGING_DIR, file), "utf8")).trim(),
-					meta,
+					kind: item.kind,
+					name: item.name,
+					title: `${item.meta.tier === "near-miss" ? "[near-miss] " : ""}${KIND_SPECS[item.kind].label}: ${item.title}`,
+					evidence: item.evidence,
+					files: item.files,
+					content: item.content,
+					meta: item.meta,
+					armHint: await describeArm(AGENT_ROOT, item),
 				});
 			}
 
 			const outcome = await showReviewSession(items, ctx, {
-				arm: (item) => {
-					const target = join(RULES_DIR, `${item.name}.md`);
-					if (existsSync(target)) {
-						ctx.ui.notify(`Skipped "${item.name}" — ${target} already exists`, "warning");
-						auditAuto({ session: sessionId, stage: "review", kind: "rule", name: item.name, decision: "duplicate" });
+				arm: async (item) => {
+					const stagedItem = staged.find((s) => s.kind === item.kind && s.name === item.name);
+					if (!stagedItem) {
+						ctx.ui.notify(`Staged edit "${item.kind} ${item.name}" is gone`, "warning");
 						return false;
 					}
-					mkdirSync(RULES_DIR, { recursive: true });
-					renameSync(join(STAGING_DIR, `${item.name}.md`), target);
-					const metaPath = join(STAGING_DIR, `${item.name}.meta.json`);
-					if (existsSync(metaPath)) unlinkSync(metaPath);
+					const result = await armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item: stagedItem });
+					if (!result.ok) {
+						ctx.ui.notify(`Skipped "${item.kind} ${item.name}" — ${result.reason}`, "warning");
+						auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "duplicate" });
+						return false;
+					}
+					await rm(stagedItem.dir, { recursive: true, force: true });
 					appendHistory({
 						id: uuidv7(),
 						timestamp: new Date().toISOString(),
-						kind: "rule",
+						kind: item.kind,
 						name: item.name,
-						path: target,
+						path: result.targets[0],
+						armed: result.armed,
 						evidence: item.evidence,
 						source: "auto",
+						digest: harnessDigest(AGENT_ROOT),
 					});
-					auditAuto({ session: sessionId, stage: "review", kind: "rule", name: item.name, decision: "armed", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
-					ctx.ui.notify(`Armed "${item.name}" → ${target} — run /ttsr-reload to activate`, "info");
+					auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "armed", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
+					const hint = item.kind === "rule" || item.kind === "context" ? " — run /ttsr-reload to activate" : item.kind === "settings" ? " — applies from the next session" : "";
+					ctx.ui.notify(`Armed ${KIND_SPECS[item.kind].label} "${item.name}" → ${result.targets[0]}${hint}`, "info");
 					return true;
 				},
-				reject: (item) => {
-					recordRejected(item.name, item.content);
-					const stagedPath = join(STAGING_DIR, `${item.name}.md`);
-					if (existsSync(stagedPath)) unlinkSync(stagedPath);
-					const metaPath = join(STAGING_DIR, `${item.name}.meta.json`);
-					if (existsSync(metaPath)) unlinkSync(metaPath);
-					auditAuto({ session: sessionId, stage: "review", kind: "rule", name: item.name, decision: "discarded", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
-					ctx.ui.notify(`Rejected "${item.name}"`, "info");
+				reject: async (item) => {
+					const stagedItem = staged.find((s) => s.kind === item.kind && s.name === item.name);
+					if (stagedItem) {
+						recordRejected(item.kind, item.name, { kind: item.kind, name: item.name, title: item.title, evidence: item.evidence, files: item.files });
+						await rm(stagedItem.dir, { recursive: true, force: true });
+					}
+					auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "discarded", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
+					ctx.ui.notify(`Rejected "${item.kind} ${item.name}"`, "info");
 					return true;
 				},
 			});
-			// Rules viewed but left undecided stay staged; audit each once.
+			// Items viewed but left undecided stay staged; audit each once.
 			for (const kept of outcome.keptStaged) {
-				auditAuto({ session: sessionId, stage: "review", kind: "rule", name: kept.name, decision: "kept-staged", score: kept.meta?.score ?? null, parts: kept.meta?.parts ?? null, tier: kept.meta?.tier ?? null });
+				auditAuto({ session: sessionId, stage: "review", kind: kept.kind, name: kept.name, decision: "kept-staged", score: kept.meta?.score ?? null, parts: kept.meta?.parts ?? null, tier: kept.meta?.tier ?? null });
 			}
 		},
 	});
@@ -1090,37 +1108,35 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "refine_propose",
 		label: "Refine Propose",
-		description: "Queue a harness improvement draft (TTSR rule or memory note) when you notice a recurring failure or a user correction. The user reviews and approves it via an overlay before anything is written.",
-		promptSnippet: "Queue a rule/note draft from an observed recurring failure or correction; user approves via overlay",
+		description:
+			"Queue a harness improvement draft (TTSR rule, note, memory entry, context entry, subagent, skill, or settings patch) when you notice a recurring failure or a user correction. The user reviews and approves it via an overlay before anything is written.",
+		promptSnippet: "Queue a multi-kind harness edit from an observed recurring failure or correction; user approves via overlay",
 		promptGuidelines: [
-			"Use refine_propose when the same failure occurs 2+ times in this session or the user corrects an anti-pattern that is likely to recur. Supply a complete draft: for kind=rule, content must be a full TTSR rule file including frontmatter with a precise condition or astCondition; for kind=note, content is plain markdown. Do not propose one-off events or anything without a matchable signature (use kind=note for those).",
+			"Use refine_propose when the same failure occurs 2+ times in this session or the user corrects an anti-pattern likely to recur. Pick the smallest kind that carries the edit: rule (stream trigger + recurrence), note (no matchable signature), memory (durable workspace fact, <=1200 chars), context (doc + registry fragment that fires when relevant), agent (delegation divides labor), skill (repeatable multi-step workflow), settings (narrow patch for modelRouter/courseCheck/decisionTuner/refine). Supply files as a relative path -> full content map; rule/note/agent use <name>.md, memory uses entry.md (frontmatter target: memory|user|failure, category), context uses <name>.md + entry.yaml, skill uses SKILL.md, settings uses patch.json.",
 		],
 		parameters: Type.Object({
-			kind: StringEnum(["rule", "note"] as const),
+			kind: StringEnum(PROPOSABLE_KINDS),
 			name: Type.String({ description: "kebab-case slug used as the filename" }),
 			title: Type.String({ description: "one-line summary" }),
 			evidence: Type.String({ description: "quoted trajectory line(s) justifying this edit plus why it will recur" }),
-			content: Type.String({ description: "full file content: frontmatter + body for rule, markdown body for note" }),
+			files: Type.Record(Type.String(), Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const proposal = toProposal(params);
 			if (!proposal) {
 				throw new Error(
-					'Invalid proposal: kind must be "rule"|"note", name must be kebab-case, content must be non-empty, and rule content must include a condition or astCondition in frontmatter.',
+					`Invalid proposal: kind must be one of ${PROPOSABLE_KINDS.join(", ")}, name must be kebab-case, and the files bundle must pass that kind's validation (e.g. a rule needs frontmatter with condition/astCondition).`,
 				);
 			}
-			const coverage = await listCoverage();
-			const stagedNames = await readdir(STAGING_DIR)
-				.then((files) => files.filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, "")))
-				.catch(() => [] as string[]);
-			if (coverage.rules.includes(proposal.name) || coverage.notes.includes(proposal.name) || stagedNames.includes(proposal.name)) {
+			const coverage = await listCoverage(AGENT_ROOT, REFINE_DIR);
+			if (dedupeProposals([proposal], coverage).length === 0) {
 				return {
-					content: [{ type: "text", text: `Skipped: "${proposal.name}" already exists in refine coverage. Nothing queued.` }],
+					content: [{ type: "text", text: `Skipped: "${proposal.kind} ${proposal.name}" already exists in refine coverage. Nothing queued.` }],
 					details: { queued: false, reason: "duplicate" },
 				};
 			}
 			const approved = await showProposalUi(proposal, ctx);
-			if (!approved) {
+			if (approved !== "apply") {
 				return {
 					content: [{ type: "text", text: `Proposal "${proposal.name}" skipped by user.` }],
 					details: { queued: false, reason: "user-declined" },
@@ -1128,7 +1144,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			await applyProposal(proposal, undefined, ctx);
 			return {
-				content: [{ type: "text", text: `Applied "${proposal.name}" (${proposal.kind}).` }],
+				content: [{ type: "text", text: `Applied ${KIND_SPECS[proposal.kind].label} "${proposal.name}".` }],
 				details: { queued: true, applied: true },
 			};
 		},
