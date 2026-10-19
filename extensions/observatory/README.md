@@ -30,6 +30,7 @@ Server logs: `~/.pi/agent/observatory/server.log`.
 |---|---|
 | **Overview** | Where tokens and money went, split model work vs harness overhead; curator/router/rules/guard leverage; watchlist of warnings. The per-day chart is bars broken out **per model** (top 5 + other, with harness overhead as its own segment), switchable between **cost, tokens and requests**, the choice persisted |
 | **Impact** | What the harness earned or cost, plus decision support: **Findings** (rule-based diagnostics ordered sharpest first — each states the rule that fired with its threshold, the evidence folded behind a disclosure, size of the prize, the lever that changes it, and links to the rows behind it; `new` and `recurring` are flagged and colour-coded), **Harness benefit** (each mechanism's measured cost versus an explicit counterfactual: rules injected vs resident, context curator condensed vs the flow it avoids on the calls that follow, always-on prompt, goal loop, judgment tools, memory), **Quality signals** (colour-coded), **per-system Effectiveness** (verdict mixes per subsystem · TTSR rule outcomes with precision), **Levers** (which knob to turn, and where it lives) a **model scope picker** that filters the whole view to one model you actually ran (kept in the URL), with unattributable metrics clearly marked global, and **Trends** — four comparisons against the identical previous window: cost per call, cache rate, context condensed per call and course-check off-track rate (rates as percentage-point deltas). A **Digest** button exports the window as markdown. Every metric carries a **?** drawer: what it means, how it is computed, the raw log behind it, and what to do |
+| **Improvements** | The daily self-improvement view: **day strip** (one row per day — armed per kind, rolled back, pruned, staged with gate pass/fail, gate pass rate, rule-fire outcome mix, extension adoption, harness digest delta), **day-over-day** (default N vs N−1 with side-by-side metrics and percentage-point deltas for rates), and the derived **improvement ledger** — one human-readable line per day. Read-only: every row opens the raw snapshot. |
 | **Models** | One hero card — per-day bars by model (cost, tokens or requests) over a stats strip (cost, calls, cache savings, tokens) — then the unit-economics breakdown table and thinking-level mix |
 | **Router** | Every tier decision (keep/mid/deep/fast) with probability, confidence, acted flag, latency and outcomes, with verdicts grouped by tier (good / bad / the model being overridden / unclassified) beside the number still unjudged, so a small sample reads as small — and no cost figure: the router logs a decision, not a price (`cost_usd` is null on every record) |
 | **Ask Jev** | Every ask-jev call by tool over time — the 2026-10-10 reform reshaped the surface around inputs too big to read — with the full registered tool surface (active / idle / never-called / retired, parsed live from the extension so it stays exact), per-tool stats, the review_diff verdict mix, the retired read-gate rule's never-fired history (all-time), and drill-through recent calls |
@@ -53,6 +54,7 @@ than clipping, and no page scrolls sideways.
 | `~/.pi/agent/sessions/**/*.jsonl` | model calls (usage, cost, thinking level), messages, context edits, curator ledgers, model switches |
 | `~/.pi/agent/jev-decisions/*.jsonl` | decision streams for every subsystem (see `server/adapters/decisions.ts`) |
 | `~/.pi/agent/jev-decisions/refine/`, `decision-tuner/` | refinement and tuning passes |
+| `~/.pi/agent/observatory/snapshots/YYYY-MM-DD.json` | materialized daily improvement snapshots (recomputable from the logs above plus session tool calls) |
 | `~/.pi/agent/models-store.json` | per-model prices for cache-savings estimates |
 | `~/.pi/agent/extensions/*` | extension inventory and adapter coverage |
 
@@ -75,6 +77,11 @@ pi logs on disk ──► adapters (server/adapters/*) ──► SQLite (bun:sql
 - **Sessions** additionally land in typed tables (`model_calls`, `messages`,
   `sessions`) with rollups recomputed from the typed rows, so rescanning is
   idempotent.
+- **Daily snapshots** are materialized views: `server/snapshots.ts` computes one
+  JSON per day from refine's audit/history, TTSR outcomes, tuner proposals and
+  session tool calls. The server writes today's on start; refine writes it at the
+  first turn of a session when the file is missing. Raw JSONL remains the source
+  of truth, so any snapshot is recomputable.
 - **Live updates** come from recursive `fs.watch` on the data dirs; the UI
   refreshes over SSE. `POST /api/emit` accepts pushed events for subsystems
   that want zero-latency streaming.

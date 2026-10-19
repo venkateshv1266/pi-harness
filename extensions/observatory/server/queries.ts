@@ -548,7 +548,7 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	const priceList = prices(db);
 
 	const modelRows = db
-		.query<{ model: string; input: number; output: number; cache_read: number; calls: number }, number[]>(
+		.query<{ model: string; input: number; output: number; cache_read: number; calls: number }, Array<string | number>>(
 			`SELECT model, COALESCE(SUM(input),0) input, COALESCE(SUM(output),0) output, COALESCE(SUM(cache_read),0) cache_read, COUNT(*) calls
 			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL${model ? " AND model = ?" : ""} GROUP BY model`,
 		)
@@ -843,7 +843,7 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 
 	// -------- quality signals (health of the harness's own judgments)
 	const callStats = db
-		.query<{ calls: number; errors: number }, number[]>(
+		.query<{ calls: number; errors: number }, Array<string | number>>(
 			`SELECT COUNT(*) calls, COALESCE(SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END),0) errors
 			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?${model ? " AND model = ?" : ""}`,
 		)
@@ -3843,6 +3843,28 @@ export function refineOverview(db: Database, range: Range) {
 	} catch (err) {
 		log.warn(`cannot list rules: ${err instanceof Error ? err.message : String(err)}`);
 	}
+	const liveNames = (dir: string, marker: string | null = null): Set<string> => {
+		try {
+			if (marker) {
+				return new Set(
+					readdirSync(dir, { withFileTypes: true })
+						.filter((entry) => entry.isDirectory() && existsSync(path.join(dir, entry.name, marker)))
+						.map((entry) => entry.name),
+				);
+			}
+			return new Set(readdirSync(dir).filter((file) => file.endsWith(".md") && file !== "INDEX.md").map((file) => file.replace(/\.md$/, "")));
+		} catch {
+			return new Set();
+		}
+	};
+	const liveByKind: Record<string, Set<string>> = {
+		rule: liveRules,
+		note: liveNames(path.join(refineDir(), "notes")),
+		context: liveNames(path.join(agentDir(), "contexts")),
+		agent: liveNames(path.join(agentDir(), "agents")),
+		skill: liveNames(path.join(agentDir(), "skills"), "SKILL.md"),
+		extension: liveNames(extensionsDir(), "index.ts"),
+	};
 	// History records the absolute path it wrote at the time, which goes stale when
 	// a directory moves. Resolve by name against the current locations instead, and
 	// say plainly when nothing readable is left rather than offering a dead button.
@@ -3853,31 +3875,107 @@ export function refineOverview(db: Database, range: Range) {
 			candidates.push(path.join(rulesDir(), `${name}.md`));
 			candidates.push(path.join(refineDir(), "rules-staging", `${name}.md`));
 		}
+		if (kind === "context") candidates.push(path.join(agentDir(), "contexts", `${name}.md`));
+		if (kind === "agent") candidates.push(path.join(agentDir(), "agents", `${name}.md`));
+		if (kind === "skill") candidates.push(path.join(agentDir(), "skills", name, "SKILL.md"));
+		if (kind === "extension") candidates.push(path.join(extensionsDir(), name, "index.ts"), path.join(extensionsDir(), `${name}.ts`));
+		if (kind === "settings") candidates.push(path.join(agentDir(), "settings.json"));
 		if (recorded) candidates.push(recorded);
 		return candidates.find((candidate) => existsSync(candidate)) ?? null;
 	};
-	// Staged rules first: their tiers decide the lifecycle state of each rule artifact.
-	const stagingEntries = markdownFiles(path.join(refineDir(), "rules-staging")).map((entry) => {
-		// Each staged rule carries a sibling meta file with its tier and part scores —
-		// that is what tells you whether to arm it or send it for review.
-		let meta: Record<string, unknown> | null = null;
-		const metaPath = path.join(refineDir(), "rules-staging", `${entry.name}.meta.json`);
+	const readManifest = (file: string): Record<string, unknown> | null => {
 		try {
-			if (existsSync(metaPath)) meta = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
+			return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>) : null;
 		} catch (err) {
-			log.warn(`cannot read ${metaPath}: ${err instanceof Error ? err.message : String(err)}`);
+			log.warn(`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`);
+			return null;
 		}
-		return {
-			...entry,
+	};
+	const recordOf = (value: unknown): Record<string, unknown> | null =>
+		value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+	type StagingRow = {
+		kind: string;
+		name: string;
+		path: string | null;
+		filesPath: string | null;
+		metaPath: string | null;
+		tier: string | null;
+		parts: Record<string, unknown> | null;
+		score: number | null;
+		stagedAt: string | null;
+		evidence: string | null;
+		chars: number;
+		preview: string;
+		gateOk: boolean | null;
+		gateReasons: string[];
+		fileCount: number;
+		files: string[];
+	};
+	const stagingRows: StagingRow[] = [];
+	const stagingRoot = path.join(refineDir(), "staging");
+	try {
+		for (const kind of readdirSync(stagingRoot)) {
+			const kindDir = path.join(stagingRoot, kind);
+			if (!statSync(kindDir).isDirectory()) continue;
+			for (const name of readdirSync(kindDir)) {
+				const dir = path.join(kindDir, name);
+				const manifestPath = path.join(dir, "manifest.json");
+				const manifest = readManifest(manifestPath);
+				if (!manifest) continue;
+				const files = recordOf(manifest.files) ?? {};
+				const rels = Object.keys(files);
+				const contents = Object.values(files).filter((value): value is string => typeof value === "string");
+				const first = rels[0];
+				const gate = recordOf(recordOf(manifest.probe)?.gate);
+				const gateReasons = Array.isArray(gate?.reasons) ? gate.reasons.filter((reason): reason is string => typeof reason === "string") : [];
+				stagingRows.push({
+					kind,
+					name,
+					path: first ? path.join(dir, "files", first) : null,
+					filesPath: path.join(dir, "files"),
+					metaPath: manifestPath,
+					tier: typeof manifest.tier === "string" ? manifest.tier : null,
+					parts: recordOf(manifest.parts),
+					score: typeof manifest.score === "number" ? manifest.score : null,
+					stagedAt: typeof manifest.stagedAt === "string" ? manifest.stagedAt : null,
+					evidence: typeof manifest.evidence === "string" ? manifest.evidence.slice(0, 200) : null,
+					chars: contents.reduce((sum, value) => sum + value.length, 0),
+					preview: first && typeof files[first] === "string" ? (files[first] as string).slice(0, 240) : "",
+					gateOk: typeof gate?.ok === "boolean" ? gate.ok : null,
+					gateReasons: gateReasons.slice(0, 3),
+					fileCount: rels.length,
+					files: rels.sort(),
+				});
+			}
+		}
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") log.warn(`cannot list staging: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	// Pre-wave-1 staged rules stay visible until the one-time migration runs.
+	for (const entry of markdownFiles(path.join(refineDir(), "rules-staging"))) {
+		const metaPath = path.join(refineDir(), "rules-staging", `${entry.name}.meta.json`);
+		const meta = readManifest(metaPath);
+		stagingRows.push({
+			kind: "rule",
+			name: entry.name,
+			path: entry.path,
+			filesPath: path.dirname(entry.path),
 			metaPath: existsSync(metaPath) ? metaPath : null,
 			tier: typeof meta?.tier === "string" ? meta.tier : null,
-			parts: (meta?.parts ?? null) as Record<string, unknown> | null,
+			parts: recordOf(meta?.parts),
 			score: typeof meta?.score === "number" ? meta.score : null,
 			stagedAt: typeof meta?.stagedAt === "string" ? meta.stagedAt : null,
 			evidence: typeof meta?.evidence === "string" ? meta.evidence.slice(0, 200) : null,
-		};
-	});
-	const stagedNames = new Set(stagingEntries.map((entry) => entry.name));
+			chars: entry.chars,
+			preview: entry.preview,
+			gateOk: null,
+			gateReasons: [],
+			fileCount: 1,
+			files: [`${entry.name}.md`],
+		});
+	}
+	const stagingEntries = stagingRows;
+	const stagedNames = new Set(stagingRows.map((entry) => `${entry.kind}:${entry.name}`));
 
 	const artifacts = history.map((row) => {
 		const data = parseData(row);
@@ -3895,10 +3993,13 @@ export function refineOverview(db: Database, range: Range) {
 			recordedPath: recorded,
 			evidence: typeof data.evidence === "string" ? data.evidence.slice(0, 260) : null,
 			source: typeof data.source === "string" ? data.source : null,
-			live: kind === "rule" ? liveRules.has(name) : true,
+			live: data.rolledBack === true ? false : (kind === "memory" || kind === "settings" ? resolved != null : (liveByKind[kind]?.has(name) ?? resolved != null)),
 			rolledBack: data.rolledBack === true,
-			// The lifecycle a rule passes through: proposed → staged → armed, rejected, or rolled back.
-			state: data.rolledBack === true ? "rolled back" : kind === "note" ? "written" : liveRules.has(name) ? "armed" : stagedNames.has(name) ? "staged" : "proposed",
+			digest: typeof data.digest === "string" ? data.digest : null,
+			armedCount: Array.isArray(data.armed) ? data.armed.length : 0,
+			expectation: typeof data.expectation === "string" ? data.expectation : null,
+			// The lifecycle an edit passes through: proposed → staged → armed, rejected, or rolled back.
+			state: data.rolledBack === true ? "rolled back" : kind === "note" ? "written" : (liveByKind[kind]?.has(name) ?? resolved != null) ? "armed" : stagedNames.has(`${kind}:${name}`) ? "staged" : "proposed",
 		};
 	});
 
@@ -3916,6 +4017,14 @@ export function refineOverview(db: Database, range: Range) {
 		artifactCounts: {
 			rules: artifacts.filter((artifact) => artifact.kind === "rule").length,
 			notes: artifacts.filter((artifact) => artifact.kind === "note").length,
+			byKind: artifacts.reduce<Record<string, number>>((counts, artifact) => {
+				counts[artifact.kind] = (counts[artifact.kind] ?? 0) + 1;
+				return counts;
+			}, {}),
+			stagedByKind: stagingRows.reduce<Record<string, number>>((counts, entry) => {
+				counts[entry.kind] = (counts[entry.kind] ?? 0) + 1;
+				return counts;
+			}, {}),
 			byState: artifacts.reduce<Record<string, number>>((counts, artifact) => {
 				counts[artifact.state] = (counts[artifact.state] ?? 0) + 1;
 				return counts;

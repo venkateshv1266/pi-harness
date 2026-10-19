@@ -4,6 +4,7 @@
 import { api, post, h, clear, fmtCompact, fmtCost, fmtInt, fmtPct, fmtMs, fmtClock, fmtDateTime, timeAgo, toneForSeverity, toneForVerdict, openDrawer, toast, seriesColor, debounce } from "./util.js";
 import { areaChart, barChart, lineChart, spark, histogram, sankey } from "./charts.js";
 import { card, kpi, meter, pill, countPill, chip, qualityTone, table, bars, shareLabel, banner, emptyState, feed, kv, legend, skeletonRows, helpButton, modelPicker, collapsible } from "./ui.js";
+import { improvementsPage } from "./improvements.js";
 
 export const state = {
 	range: localStorage.getItem("observatory-range") || "7d",
@@ -2271,7 +2272,7 @@ async function refinePage(view, ctx) {
 	// armed, or rejected / rolled back), a note is simply written down.
 	const artifactSegSlot = h("div", { class: "seg" });
 	const artifactSlot = h("div", { class: "cardbody flush" });
-	let artifactTab = "rules";
+	let artifactTab = "all";
 	const statePill = (state) =>
 		pill(state, state === "armed" ? "ok" : state === "staged" ? "accent" : state === "rolled back" ? "warn" : state === "written" ? "ok" : "neutral");
 	const viewButton = (row) =>
@@ -2279,30 +2280,34 @@ async function refinePage(view, ctx) {
 			? h("button", { class: "btn", onclick: (event) => { event.stopPropagation(); void openFileDrawer(row.path, row.name); } }, "View")
 			: h("span", { class: "small faint nowrap", "data-tip": row.recordedPath ? `recorded at ${row.recordedPath} — no longer on disk` : "no file path recorded" }, "missing");
 	function renderArtifacts(data) {
-		const rules = (data.artifacts ?? []).filter((artifact) => artifact.kind === "rule");
-		const notes = (data.artifacts ?? []).filter((artifact) => artifact.kind === "note");
+		const all = data.artifacts ?? [];
+		const byKind = data.artifactCounts?.byKind ?? {};
+		const stagedByKind = data.artifactCounts?.stagedByKind ?? {};
+		const tabs = [["all", "All", all.length]];
+		for (const kind of Object.keys(byKind).sort()) tabs.push([kind, kind, byKind[kind]]);
+		for (const [kind, count] of Object.entries(stagedByKind)) if (!tabs.some(([id]) => id === kind)) tabs.push([kind, kind, count]);
 		clear(artifactSegSlot);
-		for (const [id, label, count] of [["rules", "Rules", rules.length], ["notes", "Notes", notes.length]]) {
+		for (const [id, label, count] of tabs) {
 			artifactSegSlot.append(h("button", { class: artifactTab === id ? "active" : "", onclick: () => { artifactTab = id; renderArtifacts(data); } }, `${label} (${fmtInt(count)})`));
 		}
 		clear(artifactSlot);
-		const nameColumn = artifactTab === "rules" ? "Rule" : "Note";
+		const rows = (artifactTab === "all" ? all : all.filter((artifact) => artifact.kind === artifactTab)).map((row) => ({ ...row, key: row.id }));
 		artifactSlot.append(
 			table({
 				columns: [
-					{ label: nameColumn, render: (row) => h("span", { class: "mono", style: { fontSize: "11.5px" } }, row.name) },
+					{ label: "Item", render: (row) => h("span", { class: "mono", style: { fontSize: "11.5px" } }, row.name) },
+					{ label: "Kind", render: (row) => pill(row.kind, "neutral") },
 					{ label: "State", render: (row) => statePill(row.state) },
 					{ label: "Source", render: (row) => h("span", { class: "small muted" }, row.source ?? "—") },
+					{ label: "Arm targets", right: true, render: (row) => fmtInt(row.armedCount ?? 0) },
+					{ label: "Digest", render: (row) => (row.digest ? h("span", { class: "mono small", "data-tip": row.digest }, row.digest.slice(0, 8)) : "—") },
 					{ label: "Evidence", render: (row) => h("span", { class: "small muted truncate" }, row.evidence ?? "—") },
 					{ label: "When", right: true, render: (row) => timeAgo(row.ts) },
 					{ label: "", width: "78px", render: viewButton },
 				],
-				rows: (artifactTab === "rules" ? rules : notes).map((row) => ({ ...row, key: row.id })),
+				rows,
 				maxHeight: "440px",
-				empty:
-					artifactTab === "rules"
-						? "No rules in this range — widen the range in the top bar to include earlier rule applies"
-						: "No notes in this range — widen the range in the top bar",
+				empty: artifactTab === "all" ? "No harness edits in this range — widen the range in the top bar" : `No ${artifactTab} edits in this range — widen the range in the top bar`,
 			}),
 		);
 	}
@@ -2318,12 +2323,14 @@ async function refinePage(view, ctx) {
 									.map((part) => `${part.slice(0, 2)} ${Number(entry.parts[part]).toFixed(2)}`)
 									.join(" · ")
 							: null;
+						const gate = entry.gateOk == null ? null : entry.gateOk ? "gate pass" : `gate fail: ${(entry.gateReasons ?? []).join("; ")}`;
+						const tone = entry.gateOk === false ? "err" : entry.tier === "near-miss" ? "warn" : entry.tier === "ready" ? "ok" : "info";
 						return h(
 							"div",
 							{ class: "item" },
 							h("div", { class: "t" }, entry.tier ? entry.tier.replace("near-miss", "near") : fmtCompact(entry.chars)),
-							h("div", { class: `dot ${entry.tier === "near-miss" ? "warn" : entry.tier === "ready" ? "ok" : "info"}` }),
-							h("div", {}, h("div", { class: "title mono", style: { fontSize: "12px" } }, entry.name), h("div", { class: "sub" }, [parts, entry.evidence ?? entry.preview].filter(Boolean).join(" — "))),
+							h("div", { class: `dot ${tone}` }),
+							h("div", {}, h("div", { class: "title mono", style: { fontSize: "12px" } }, `${entry.kind ?? "rule"} · ${entry.name}`), h("div", { class: "sub" }, [parts, gate, `${entry.fileCount ?? 1} file(s)`, entry.evidence ?? entry.preview].filter(Boolean).join(" — "))),
 							h(
 								"div",
 								{ style: { display: "flex", gap: "6px" } },
@@ -2386,15 +2393,15 @@ async function refinePage(view, ctx) {
 		kpis.node,
 		h("div", { class: "split" }, card({ title: "Loop decisions", sub: "what the auto-loop concluded each run", body: decisions.node }), card({ title: "Stages", sub: "where runs spent their effort", body: stages.node })),
 		card({
-			title: "Rules & notes",
-			sub: "everything the loop has written, segregated by kind — rules carry a lifecycle, notes are records",
+			title: "Harness edits",
+			sub: "everything the loop has written, all kinds — each item carries its lifecycle and arm targets",
 			actions: artifactSegSlot,
 			flush: true,
 			body: artifactSlot,
 			help: HELP.refine,
 		}),
 		card({ title: "Gate calibration", sub: "how close rule proposals come to the gate, and which band they land in", body: gateCard.node, help: HELP.refineGate }),
-		card({ title: "Staged rules", sub: "waiting for one-glance arming — Meta opens the scores behind each one", flush: true, body: staging.node, help: HELP.refineStaging }),
+		card({ title: "Staged edits", sub: "waiting for one-glance arming — Meta opens the scores and, for extensions, the validation gate", flush: true, body: staging.node, help: HELP.refineStaging }),
 	);
 	const render = (d) => {
 		kpis.render(d);
@@ -2507,6 +2514,7 @@ async function tunerPage(view, ctx) {
 export const PAGES = {
 	overview,
 	impact: impactPage,
+	improvements: improvementsPage,
 	models,
 	router: routerPage,
 	askJev: askJevPage,

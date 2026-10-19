@@ -10,6 +10,7 @@ import { PAGES, state } from "./pages.js";
 const NAV = [
 	{ id: "overview", label: "Overview", icon: "grid" },
 	{ id: "impact", label: "Impact", icon: "target" },
+	{ id: "improvements", label: "Improvements", icon: "trend" },
 	{ id: "models", label: "Models", icon: "cpu" },
 	{ id: "router", label: "Router", icon: "split" },
 	{ id: "askJev", label: "Ask Jev", icon: "spark" },
@@ -25,6 +26,7 @@ const NAV = [
 const ICONS = {
 	grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
 	target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>',
+	trend: '<path d="M3 17l6-6 4 3 7-8"/><path d="M15 6h5v5"/>',
 	cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
 	split: '<path d="M6 4v16M18 4v16M6 12h12"/><circle cx="12" cy="12" r="2.4"/>',
 	spark: '<path d="M12 2l2.3 7.7L22 12l-7.7 2.3L12 22l-2.3-7.7L2 12l7.7-2.3z"/>',
