@@ -18,6 +18,7 @@ const NAV = [
 	{ id: "curator", label: "Curator", icon: "scissors" },
 	{ id: "sessions", label: "Sessions", icon: "chat" },
 	{ id: "extensions", label: "Extensions", icon: "puzzle" },
+	{ id: "firstContext", label: "First Context", icon: "layers" },
 	{ id: "health", label: "Health", icon: "pulse" },
 ];
 
@@ -33,6 +34,7 @@ const ICONS = {
 	chat: '<path d="M21 12a8 8 0 0 1-8 8H4l2.4-2.6A8 8 0 1 1 21 12z"/>',
 	puzzle: '<path d="M10 3h4v3a2 2 0 1 0 4 0V3h3v7h-3a2 2 0 1 0 0 4h3v7h-6v-3a2 2 0 1 0-4 0v3H5v-7h3a2 2 0 1 0 0-4H5V3h5z"/>',
 	pulse: '<path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>',
+	layers: '<path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M2 12l10 5 10-5"/><path d="M2 16l10 5 10-5"/>',
 	wand: '<path d="M4 20 14 10"/><path d="M15 4l1 2.2 2.2 1-2.2 1L15 10.4l-1-2.2-2.2-1 2.2-1zM19 12l.7 1.5 1.5.7-1.5.7-.7 1.5-.7-1.5-1.5-.7 1.5-.7zM7 4l.8 1.7L9.5 6.5 7.8 7.3 7 9 6.2 7.3 4.5 6.5l1.7-.8z"/>',
 	sliders: '<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/>',
 };
@@ -293,6 +295,7 @@ async function render(opts = {}) {
 	// Deep links from findings/quality: #/ledger?system=ttsr (nav clicks clear it).
 	if (id === "ledger") state.ledgerSystem = params.system ? String(params.system) : null;
 	if (id === "impact") state.impactModel = params.model ? String(params.model) : null;
+	if (id === "firstContext") state.firstContextProject = params.project ? String(params.project) : null;
 	const page = PAGES[id] ?? PAGES.overview;
 	const navItem = NAV.find((n) => n.id === id) ?? NAV.find((n) => n.id === "overview");
 	titleNode.textContent = navItem?.label ?? "Session";

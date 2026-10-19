@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   harness_events INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS session_context (
+  session_id TEXT PRIMARY KEY,
+  sections TEXT,
+  tools TEXT,
+  section_chars INTEGER DEFAULT 0,
+  tool_chars INTEGER DEFAULT 0,
+  tool_count INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS prices (
   model TEXT PRIMARY KEY,
   input REAL,

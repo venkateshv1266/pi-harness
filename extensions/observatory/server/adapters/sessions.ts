@@ -57,6 +57,10 @@ export interface SessionScan {
 	turns: number;
 	/** Replayed size of the always-on system prompt (sections + tool declarations). */
 	systemChars: number;
+	/** Session-start char count per system-prompt section. */
+	sections: Record<string, number>;
+	/** Session-start char count per declared tool schema. */
+	tools: Record<string, number>;
 	calls: ModelCallRow[];
 	messages: MessageRow[];
 	events: Array<EventDraft & { fingerprint: string }>;
@@ -97,7 +101,7 @@ function normalizeStem(file: string): string {
 }
 
 export function scanSessionFile(file: string, raw: string): SessionScan {
-	const project = projectOf(file);
+	let project = projectOf(file);
 	let sessionId = normalizeStem(file).split("_").pop() ?? normalizeStem(file);
 	let cwd: string | undefined;
 	let parentSession: string | undefined;
@@ -112,6 +116,10 @@ export function scanSessionFile(file: string, raw: string): SessionScan {
 	// always-on size is a replay: latest value per section, plus declared tools.
 	const sectionsState = new Map<string, string>();
 	const toolsState = new Map<string, number>();
+	// The first system message is the session-start context; later patches only
+	// reflect mid-session context edits, so the snapshot is taken once.
+	let startSections: Record<string, number> | null = null;
+	let startTools: Record<string, number> | null = null;
 
 	const pushEvent = (e: EventDraft & { key: string }) => {
 		const { key, ...draft } = e;
@@ -135,6 +143,7 @@ export function scanSessionFile(file: string, raw: string): SessionScan {
 		if (type === "session") {
 			sessionId = typeof entry.id === "string" ? entry.id : sessionId;
 			cwd = typeof entry.cwd === "string" ? entry.cwd : undefined;
+			project = projectOf(file, cwd);
 			parentSession = typeof entry.parentSession === "string" ? entry.parentSession : undefined;
 			continue;
 		}
@@ -290,6 +299,10 @@ export function scanSessionFile(file: string, raw: string): SessionScan {
 			for (const tool of Array.isArray(msg.toolsRemoved) ? (msg.toolsRemoved as Array<{ name?: string }>) : []) {
 				if (tool?.name) toolsState.delete(tool.name);
 			}
+			if (!startSections) {
+				startSections = Object.fromEntries([...sectionsState].map(([name, text]) => [name, text.length]));
+				startTools = Object.fromEntries(toolsState);
+			}
 			continue;
 		}
 		if (role === "user") {
@@ -360,6 +373,8 @@ export function scanSessionFile(file: string, raw: string): SessionScan {
 		turns: turn,
 		systemChars:
 			[...sectionsState.values()].reduce((total, text) => total + text.length, 0) + [...toolsState.values()].reduce((total, chars) => total + chars, 0),
+		sections: startSections ?? {},
+		tools: startTools ?? {},
 		calls,
 		messages,
 		events,
@@ -370,8 +385,16 @@ function numberOr(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-/** Project label from a session dir name like `--Users-me-code-repo--`. */
-export function projectOf(file: string): string {
+/**
+ * Project label: the cwd's basename, so `pi-harness` and `defi-service` keep their
+ * hyphens. The session dir name encodes the path with `-`, which cannot be split
+ * back apart, so it is only a fallback for logs that lack a cwd.
+ */
+export function projectOf(file: string, cwd?: string): string {
+	if (cwd) {
+		const base = path.basename(cwd.replace(/[\\/]+$/, ""));
+		if (base) return base;
+	}
 	const dir = path.basename(path.dirname(file));
 	const trimmed = dir.replace(/^-+|-+$/g, "");
 	const parts = trimmed.split("-").filter(Boolean);

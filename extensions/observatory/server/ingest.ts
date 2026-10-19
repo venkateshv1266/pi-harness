@@ -218,6 +218,12 @@ function ingestSessionFile(db: Database, file: string): { events: number; calls:
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(msg_id) DO UPDATE SET turn = excluded.turn, chars = excluded.chars, preview = excluded.preview, model = excluded.model`,
 	);
+	const upsertContext = db.prepare(
+		`INSERT INTO session_context (session_id, sections, tools, section_chars, tool_chars, tool_count)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET sections = excluded.sections, tools = excluded.tools,
+		   section_chars = excluded.section_chars, tool_chars = excluded.tool_chars, tool_count = excluded.tool_count`,
+	);
 	const insertEvent = db.prepare(
 		`INSERT INTO events (fingerprint, ts, ts_ms, origin, system, kind, severity, session_id, turn, cost_usd, latency_ms, ref, title, summary, data)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -232,6 +238,11 @@ function ingestSessionFile(db: Database, file: string): { events: number; calls:
 			"INSERT INTO sessions (session_id, project, path, cwd, parent_session, started_ts, system_chars) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET project = excluded.project, path = excluded.path, cwd = excluded.cwd, parent_session = excluded.parent_session, system_chars = excluded.system_chars",
 			...[scan.sessionId, scan.project, scan.path, scan.cwd ?? null, scan.parentSession ?? null, scan.startedTs ?? null, scan.systemChars],
 		);
+		const sectionChars = Object.values(scan.sections).reduce((total, chars) => total + chars, 0);
+		const toolChars = Object.values(scan.tools).reduce((total, chars) => total + chars, 0);
+		if (sectionChars + toolChars > 0) {
+			upsertContext.run(scan.sessionId, JSON.stringify(scan.sections), JSON.stringify(scan.tools), sectionChars, toolChars, Object.keys(scan.tools).length);
+		}
 		for (const call of scan.calls) {
 			upsertCall.run(
 				call.msgId,

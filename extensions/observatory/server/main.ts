@@ -292,6 +292,17 @@ const server = Bun.serve({
 				const result = queries.readHarnessFile(requested);
 				return "error" in result ? json(result, 404) : json(result);
 			}
+			if (p === "/api/first-context") {
+				const range = rangeFrom(url);
+				return json(
+					queries.firstContext(db, {
+						limit: Number(url.searchParams.get("limit")) || 40,
+						project: url.searchParams.get("project"),
+						from: range.from,
+						to: range.to,
+					}),
+				);
+			}
 			if (p === "/api/health") return json(queries.health(db, rangeFrom(url)));
 			if (p === "/api/event") {
 				const id = Number(url.searchParams.get("id"));

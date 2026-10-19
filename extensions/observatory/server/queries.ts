@@ -4128,6 +4128,196 @@ export function tunerOverview(db: Database, range: Range) {
 
 // ------------------------------------------------------------------ file reader
 
+export interface ContextPart {
+	name: string;
+	chars: number;
+	tokens: number;
+	share: number;
+}
+
+interface ContextRow {
+	session_id: string;
+	project: string | null;
+	title: string | null;
+	started_ts: string | null;
+	sections: string | null;
+	tools: string | null;
+	section_chars: number | null;
+	tool_chars: number | null;
+	tool_count: number | null;
+	prompt_tokens: number | null;
+	model: string | null;
+}
+
+export interface FirstContextSession {
+	sessionId: string;
+	project: string | null;
+	title: string | null;
+	startedTs: string | null;
+	model: string | null;
+	promptTokens: number;
+	estimated: boolean;
+	systemTokens: number;
+	toolTokens: number;
+	toolCount: number;
+	sections: ContextPart[];
+	tools: ContextPart[];
+}
+
+/**
+ * The always-on context a session starts with: the system-prompt sections plus
+ * every declared tool schema. The billed first-call prompt is the ground truth;
+ * component tokens follow the char share so the split never invents tokens.
+ */
+export function firstContext(db: Database, opts: { limit?: number; project?: string | null; from?: number; to?: number } = {}) {
+	const limit = Math.min(200, Math.max(1, opts.limit ?? 40));
+	const project = opts.project?.trim() || null;
+	const fromIso = new Date(opts.from ?? 0).toISOString();
+	const toIso = new Date(opts.to ?? Date.now()).toISOString();
+	const rows = db
+		.prepare(
+			`SELECT s.session_id, s.project, s.title, s.started_ts,
+			        c.sections, c.tools, c.section_chars, c.tool_chars, c.tool_count,
+			        (SELECT mc.input + mc.cache_read FROM model_calls mc WHERE mc.session_id = s.session_id ORDER BY mc.ts_ms ASC LIMIT 1) AS prompt_tokens,
+			        (SELECT mc.model FROM model_calls mc WHERE mc.session_id = s.session_id ORDER BY mc.ts_ms ASC LIMIT 1) AS model
+			   FROM sessions s
+			   JOIN session_context c ON c.session_id = s.session_id
+			  WHERE c.section_chars + c.tool_chars > 0
+			    AND s.started_ts >= ? AND s.started_ts <= ?
+			    AND (? IS NULL OR s.project = ?)
+			  ORDER BY s.started_ts DESC
+			  LIMIT ?`,
+		)
+		.all(fromIso, toIso, project, project, limit) as ContextRow[];
+
+	const projectRows = db
+		.prepare(
+			`SELECT s.project AS project, COUNT(*) AS count
+			   FROM sessions s
+			   JOIN session_context c ON c.session_id = s.session_id
+			  WHERE c.section_chars + c.tool_chars > 0
+			    AND s.started_ts >= ? AND s.started_ts <= ?
+			  GROUP BY s.project
+			  ORDER BY count DESC, s.project ASC`,
+		)
+		.all(fromIso, toIso) as Array<{ project: string | null; count: number }>;
+	const projects = projectRows.filter((row): row is { project: string; count: number } => Boolean(row.project));
+
+	// The full range, not the page of rows: the median and the daily trend must
+	// describe every session in the selected window, not just the latest `limit`.
+	const rangeRows = db
+		.prepare(
+			`SELECT s.started_ts,
+			        (SELECT mc.input + mc.cache_read FROM model_calls mc WHERE mc.session_id = s.session_id ORDER BY mc.ts_ms ASC LIMIT 1) AS prompt_tokens,
+			        c.section_chars, c.tool_chars
+			   FROM sessions s
+			   JOIN session_context c ON c.session_id = s.session_id
+			  WHERE c.section_chars + c.tool_chars > 0
+			    AND s.started_ts >= ? AND s.started_ts <= ?
+			    AND (? IS NULL OR s.project = ?)
+			  ORDER BY s.started_ts ASC`,
+		)
+		.all(fromIso, toIso, project, project) as Array<{
+		started_ts: string | null;
+		prompt_tokens: number | null;
+		section_chars: number | null;
+		tool_chars: number | null;
+	}>;
+
+	const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+	const obj = (value: unknown): Record<string, number> => {
+		if (typeof value !== "string") return {};
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			return parsed && typeof parsed === "object" ? (parsed as Record<string, number>) : {};
+		} catch {
+			return {};
+		}
+	};
+
+	const sessions: FirstContextSession[] = rows.map((row) => {
+		const sections = obj(row.sections);
+		const tools = obj(row.tools);
+		const sectionChars = num(row.section_chars);
+		const toolChars = num(row.tool_chars);
+		const totalChars = sectionChars + toolChars;
+		const promptTokens = num(row.prompt_tokens);
+		const ratio = promptTokens > 0 && totalChars > 0 ? totalChars / promptTokens : 3.88;
+		const tokensOf = (chars: number): number => Math.round(chars / ratio);
+		const parts = (entries: Record<string, number>): ContextPart[] =>
+			Object.entries(entries)
+				.map(([name, chars]) => ({ name, chars, tokens: tokensOf(chars), share: totalChars > 0 ? chars / totalChars : 0 }))
+				.sort((a, b) => b.chars - a.chars);
+		return {
+			sessionId: String(row.session_id),
+			project: row.project ? String(row.project) : null,
+			title: row.title ? String(row.title) : null,
+			startedTs: row.started_ts ? String(row.started_ts) : null,
+			model: row.model ? String(row.model) : null,
+			promptTokens,
+			estimated: promptTokens === 0,
+			systemTokens: tokensOf(sectionChars),
+			toolTokens: tokensOf(toolChars),
+			toolCount: num(row.tool_count),
+			sections: parts(sections),
+			tools: parts(tools),
+		};
+	});
+
+	const median = (values: number[]): number => {
+		if (!values.length) return 0;
+		const sorted = [...values].sort((a, b) => a - b);
+		const mid = Math.floor(sorted.length / 2);
+		return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+	};
+	const average = (values: number[]): number => (values.length ? Math.round(values.reduce((total, value) => total + value, 0) / values.length) : 0);
+	const allTokens = rangeRows.map((row) => num(row.prompt_tokens)).filter((value) => value > 0);
+
+	const byDay = new Map<string, Array<{ total: number; system: number; tools: number }>>();
+	for (const row of rangeRows) {
+		if (!row.started_ts) continue;
+		const day = row.started_ts.slice(0, 10);
+		const promptTokens = num(row.prompt_tokens);
+		const sectionChars = num(row.section_chars);
+		const toolChars = num(row.tool_chars);
+		const totalChars = sectionChars + toolChars;
+		const ratio = promptTokens > 0 && totalChars > 0 ? totalChars / promptTokens : 3.88;
+		const bucket = byDay.get(day) ?? [];
+		bucket.push({ total: promptTokens, system: Math.round(sectionChars / ratio), tools: Math.round(toolChars / ratio) });
+		byDay.set(day, bucket);
+	}
+	const daily = [...byDay.entries()].map(([day, bucket]) => ({
+		day,
+		count: bucket.length,
+		total: average(bucket.map((entry) => entry.total)),
+		system: average(bucket.map((entry) => entry.system)),
+		tools: average(bucket.map((entry) => entry.tools)),
+	}));
+
+	const latest = sessions[0] ?? null;
+	const previous = sessions[1] ?? null;
+
+	return {
+		sessions,
+		projects,
+		filter: project,
+		summary: {
+			count: allTokens.length,
+			truncated: allTokens.length > sessions.length,
+			latestTokens: latest?.promptTokens ?? 0,
+			medianTokens: median(allTokens),
+			latestSystemTokens: latest?.systemTokens ?? 0,
+			latestToolTokens: latest?.toolTokens ?? 0,
+			latestToolCount: latest?.toolCount ?? 0,
+			toolShare: latest && latest.promptTokens > 0 ? latest.toolTokens / latest.promptTokens : 0,
+			deltaTokens: latest && previous ? latest.promptTokens - previous.promptTokens : null,
+			biggestSection: latest?.sections[0]?.name ?? null,
+		},
+		trend: [...sessions].reverse().map((s) => ({ ts: s.startedTs, total: s.promptTokens, system: s.systemTokens, tools: s.toolTokens })),
+		daily,
+	};
+}
+
 const READABLE_ROOTS = (): string[] => [rulesDir(), refineDir(), tunerDir(), agentDir()];
 
 /** Read a file for review in the UI, restricted to the harness directories. */

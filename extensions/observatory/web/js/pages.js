@@ -19,6 +19,7 @@ export const state = {
 	sessionSort: "recent",
 	sessionQuery: "",
 	impactModel: null,
+	firstContextProject: null,
 };
 
 const RANGE_LABEL = { "24h": "last 24 hours", "7d": "last 7 days", "30d": "last 30 days", all: "all time" };
@@ -263,6 +264,13 @@ const HELP = {
 		formula: "Cache and call figures are exact per model (each call stores its model). Curator savings are attributed by the model in use at the same session+turn — the note beside the picker reports what share could be attributed.",
 		source: "model_calls.model joined to curator ledger items by session+turn; prices from ~/.pi/agent/models-store.json.",
 		action: "Compare two models over the same range: a model with heavy cache savings is cheaper than its sticker price, and a model with a high error rate is costing you twice. Overhead and the non-model meters intentionally stay global.",
+	},
+	firstContext: {
+		title: "Session-start context",
+		what: "Everything a new session carries before you type anything: the system-prompt sections and every declared tool schema. This is the fixed overhead every turn pays for, cached or not.",
+		formula: "Total is the first model call's input + cache-read tokens (billed ground truth). The split follows each part's character share of the replayed system prompt, so it never invents tokens the provider did not bill.",
+		source: "The first system message in each session JSONL (sections + toolsAdded), joined to that session's first model call.",
+		action: "Tool schemas are usually the bigger half. Trim rarely-used MCP servers (Linear and Redash dominate), retire dead harness tools, and cut skill descriptions — those are resident on every call, not just when used.",
 	},
 };
 
@@ -2229,6 +2237,126 @@ async function healthPage(view, ctx) {
 
 // ------------------------------------------------------------------ tuner
 
+// ------------------------------------------------------------------ first context
+
+async function firstContextPage(view, ctx) {
+	const fetchContext = () => api("/api/first-context", { limit: 60, project: state.firstContextProject, from: state.range });
+	const data = await fetchContext();
+	clear(view);
+	const refresh = async () => render(await fetchContext());
+	const directorySelect = h("select", {
+		class: "select",
+		"aria-label": "Filter by directory",
+		onchange: (event) => {
+			state.firstContextProject = event.target.value || null;
+			const hash = state.firstContextProject ? `#/firstContext?project=${encodeURIComponent(state.firstContextProject)}` : "#/firstContext";
+			history.replaceState(null, "", hash);
+			void refresh();
+		},
+	});
+	const kpis = gridRegion((d) => [
+		kpi({
+			label: "Latest session start",
+			value: fmtCompact(d.summary.latestTokens),
+			sub: d.summary.deltaTokens == null ? "tokens billed on the first call" : `${d.summary.deltaTokens >= 0 ? "+" : ""}${fmtInt(d.summary.deltaTokens)} vs previous`,
+			help: HELP.firstContext,
+		}),
+		kpi({ label: "Median start", value: fmtCompact(d.summary.medianTokens), sub: `across ${fmtInt(d.summary.count)} sessions in range` }),
+		kpi({
+			label: "Tool schemas",
+			value: fmtPct(d.summary.toolShare),
+			sub: `${fmtCompact(d.summary.latestToolTokens)} tokens · ${fmtInt(d.summary.latestToolCount)} tools`,
+			valueClass: d.summary.toolShare >= 0.6 ? "warn" : "",
+		}),
+		kpi({ label: "System prompt", value: fmtCompact(d.summary.latestSystemTokens), sub: `largest: ${d.summary.biggestSection ?? "—"}` }),
+	]);
+	const trend = htmlRegion((d) => {
+		// Beyond the table's row cap the per-session points would only cover part of the
+		// range, so the chart switches to daily averages to span all of it.
+		const useDaily = d.summary.truncated && d.daily.length > 1;
+		const points = useDaily ? d.daily : d.trend;
+		return lineChart({
+			labels: useDaily
+				? points.map((row) => row.day.slice(5))
+				: points.map((row) => (row.ts ? `${row.ts.slice(5, 10)} ${row.ts.slice(11, 16)}` : "—")),
+			series: [
+				{ name: "total", values: points.map((row) => row.total) },
+				{ name: "system prompt", values: points.map((row) => row.system) },
+				{ name: "tool schemas", values: points.map((row) => row.tools) },
+			],
+			height: 200,
+		});
+	});
+	const trendNote = h("div", { class: "small muted", style: { marginBottom: "8px" } }, "");
+	const trendLegend = legend([{ name: "total" }, { name: "system prompt" }, { name: "tool schemas" }]);
+	const list = table({
+		columns: [
+			{ label: "Started", render: (row) => h("span", { class: "mono small" }, fmtDateTime(row.startedTs)) },
+			{ label: "Project", render: (row) => h("span", { class: "rowtitle" }, row.project ?? "—") },
+			{ label: "Total", right: true, render: (row) => fmtInt(row.promptTokens) },
+			{ label: "System", right: true, render: (row) => fmtInt(row.systemTokens) },
+			{ label: "Tools", right: true, render: (row) => fmtInt(row.toolTokens) },
+			{ label: "Tool count", right: true, render: (row) => fmtInt(row.toolCount) },
+			{ label: "Model", render: (row) => modelCell(row.model) },
+		],
+		rows: data.sessions,
+		onRowClick: (row) => openContextDrawer(row),
+		empty: "No sessions in this range",
+	});
+	view.append(
+		kpis.node,
+		card({
+			title: "Session-start context over time",
+			sub: "billed first-call prompt, split by character share",
+			actions: directorySelect,
+			body: h("div", {}, trendNote, trend.node, h("div", { class: "legendrow" }, trendLegend)),
+			help: HELP.firstContext,
+		}),
+		card({ title: "Recent sessions", sub: "click a row for the section and tool breakdown", flush: true, body: list }),
+	);
+	const renderSelect = (d) => {
+		const current = state.firstContextProject ?? "";
+		directorySelect.replaceChildren(
+			h("option", { value: "" }, `All directories (${fmtInt(d.projects.reduce((total, row) => total + row.count, 0))})`),
+			...d.projects.map((row) => h("option", { value: row.project }, `${row.project} (${fmtInt(row.count)})`)),
+		);
+		directorySelect.value = current;
+	};
+	const render = (d) => {
+		renderSelect(d);
+		kpis.render(d);
+		trend.render(d);
+		trendNote.textContent = d.summary.truncated
+			? `daily averages · ${fmtInt(d.summary.count)} sessions over ${fmtInt(d.daily.length)} days`
+			: `per session · ${fmtInt(d.summary.count)} sessions in range`;
+		list.patch(d.sessions);
+		ctx.setStatus(`${fmtInt(d.summary.count)} sessions${state.firstContextProject ? ` in ${state.firstContextProject}` : ""} · latest ${fmtCompact(d.summary.latestTokens)} tokens`);
+	};
+	render(data);
+	ctx.onAutoRefresh(async () => render(await fetchContext()));
+}
+
+function openContextDrawer(row) {
+	openDrawer({
+		title: "Session-start context",
+		sub: `${row.project ?? "—"} · ${fmtInt(row.promptTokens)} tokens${row.estimated ? " (estimated)" : ""}`,
+		body: h(
+			"div",
+			{},
+			kv([
+				["Session", h("span", { class: "mono" }, row.sessionId.slice(0, 12))],
+				["Model", row.model ?? "—"],
+				["System prompt", `${fmtInt(row.systemTokens)} tokens`],
+				["Tool schemas", `${fmtInt(row.toolTokens)} tokens · ${fmtInt(row.toolCount)} tools`],
+			]),
+			h("h4", { style: { marginTop: "16px" } }, "System prompt sections"),
+			bars(row.sections.map((part) => ({ label: part.name, value: part.tokens }))),
+			h("h4", { style: { marginTop: "16px" } }, "Tool schemas"),
+			bars(row.tools.map((part) => ({ label: part.name, value: part.tokens }))),
+		),
+	});
+}
+
 export const PAGES = {
 	overview,
 	impact: impactPage,
@@ -2241,5 +2369,6 @@ export const PAGES = {
 	sessions: sessionsPage,
 	session: sessionPage,
 	extensions: extensionsPage,
+	firstContext: firstContextPage,
 	health: healthPage,
 };
