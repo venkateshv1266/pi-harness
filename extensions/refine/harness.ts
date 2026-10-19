@@ -35,8 +35,6 @@ import {
 } from "../../utils/harness-surface.ts";
 import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
 
-export const MEMORY_DELIMITER = "\n§\n";
-
 export type Proposal = {
 	kind: HarnessKind;
 	name: string;
@@ -471,24 +469,6 @@ export async function migrateLegacyStaging(refineRoot: string): Promise<number> 
 	return moved;
 }
 
-function memoryTargetFile(agentRoot: string, target: string): string {
-	if (target === "user") return join(agentRoot, "jev-memory", "USER.md");
-	if (target === "failure") return join(agentRoot, "jev-memory", "failures.md");
-	return join(agentRoot, "jev-memory", "MEMORY.md");
-}
-
-type MemoryEntry = { target: string; body: string };
-
-function parseMemoryEntry(content: string): MemoryEntry | null {
-	const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(content);
-	if (!match) return null;
-	const target = /^target\s*:\s*(.+)$/m.exec(match[1])?.[1]?.trim().replace(/^["']|["']$/g, "");
-	const body = match[2].trim();
-	return target && body ? { target, body } : null;
-}
-
-const today = (): string => new Date().toISOString().slice(0, 10);
-
 async function readTextOr(path: string): Promise<string> {
 	try {
 		return await readFile(path, "utf8");
@@ -548,17 +528,6 @@ export async function armProposal({ agentRoot, refineRoot, item, timestamp, gate
 		await mkdir(dirname(target), { recursive: true });
 		await writeFile(target, item.content.endsWith("\n") ? item.content : `${item.content}\n`, "utf8");
 		armed.push({ target });
-	} else if (item.kind === "memory") {
-		const entry = parseMemoryEntry(item.files["entry.md"] ?? "");
-		if (!entry) return { ok: false, reason: "memory bundle has no parsable entry.md" };
-		const target = memoryTargetFile(agentRoot, entry.target);
-		const existing = await readTextOr(target);
-		if (existing.includes(entry.body)) return { ok: false, reason: "entry already present in memory" };
-		const backup = await backupFile(refineRoot, backupDir, target);
-		const line = `${entry.body} <!-- created=${today()}, last=${today()} -->`;
-		const next = existing.trim() ? `${existing.replace(/\s+$/, "")}${MEMORY_DELIMITER}${line}\n` : `${line}\n`;
-		await atomicWrite(target, next);
-		armed.push({ target, backup });
 	} else if (item.kind === "context") {
 		const docTarget = join(agentRoot, "contexts", `${item.name}.md`);
 		const entryTarget = join(agentRoot, "contexts", "entries", `${item.name}.yaml`);
@@ -692,10 +661,6 @@ export async function describeArm(agentRoot: string, item: StagedItem): Promise<
 				? `pair rule ${pairing.pairing.name} → ${join(agentRoot, "rules", `${pairing.pairing.name}.md`)}`
 				: `pair context ${pairing.pairing.name} → ${join(agentRoot, "contexts", `${pairing.pairing.name}.md`)} + entries/`,
 		];
-	}
-	if (item.kind === "memory") {
-		const entry = parseMemoryEntry(item.files["entry.md"] ?? "");
-		return entry ? [`append to ${memoryTargetFile(agentRoot, entry.target)}`, `target: ${entry.target}`] : ["unparsable entry.md"];
 	}
 	if (item.kind === "context") return [`write ${join(agentRoot, "contexts", `${item.name}.md`)}`, `write ${join(agentRoot, "contexts", "entries", `${item.name}.yaml`)}`];
 	return item.kind === "skill" ? [`write ${join(agentRoot, "skills", item.name, "SKILL.md")}`] : [`write ${join(agentRoot, item.kind === "rule" ? "rules" : `${item.kind}s`, `${item.name}.md`)}`];

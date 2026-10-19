@@ -49,7 +49,7 @@ const HELP = {
 	},
 	staged: {
 		title: "Staged now",
-		what: "Every proposal waiting for review, across all kinds: rules, notes, memory entries, context entries, subagents, skills, settings patches and new extensions. The auto loop writes them here; /refine applies manual proposals directly.",
+		what: "Every proposal waiting for review, across all kinds: rules, notes, context entries, subagents, skills, settings patches and new extensions. The auto loop writes them here; /refine applies manual proposals directly.",
 		formula: "Read from staging/<kind>/<name>/manifest.json. Sorted by risk: false-positive/gate-fail first, then near-miss, then unmeasured, then ready. Kind chips filter without changing the sort.",
 		source: "~/.pi/agent/jev-decisions/refine/staging/.",
 		action: "View opens the primary file, Meta the manifest (Jev parts, probe details, arm targets). Arm with /refine-review; nothing is live until then.",
@@ -501,7 +501,7 @@ export async function improvementsPage(view, ctx) {
 		const intro = h(
 			"div",
 			{ class: "small muted", style: { padding: "0 0 8px", lineHeight: "1.5" } },
-			"Inert proposals from the auto loop — rules, notes, memory/context entries, subagents, skills, settings patches and new extensions. Rules/contexts are probe-measured; extensions need compile + fake-pi + safety. Nothing is live until you arm it in /refine-review.",
+			"Inert proposals from the auto loop — rules, notes, context entries, subagents, skills, settings patches and new extensions. Rules/contexts are probe-measured; extensions need compile + fake-pi + safety. Nothing is live until you arm it in /refine-review.",
 		);
 		const chips = h("div", { class: "chiprow" });
 		chips.append(chip("All", rows.length, { active: kindFilter === "all", onClick: () => { kindFilter = "all"; renderAll(d); } }));

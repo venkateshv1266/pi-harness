@@ -40,15 +40,6 @@ test("note bundle requires non-empty content", () => {
 	assert.equal(empty.ok, false);
 });
 
-test("memory bundle requires a supported target and stays compact", () => {
-	const entry = "---\ntarget: memory\ncategory: insight\n---\nThe repo uses pnpm workspaces.\n";
-	assert.equal(validateBundle("memory", "uses-pnpm", { "entry.md": entry }).ok, true);
-	const badTarget = validateBundle("memory", "uses-pnpm", { "entry.md": "---\ntarget: global\n---\nx\n" });
-	assert.equal(badTarget.ok, false);
-	const big = validateBundle("memory", "big", { "entry.md": `---\ntarget: memory\n---\n${"x".repeat(1300)}\n` });
-	assert.equal(big.ok, false);
-});
-
 test("context bundle pairs a doc with a registry fragment", () => {
 	const files = {
 		"grafana-runbook.md": "# Runbook\n\nQuery Loki first.\n",
@@ -189,6 +180,7 @@ test("harnessDigest is stable, path-sorted and excludes disabled files", () => {
 test("kind specs agree on proposable kinds and floors", () => {
 	assert.equal(KIND_SPECS.rule.autoProposable, true);
 	assert.equal(KIND_SPECS.extension.autoProposable, true);
+	assert.equal("memory" in KIND_SPECS, false);
 	for (const spec of Object.values(KIND_SPECS)) {
 		for (const part of spec.parts) {
 			if (part === "novelty") continue;

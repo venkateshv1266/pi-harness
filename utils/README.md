@@ -66,8 +66,8 @@ parallel `mapPool`, and typed answer accessors. Auth resolves `JEV_API_KEY` →
 ## harness-surface.ts
 
 The editable harness surface as data: one `KIND_SPECS` registry for every kind of
-edit refine can propose (`rule`, `note`, `memory`, `context`, `agent`, `skill`,
-`settings`, plus the wave-2 `extension` slot), each with a static bundle
+edit refine can propose (`rule`, `note`, `context`, `agent`, `skill`, `settings`,
+plus the wave-2 `extension` slot), each with a static bundle
 validator, per-kind Jev floors, and its conventional primary file. Also exports
 `validateBundle` / `primaryContent`, order-independent `bundleHash` (dedupe),
 `contentHash` (legacy), the staging layout helpers, the allowlisted-primitive

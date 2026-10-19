@@ -4006,7 +4006,7 @@ export function refineOverview(db: Database, range: Range) {
 			recordedPath: recorded,
 			evidence: typeof data.evidence === "string" ? data.evidence.slice(0, 260) : null,
 			source: typeof data.source === "string" ? data.source : null,
-			live: data.rolledBack === true ? false : (kind === "memory" || kind === "settings" ? resolved != null : (liveByKind[kind]?.has(name) ?? resolved != null)),
+			live: data.rolledBack === true ? false : (kind === "settings" ? resolved != null : (liveByKind[kind]?.has(name) ?? resolved != null)),
 			rolledBack: data.rolledBack === true,
 			digest: typeof data.digest === "string" ? data.digest : null,
 			armedCount: Array.isArray(data.armed) ? data.armed.length : 0,

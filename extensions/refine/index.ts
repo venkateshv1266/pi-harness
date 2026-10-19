@@ -134,7 +134,6 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"Kinds (pick the smallest one that carries the edit):",
 		'- "rule": a stream-triggered TTSR rule (format below). ONLY when the anti-pattern has a precise trigger signature in agent output AND it recurred 2+ times. Prefer astCondition over text regex; intent-level behavior belongs in a note.',
 		'- "note": passive markdown record for observations with no stream-matchable signature.',
-		'- "memory": one durable compact entry (<=1200 chars) with frontmatter target: memory|user|failure and category. Use for verified workspace facts, not task facts.',
 		'- "context": a doc plus a registry fragment entry.yaml (id, file, tier, triggers) that makes it fire when relevant.',
 		'- "agent": a subagent definition with frontmatter name/description/tools/model/thinking. Use when delegation divides labor cleanly.',
 		'- "skill": a SKILL.md with frontmatter name/description and structured procedure steps. Use for a repeatable multi-step workflow.',
@@ -142,10 +141,10 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		'- "extension": a NEW pi extension bundle that gives agents a better tool. Requires "index.ts" (default-exported factory), "README.md", and a pairing trigger — either "pairing.md" (a TTSR rule that fires when the tool is relevant) or "pairing.md" + "pairing.yaml" (a context doc + registry fragment). Also requires "expectation": "tool:<name>" or "command:<name>" — the observable call that proves adoption. Never edit an existing extension; propose a note instead. The bundle is gated on compile + fake-pi smoke + safety scan before arming.',
 		"",
 		'"name" is a kebab-case slug. "title" is one-line. "evidence" MUST quote the exact trajectory line(s) plus one sentence on why it will recur.',
-		'"files" maps a RELATIVE path to full file content. rule/note/agent: one "<name>.md". memory: "entry.md". context: "<name>.md" + "entry.yaml". skill: "SKILL.md". settings: "patch.json". extension: "index.ts" + "README.md" + "pairing.md" (+ "pairing.yaml" for a context pairing).',
+		'"files" maps a RELATIVE path to full file content. rule/note/agent: one "<name>.md". context: "<name>.md" + "entry.yaml". skill: "SKILL.md". settings: "patch.json". extension: "index.ts" + "README.md" + "pairing.md" (+ "pairing.yaml" for a context pairing).',
 		"",
 		"Respond with ONLY a JSON object, no markdown fences, in this exact shape:",
-		'{"proposals": [{"kind": "rule|note|memory|context|agent|skill|settings|extension", "name": "...", "title": "...", "dimension": "inv|dom", "evidence": "...", "files": {"...": "..."}, "expectation": "tool:<name> (extension only)"}]}',
+		'{"proposals": [{"kind": "rule|note|context|agent|skill|settings|extension", "name": "...", "title": "...", "dimension": "inv|dom", "evidence": "...", "files": {"...": "..."}, "expectation": "tool:<name> (extension only)"}]}',
 		"",
 		"Rule file format:",
 		RULE_FORMAT,
@@ -754,7 +753,6 @@ const buildJevState = (proposals: Proposal[], trajectory: string, bodies: Covera
 const KIND_QUESTION: Record<HarnessKind, string> = {
 	rule: "Given the proposed rule's condition/astCondition and the assistant output visible in `trajectory`, is the trigger precise enough to fire on genuine future instances of the anti-pattern while rarely firing on unrelated output?",
 	note: "",
-	memory: "Would this compact entry change future behavior, while staying a durable fact rather than this task's specifics?",
 	context: "Is the registry fragment's trigger precise enough that the doc is read when it is relevant, and rarely otherwise?",
 	agent: "Does this subagent definition have a distinct role, a clear scope, and a tool allowlist narrow enough to be safe?",
 	skill: "Is this a repeatable multi-step workflow whose steps are concrete enough to follow without re-deriving them?",
@@ -1266,10 +1264,10 @@ export default function (pi: ExtensionAPI) {
 		name: "refine_propose",
 		label: "Refine Propose",
 		description:
-			"Queue a harness improvement draft (TTSR rule, note, memory entry, context entry, subagent, skill, settings patch, or new pi extension) when you notice a recurring failure or a user correction. The user reviews and approves it via an overlay before anything is written.",
+			"Queue a harness improvement draft (TTSR rule, note, context entry, subagent, skill, settings patch, or new pi extension) when you notice a recurring failure or a user correction. The user reviews and approves it via an overlay before anything is written.",
 		promptSnippet: "Queue a multi-kind harness edit from an observed recurring failure or correction; user approves via overlay",
 		promptGuidelines: [
-			"Use refine_propose when the same failure occurs 2+ times in this session or the user corrects an anti-pattern likely to recur. Pick the smallest kind that carries the edit: rule (stream trigger + recurrence), note (no matchable signature), memory (durable workspace fact, <=1200 chars), context (doc + registry fragment that fires when relevant), agent (delegation divides labor), skill (repeatable multi-step workflow), settings (narrow patch for modelRouter/courseCheck/decisionTuner/refine), extension (new tool plus the trigger that makes agents use it). Supply files as a relative path -> full content map; rule/note/agent use <name>.md, memory uses entry.md (frontmatter target: memory|user|failure, category), context uses <name>.md + entry.yaml, skill uses SKILL.md, settings uses patch.json, extension uses index.ts + README.md + pairing.md (+ pairing.yaml for a context pairing) and requires expectation: tool:<name> or command:<name>.",
+			"Use refine_propose when the same failure occurs 2+ times in this session or the user corrects an anti-pattern likely to recur. Pick the smallest kind that carries the edit: rule (stream trigger + recurrence), note (no matchable signature), context (doc + registry fragment that fires when relevant), agent (delegation divides labor), skill (repeatable multi-step workflow), settings (narrow patch for modelRouter/courseCheck/decisionTuner/refine), extension (new tool plus the trigger that makes agents use it). Supply files as a relative path -> full content map; rule/note/agent use <name>.md, context uses <name>.md + entry.yaml, skill uses SKILL.md, settings uses patch.json, extension uses index.ts + README.md + pairing.md (+ pairing.yaml for a context pairing) and requires expectation: tool:<name> or command:<name>.",
 		],
 		parameters: Type.Object({
 			kind: StringEnum(PROPOSABLE_KINDS),

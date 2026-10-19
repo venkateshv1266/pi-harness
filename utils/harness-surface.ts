@@ -21,7 +21,7 @@ import { join, posix } from "node:path";
 
 import { instrumentSuppressionError } from "./anti-cheat.ts";
 
-export const HARNESS_KINDS = ["rule", "note", "memory", "context", "agent", "skill", "settings", "extension"] as const;
+export const HARNESS_KINDS = ["rule", "note", "context", "agent", "skill", "settings", "extension"] as const;
 
 export type HarnessKind = (typeof HARNESS_KINDS)[number];
 
@@ -85,25 +85,6 @@ function validateNote(name: string, files: ProposalFiles): string | null {
 	const content = files[`${name}.md`];
 	if (typeof content !== "string") return `note bundle must contain ${name}.md`;
 	if (!content.trim()) return `${name}.md is empty`;
-	return null;
-}
-
-const MEMORY_TARGETS = new Set(["memory", "user", "failure"]);
-const MEMORY_CATEGORIES = new Set(["failure", "correction", "insight", "preference", "convention", "tool-quirk"]);
-
-function validateMemory(_name: string, files: ProposalFiles): string | null {
-	if (Object.keys(files).length !== 1) return "a memory bundle is exactly one file";
-	const content = files["entry.md"];
-	if (typeof content !== "string") return "memory bundle must contain entry.md";
-	const fm = frontmatter(content);
-	if (!fm) return "entry.md is missing YAML frontmatter";
-	const target = keyValue(fm.head, "target");
-	if (!target || !MEMORY_TARGETS.has(target)) return "entry.md frontmatter needs target: memory | user | failure";
-	const category = keyValue(fm.head, "category");
-	if (category && !MEMORY_CATEGORIES.has(category)) return `entry.md category must be one of ${[...MEMORY_CATEGORIES].join(", ")}`;
-	const body = fm.body.trim();
-	if (!body) return "entry.md has no body";
-	if (body.length > 1200) return "entry.md body exceeds 1200 characters — memory entries stay compact";
 	return null;
 }
 
@@ -262,16 +243,6 @@ export const KIND_SPECS: Record<HarnessKind, KindSpec> = {
 		floors: { evidence: 0.6, novelty: 0.6 },
 		primaryFile: (name) => `${name}.md`,
 		validate: validateNote,
-	},
-	memory: {
-		kind: "memory",
-		label: "memory entry",
-		autoProposable: true,
-		behavioral: true,
-		parts: ["evidence", "trigger", "novelty"],
-		floors: { evidence: 0.6, trigger: 0.55, novelty: 0.6 },
-		primaryFile: () => "entry.md",
-		validate: validateMemory,
 	},
 	context: {
 		kind: "context",

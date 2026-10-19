@@ -189,5 +189,4 @@ test("kind-to-domain mapping covers every proposable class", () => {
 	assert.equal(domainForKind("extension"), "extension-adoption");
 	assert.equal(domainForKind("settings"), "settings-tiers");
 	assert.equal(domainForKind("note"), "general");
-	assert.equal(domainForKind("memory"), "general");
 });

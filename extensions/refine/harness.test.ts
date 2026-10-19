@@ -180,36 +180,6 @@ test("stage -> list -> arm -> rollback for a rule", async () => {
 	}
 });
 
-test("memory arm appends a delimited entry with metadata and dedupes", async () => {
-	const { agentRoot, refineRoot, cleanup } = roots();
-	try {
-		const p = toProposal({
-			kind: "memory",
-			name: "uses-pnpm",
-			title: "pnpm",
-			evidence: "npm failed twice",
-			files: { "entry.md": "---\ntarget: memory\ncategory: insight\n---\nUse pnpm workspaces in this repo.\n" },
-		})!;
-		const manifest = { ...meta, kind: "memory" as const, name: p.name, title: p.title, evidence: p.evidence, files: p.files };
-		await stageProposal(refineRoot, p, manifest);
-		const item = (await listStaged(refineRoot))[0];
-		const first = await armProposal({ agentRoot, refineRoot, item, timestamp: "t1" });
-		assert.equal(first.ok, true);
-		const memory = readFileSync(join(agentRoot, "jev-memory", "MEMORY.md"), "utf8");
-		assert.match(memory, /Use pnpm workspaces/);
-		assert.match(memory, /<!-- created=\d{4}-\d{2}-\d{2}, last=\d{4}-\d{2}-\d{2} -->/);
-
-		const second = await armProposal({ agentRoot, refineRoot, item, timestamp: "t2" });
-		assert.equal(second.ok, false);
-
-		const rollback = await rollbackArm({ kind: "memory", name: "uses-pnpm", armed: first.ok ? first.armed : [] });
-		assert.equal(rollback.ok, true);
-		assert.equal(existsSync(join(agentRoot, "jev-memory", "MEMORY.md")), false);
-	} finally {
-		cleanup();
-	}
-});
-
 test("context arm writes the doc and registry fragment", async () => {
 	const { agentRoot, refineRoot, cleanup } = roots();
 	try {

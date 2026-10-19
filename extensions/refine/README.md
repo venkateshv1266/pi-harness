@@ -3,7 +3,7 @@
 > Self-improvement loop for the harness itself: analyze a session trajectory, propose the
 > smallest harness edit that would measurably improve future sessions, score it with Jev, and
 > stage it for one-glance human approval. Since wave 1 the proposal vocabulary is the harness
-> surface, not just TTSR rules: **rule, note, memory, context, agent, skill, settings**; wave 2
+> surface, not just TTSR rules: **rule, note, context, agent, skill, settings**; wave 2
 > adds **extension** — a new pi tool bundle that must pass a compile + fake-pi smoke + safety
 > gate and arm atomically with the trigger that makes agents use it.
 
@@ -23,7 +23,6 @@
 |---|---|---|---|
 | `rule` | `<name>.md` with TTSR frontmatter (`condition` or `astCondition`) | `~/.pi/agent/rules/` | evidence / trigger / novelty floors |
 | `note` | `<name>.md` | `refine/notes/` (passive record) | evidence / novelty; weakest-link ≥ threshold |
-| `memory` | `entry.md` (`target: memory\|user\|failure`, optional `category`, ≤1200 chars) | appended to `~/.pi/agent/jev-memory/{MEMORY,USER,failures}.md` | evidence / durability / novelty |
 | `context` | `<name>.md` + `entry.yaml` (registry fragment) | `~/.pi/agent/contexts/<name>.md` + `contexts/entries/<name>.yaml` | evidence / trigger precision / novelty |
 | `agent` | `<name>.md` with `name`, `description`, optional `tools`/`model`/`thinking` | `~/.pi/agent/agents/` | evidence / role fit / novelty |
 | `skill` | `SKILL.md` with `name`, `description` | `~/.pi/agent/skills/<name>/SKILL.md` | evidence / reusability / novelty |
@@ -134,7 +133,7 @@ overlay shows each check and its result; a failed gate cannot be armed.
 | `REFINE_AUTO_RULE_EVIDENCE_FLOOR` | `0.6` | Minimum Jev evidence part to stage a rule as ready. |
 | `REFINE_AUTO_RULE_NOVELTY_FLOOR` | `0.6` | Minimum Jev novelty part to stage a rule as ready. |
 | `REFINE_AUTO_RULE_TRIGGER_FLOOR` | `0.5` | Minimum Jev trigger part to stage a rule as ready. |
-| `REFINE_AUTO_<KIND>_<PART>_FLOOR` | kind defaults | Per-kind floor override, e.g. `REFINE_AUTO_MEMORY_TRIGGER_FLOOR=0.6` (parts: `EVIDENCE`, `TRIGGER`, `NOVELTY`). |
+| `REFINE_AUTO_<KIND>_<PART>_FLOOR` | kind defaults | Per-kind floor override, e.g. `REFINE_AUTO_CONTEXT_TRIGGER_FLOOR=0.6` (parts: `EVIDENCE`, `TRIGGER`, `NOVELTY`). |
 | `REFINE_AUTO_NEAR_MISS_FLOOR` | `0.4` | Minimum of (evidence, novelty) to stage a floor-failing item as near-miss instead of suppressing. |
 | `REFINE_AUTO_NOTE_THRESHOLD` | `0.6` | Minimum weakest-link Jev score to auto-apply a note (notes are passive; behavioural kinds always stage). |
 | `JEV_BASE_URL` | OpenRouter API base | Jev endpoint base (see `../jev-memory/README.md`). |
@@ -174,7 +173,7 @@ overlay shows each check and its result; a failed gate cannot be armed.
   probe, sweep or `/refine-probe` run) with per-rule verdicts; the Improvements snapshot aggregates
   its rule hit rate.
 - Live homes: `rules/` (ttsr), `agents/`, `skills/`, `contexts/` (+ `contexts/entries/*.yaml`
-  fragments), `jev-memory/`, and `settings.json`. Refine only writes there after human arming
+  fragments), and `settings.json`. Refine only writes there after human arming
   or an explicit `/refine`/`refine_propose` approval.
 
 ## How it works
@@ -207,21 +206,20 @@ bundle, and `rejected.jsonl`. Survivors are sent to Jev in one batched call — 
 12,000-character trajectory tail, and existing bodies — after scrubbing secrets (private-key
 blocks, `sk-` tokens, GitHub/AWS tokens, JWTs). Every proposal gets the same two questions
 (`evidence`, `redundant`) plus one kind-specific question carried in the `trigger` part:
-stream-trigger precision for rules, durability for memory, retrieval-trigger precision for
+stream-trigger precision for rules, retrieval-trigger precision for
 context, role/tool fit for agents, reusability for skills, and narrowness/reversibility for
 settings. `min(evidence, trigger, 1 − redundant)` is recorded as the weakest-link score;
 missing or malformed answers suppress the proposal rather than pass it.
 
 **Apply.** Notes scoring ≥ `REFINE_AUTO_NOTE_THRESHOLD` are written directly (passive markdown
-with no stream effect). Every behavioural kind (`rule`, `memory`, `context`, `agent`, `skill`,
+with no stream effect). Every behavioural kind (`rule`, `context`, `agent`, `skill`,
 `settings`) is **staged, never auto-armed**, in one of two tiers: `ready` when its parts clear
 the per-part floors, or `near-miss` when it fails a floor but `min(evidence, novelty) ≥
 REFINE_AUTO_NEAR_MISS_FLOOR`. Below both bands it is suppressed. `/refine-review` arms a
 staged bundle through the kind's arm action, writing a pre-arm backup first; the history entry
 records every target so `/refine-history` can restore them.
 
-**Arm actions.** Rules copy to `rules/` (then `/ttsr-reload`). Memory entries append a
-`§`-delimited line with `created`/`last` metadata to the target memory file. Context entries
+**Arm actions.** Rules copy to `rules/` (then `/ttsr-reload`). Context entries
 write the doc plus a registry fragment that ttsr loads from `contexts/entries/` and turns into
 a synthesized rule. Agents copy to `agents/`; skills copy to `skills/<name>/SKILL.md`.
 Settings patches merge into `settings.json` after the allowlisted-primitive validation, with a
@@ -237,8 +235,8 @@ backup; they apply from the next session.
   session with a one-time warning.
 - **Behavioural edits are never auto-armed.** They sit in `staging/` until `/refine-review`
   arms them; rules and contexts additionally need `/ttsr-reload` to take effect.
-- **Nothing overwrites.** Arming skips when any target file already exists; memory entries are
-  deduped by body text; settings patches that change nothing are refused.
+- **Nothing overwrites.** Arming skips when any target file already exists; settings patches
+  that change nothing are refused.
 - **The instruments are out of bounds.** Every bundle passes `utils/anti-cheat.ts` before staging:
   instructions or code that remove, redirect, overwrite, suppress or fabricate `jev-decisions/`
   records, observatory adapters, or the outcomes loggers are rejected (extensions keep the
