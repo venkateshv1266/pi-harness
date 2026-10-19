@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
 	armProposal,
+	aggregateProposals,
 	dedupeProposals,
 	describeArm,
 	listCoverage,
@@ -122,6 +123,33 @@ test("dedupeProposals removes coverage collisions across kinds and staging", () 
 		toProposal({ kind: "note", name: "i", title: "t", evidence: "e", content: "x" })!,
 	];
 	assert.deepEqual(dedupeProposals(proposals, coverage).map((p) => p.name), ["i"]);
+});
+
+test("aggregateProposals interleaves INV and DOM under the cap", () => {
+	const coverage = { rules: [], notes: [], contexts: [], agents: [], skills: [], extensions: [], staged: [] };
+	const note = (name: string, title: string, dimension: "inv" | "dom"): Proposal => toProposal({ kind: "note", name, title, evidence: "e", content: "x", dimension })!;
+	const proposals = [note("inv-1", "First invariant", "inv"), note("inv-2", "Second invariant", "inv"), note("inv-3", "Third invariant", "inv"), note("dom-1", "One domain fact", "dom")];
+	assert.deepEqual(aggregateProposals(proposals, coverage, 3).map((p) => p.name), ["inv-1", "dom-1", "inv-2"]);
+});
+
+test("aggregateProposals preserves order and the cap for a single dimension", () => {
+	const coverage = { rules: [], notes: [], contexts: [], agents: [], skills: [], extensions: [], staged: [] };
+	const proposals = ["a", "b", "c", "d"].map((name) => toProposal({ kind: "note", name, title: name, evidence: "e", content: "x", dimension: "inv" })!);
+	assert.deepEqual(aggregateProposals(proposals, coverage, 3).map((p) => p.name), ["a", "b", "c"]);
+});
+
+test("aggregateProposals drops the same guidance proposed under another kind", () => {
+	const coverage = { rules: [], notes: [], contexts: [], agents: [], skills: [], extensions: [], staged: [] };
+	const rule: Proposal = { ...ruleProposal("keep-parser"), title: "Reuse the existing parser", dimension: "inv" };
+	const note = toProposal({ kind: "note", name: "keep-parser-note", title: "reuse the EXISTING parser!", evidence: "e", content: "x", dimension: "dom" })!;
+	assert.deepEqual(aggregateProposals([rule, note], coverage, 3).map((p) => p.name), ["keep-parser"]);
+});
+
+test("toProposal parses dimension aliases and ignores junk", () => {
+	const base = { kind: "note", name: "n", title: "t", evidence: "e", content: "x" };
+	assert.equal(toProposal({ ...base, dimension: "INV" })?.dimension, "inv");
+	assert.equal(toProposal({ ...base, dimension: "domain" })?.dimension, "dom");
+	assert.equal(toProposal({ ...base, dimension: "other" })?.dimension, undefined);
 });
 
 test("stage -> list -> arm -> rollback for a rule", async () => {

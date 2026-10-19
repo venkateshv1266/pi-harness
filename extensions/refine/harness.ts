@@ -45,6 +45,8 @@ export type Proposal = {
 	files: ProposalFiles;
 	/** Extension-only usage signal: `tool:<name>` or `command:<name>`. */
 	expectation?: string;
+	/** Planner axis: INV (how the agent works) vs DOM (what a practitioner knows). */
+	dimension?: "inv" | "dom";
 };
 
 export type Coverage = {
@@ -110,6 +112,9 @@ export function toProposal(input: unknown): Proposal | null {
 	const expectation = typeof raw.expectation === "string" ? raw.expectation.trim() : undefined;
 	if (kind === "extension" && validateExpectation(expectation)) return null;
 
+	const rawDimension = typeof raw.dimension === "string" ? raw.dimension.trim().toLowerCase() : "";
+	const dimension = rawDimension === "inv" || rawDimension === "invariant" ? "inv" : rawDimension === "dom" || rawDimension === "domain" ? "dom" : undefined;
+
 	return {
 		kind,
 		name,
@@ -117,6 +122,7 @@ export function toProposal(input: unknown): Proposal | null {
 		evidence: typeof raw.evidence === "string" && raw.evidence.trim() ? raw.evidence.trim() : "(no evidence provided)",
 		files,
 		expectation,
+		dimension,
 	};
 }
 
@@ -158,6 +164,39 @@ export function dedupeProposals(proposals: Proposal[], coverage: Coverage): Prop
 		const set = known[p.kind];
 		return !set || !set.has(p.name);
 	});
+}
+
+const normalizedTitle = (title: string): string => title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * Cross-kind dedupe, then interleave INV / DOM / unclassified so one dimension
+ * cannot crowd the other out of the cap. Order within a dimension is preserved;
+ * the cap defaults to the auto loop's 3 proposals per scan.
+ */
+export function aggregateProposals(proposals: Proposal[], coverage: Coverage, cap = 3): Proposal[] {
+	const buckets: Record<"inv" | "dom" | "none", Proposal[]> = { inv: [], dom: [], none: [] };
+	const titles = new Set<string>();
+	for (const proposal of dedupeProposals(proposals, coverage)) {
+		const title = normalizedTitle(proposal.title);
+		if (title && titles.has(title)) continue;
+		if (title) titles.add(title);
+		buckets[proposal.dimension ?? "none"].push(proposal);
+	}
+
+	const out: Proposal[] = [];
+	const order: ("inv" | "dom" | "none")[] = ["inv", "dom", "none"];
+	while (out.length < cap) {
+		let progressed = false;
+		for (const dimension of order) {
+			const next = buckets[dimension].shift();
+			if (!next) continue;
+			out.push(next);
+			progressed = true;
+			if (out.length >= cap) break;
+		}
+		if (!progressed) break;
+	}
+	return out;
 }
 
 async function mdNames(dir: string, suffix = ""): Promise<string[]> {

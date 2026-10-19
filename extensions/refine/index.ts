@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { KIND_SPECS, PROPOSABLE_KINDS, harnessDigest, type HarnessKind, type StagedManifest } from "../../utils/harness-surface.ts";
 import {
 	armProposal,
+	aggregateProposals,
 	contentHash,
 	dedupeProposals,
 	describeArm,
@@ -123,9 +124,9 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"3. A non-obvious workaround or environment quirk the agent discovered by trial and error.",
 		"4. A multi-step workflow that clearly succeeded and is likely to recur verbatim.",
 		"",
-		"Propose AT MOST 2 edits. Prefer 0 or 1. Return {\"proposals\": []} if nothing clears this bar — single one-off events do NOT qualify.",
+		"Propose AT MOST 3 edits and label each with \"dimension\": \"inv\" or \"dom\". The loop keeps at most 3 and interleaves the two dimensions, so do not spend every slot on one: one INV + one DOM beats three of either. Prefer fewer when the evidence is thin; return {\"proposals\": []} if nothing clears this bar — single one-off events do NOT qualify.",
 		"",
-		"Two dimensions, kept separate so proposals do not overlap:",
+		"Two dimensions, kept separate so proposals do not overlap — label every proposal with one:",
 		"- INV (how the agent works): procedure, tool use, sequencing, completion discipline.",
 		"- DOM (what a practitioner knows): verified workspace facts, project conventions, infrastructure quirks. Prefer a named component (context entry, skill, agent) over prose.",
 		"",
@@ -143,7 +144,7 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		'"files" maps a RELATIVE path to full file content. rule/note/agent: one "<name>.md". memory: "entry.md". context: "<name>.md" + "entry.yaml". skill: "SKILL.md". settings: "patch.json". extension: "index.ts" + "README.md" + "pairing.md" (+ "pairing.yaml" for a context pairing).',
 		"",
 		"Respond with ONLY a JSON object, no markdown fences, in this exact shape:",
-		'{"proposals": [{"kind": "rule|note|memory|context|agent|skill|settings|extension", "name": "...", "title": "...", "evidence": "...", "files": {"...": "..."}, "expectation": "tool:<name> (extension only)"}]}',
+		'{"proposals": [{"kind": "rule|note|memory|context|agent|skill|settings|extension", "name": "...", "title": "...", "dimension": "inv|dom", "evidence": "...", "files": {"...": "..."}, "expectation": "tool:<name> (extension only)"}]}',
 		"",
 		"Rule file format:",
 		RULE_FORMAT,
@@ -896,7 +897,7 @@ export default function (pi: ExtensionAPI) {
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
 			.join("\n");
-		const proposals = dedupeProposals(parseProposals(raw), coverage).slice(0, 3);
+		const proposals = aggregateProposals(parseProposals(raw), coverage, 3);
 		const hashes = await collectHashes();
 		const fresh = proposals.filter((p) => !hashes.has(proposalHash(p)));
 		if (fresh.length === 0) {
@@ -1261,6 +1262,7 @@ export default function (pi: ExtensionAPI) {
 			evidence: Type.String({ description: "quoted trajectory line(s) justifying this edit plus why it will recur" }),
 			files: Type.Record(Type.String(), Type.String()),
 			expectation: Type.Optional(Type.String({ description: "extension only: machine-checkable usage signal, tool:<name> or command:<name>" })),
+			dimension: Type.Optional(StringEnum(["inv", "dom"])),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const proposal = toProposal(params);

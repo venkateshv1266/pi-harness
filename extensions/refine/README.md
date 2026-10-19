@@ -177,14 +177,14 @@ overlay shows each check and its result; a failed gate cannot be armed.
 branch — user and assistant text plus assistant tool calls — capped at the last 60,000
 characters (the auto loop further trims to its window's last 30,000). The planner looks only
 for four signals: an explicit user correction, the same failure occurring 2+ times, a
-non-obvious workaround, and a recurring multi-step workflow. It is told to propose at most 2
-edits and to return an empty list otherwise, and to choose the smallest kind that carries the
-edit. Two dimensions are kept separate by construction — **INV** (how the agent works:
-procedure, tool use, sequencing) and **DOM** (what a practitioner knows: verified workspace
-facts, conventions, infrastructure quirks) — so proposals do not overlap. Memory lessons are
-read from `~/.pi/agent/pi-hermes-memory/failures.md` so the planner can promote recurring
-lessons into rules instead of re-proposing them. Existing rule/note/context/agent/skill names
-and 300-character body previews are passed as coverage.
+non-obvious workaround, and a recurring multi-step workflow. It is told to propose at most 3
+edits (the loop's cap) and to return an empty list otherwise, and to choose the smallest kind
+that carries the edit. Every proposal carries a `dimension` — **INV** (how the agent works:
+procedure, tool use, sequencing) or **DOM** (what a practitioner knows: verified workspace
+facts, conventions, infrastructure quirks) — so the two axes stay separate instead of
+overlapping. Memory lessons are read from `~/.pi/agent/pi-hermes-memory/failures.md` so the
+planner can promote recurring lessons into rules instead of re-proposing them. Existing
+rule/note/context/agent/skill names and 300-character body previews are passed as coverage.
 
 **Auto-refine triggers.** On every turn end the loop counts user messages matching a
 correction regex ("don't", "stop doing", "not what I asked", "revert", "redo", …) and records
@@ -194,7 +194,9 @@ signature was seen twice, it runs a scan over the entries since the last scan. O
 at a time.
 
 **Jev adjudication.** Parsed proposals are deduped by (kind, name) against armed coverage and
-staging, capped at 3, then bundle-hash deduped against every armed rule/note, every staged
+staging and by normalized title across kinds, then aggregated by dimension — INV, DOM, then
+unclassified, round-robin — so one axis cannot crowd the other out of the 3-proposal cap.
+Survivors are bundle-hash deduped against every armed rule/note, every staged
 bundle, and `rejected.jsonl`. Survivors are sent to Jev in one batched call — proposals, a
 12,000-character trajectory tail, and existing bodies — after scrubbing secrets (private-key
 blocks, `sk-` tokens, GitHub/AWS tokens, JWTs). Every proposal gets the same two questions
