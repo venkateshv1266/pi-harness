@@ -1,11 +1,11 @@
 import { StringEnum, uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, matchesKey, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -306,9 +306,9 @@ const readHistory = async (): Promise<HistoryEntry[]> => {
 	}
 };
 
-type ProposalOutcome = "apply" | "skip" | "reject";
+type ProposalOutcome = "apply" | "skip";
 
-const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext, rejectable = false): Promise<ProposalOutcome> => {
+const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext): Promise<ProposalOutcome> => {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(`Refine: proposal "${proposal.name}" requires interactive TUI review — skipped`, "warning");
 		return "skip";
@@ -323,7 +323,7 @@ const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext, rejecta
 		container.addChild(new Text(theme.fg("accent", theme.bold(`Refine proposal [${proposal.kind}]: ${proposal.title}`)), 1, 0));
 		container.addChild(new Text(theme.fg("dim", `evidence: ${proposal.evidence}`), 1, 1));
 		container.addChild(new Markdown(proposal.content, 1, 1, mdTheme));
-		container.addChild(new Text(theme.fg("dim", rejectable ? "Enter = apply, Esc = keep staged, d = reject" : "Enter = apply, Esc = skip"), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "Enter = apply, Esc = skip"), 1, 0));
 		container.addChild(border);
 
 		return {
@@ -332,15 +332,232 @@ const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext, rejecta
 			handleInput: (data: string) => {
 				if (matchesKey(data, "enter")) done("apply");
 				if (matchesKey(data, "escape")) done("skip");
-				if (rejectable && matchesKey(data, "d")) done("reject");
 			},
 		};
 	});
 };
 
-const appendHistory = async (entry: HistoryEntry): Promise<void> => {
-	await mkdir(REFINE_DIR, { recursive: true });
-	await appendFile(HISTORY_FILE, `${JSON.stringify(entry)}\n`, "utf8");
+const fmtPart = (n: unknown): string => (typeof n === "number" ? n.toFixed(2) : "—");
+
+type ReviewItem = { name: string; title: string; evidence: string; content: string; meta: StagedMeta | null };
+
+const buildReviewDoc = (item: ReviewItem): string => {
+	const backtickRuns = item.content.match(/`+/g) ?? [];
+	const fence = "`".repeat(Math.max(3, ...backtickRuns.map((r) => r.length + 1)));
+	const evidence = item.evidence
+		.split("\n")
+		.map((line) => `> ${line}`)
+		.join("\n");
+	const metaLines: string[] = [];
+	if (item.meta && typeof item.meta.score === "number" && item.meta.parts) {
+		metaLines.push(
+			`score ${item.meta.score.toFixed(2)} · evidence ${fmtPart(item.meta.parts.evidence)} · novelty ${fmtPart(item.meta.parts.novelty)} · trigger ${fmtPart(item.meta.parts.trigger)}`,
+		);
+		metaLines.push(`tier ${item.meta.tier ?? "—"} · loop trigger ${item.meta.trigger} · staged ${item.meta.stagedAt}`);
+	}
+	return [`## ${item.title}`, "", evidence, "", ...metaLines, "", `${fence}md`, item.content, fence].join("\n");
+};
+
+// Persistent two-panel review session: a capped list panel on top, the selected
+// rule's evidence, gate scores and verbatim content in the large panel below.
+// One overlay lives for the whole session — ↑/↓ re-render in place instead of
+// closing and reopening (which flickered) — and arm/reject run synchronously
+// through the handler-provided actions before the list is updated.
+const showReviewSession = (
+	items: ReviewItem[],
+	ctx: ExtensionContext,
+	actions: { arm: (item: ReviewItem) => boolean; reject: (item: ReviewItem) => boolean },
+): Promise<{ keptStaged: { name: string; meta: StagedMeta | null }[] }> => {
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify(`Refine: ${items.length} staged auto-refine rule(s) need interactive TUI review — skipped`, "warning");
+		return Promise.resolve({ keptStaged: [] });
+	}
+
+	return ctx.ui.custom(
+		(tui, theme, _kb, done) => {
+			const list = items.slice();
+			let sel = 0;
+			let listStart = 0;
+			let listCap = 1;
+			let contentMd = new Markdown(buildReviewDoc(list[0]), 1, 1, getMarkdownTheme());
+			let contentTop = 0;
+			let contentTotal = 0;
+			let contentPage = 1;
+			let pendingReject = false;
+			const viewed = new Map<string, StagedMeta | null>();
+			viewed.set(list[0].name, list[0].meta);
+
+			const horizontalChrome = 4;
+
+			const dim = (s: string) => theme.fg("dim", s);
+			const accent = (s: string) => theme.fg("accent", s);
+			const visibleLength = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+			// Rendered markdown can emit lines wider than the viewport (unbreakable
+			// tokens), which would push the right border out of alignment.
+			const clip = (s: string, max: number): string => {
+				if (visibleLength(s) <= max) return s;
+				let out = "";
+				let vis = 0;
+				let i = 0;
+				while (i < s.length && vis < max) {
+					const escape = /^\x1b\[[0-9;]*m/.exec(s.slice(i));
+					if (escape) {
+						out += escape[0];
+						i += escape[0].length;
+						continue;
+					}
+					out += s[i];
+					vis++;
+					i++;
+				}
+				return s.includes("\x1b") ? `${out}\x1b[0m` : out;
+			};
+
+			const close = () => {
+				const keptStaged: { name: string; meta: StagedMeta | null }[] = [];
+				for (const [name, meta] of viewed) {
+					if (list.some((item) => item.name === name)) keptStaged.push({ name, meta });
+				}
+				done({ keptStaged });
+			};
+			const scroll = (delta: number) => {
+				contentTop = Math.max(0, Math.min(contentTop + delta, Math.max(0, contentTotal - contentPage)));
+			};
+			const showItem = (index: number) => {
+				sel = index;
+				viewed.set(list[sel].name, list[sel].meta);
+				contentMd = new Markdown(buildReviewDoc(list[sel]), 1, 1, getMarkdownTheme());
+				contentTop = 0;
+			};
+			const decide = (applied: boolean) => {
+				if (!applied) return;
+				list.splice(sel, 1);
+				if (list.length === 0) {
+					close();
+					return;
+				}
+				showItem(Math.min(sel, list.length - 1));
+			};
+			const arm = () => decide(actions.arm(list[sel]));
+			const reject = () => decide(actions.reject(list[sel]));
+
+			const gutterBar = (row: number, viewport: number, total: number, offset: number): string => {
+				if (total <= viewport) return " ";
+				const thumbSize = Math.max(1, Math.round((viewport / total) * viewport));
+				const thumbStart = Math.round((offset / (total - viewport)) * (viewport - thumbSize));
+				return row >= thumbStart && row < thumbStart + thumbSize ? accent("█") : dim("│");
+			};
+
+			return {
+				render(width: number): string[] {
+					const rows = tui.terminal.rows;
+					listCap = Math.max(1, Math.min(8, Math.floor((rows - 6) / 3), list.length));
+					if (sel < listStart) listStart = sel;
+					if (sel >= listStart + listCap) listStart = sel - listCap + 1;
+					listStart = Math.max(0, Math.min(listStart, Math.max(0, list.length - listCap)));
+
+					const innerWidth = Math.max(1, width - horizontalChrome - 2);
+					contentPage = Math.max(1, rows - listCap - 4);
+
+					const lines = contentMd.render(innerWidth);
+					contentTotal = lines.length;
+					contentTop = Math.max(0, Math.min(contentTop, Math.max(0, contentTotal - contentPage)));
+					const body = lines.slice(contentTop, contentTop + contentPage);
+
+					const hint = pendingReject
+						? " d again to reject this rule · any other key cancels "
+						: " PgUp/PgDn scroll · ↑/↓ select · Enter arm · d reject · Esc close ";
+					const scrollLabel = dim(contentTotal > contentPage ? ` ${contentTop + 1}-${Math.min(contentTop + body.length, contentTotal)}/${contentTotal} ` : " ");
+					const hintText = (pendingReject ? accent : dim)(hint.slice(0, Math.max(0, width - 4 - visibleLength(scrollLabel))));
+
+					const selected = list[sel];
+					const title = accent(theme.bold(` Refine review: ${selected ? selected.name : "—"} `.slice(0, Math.max(0, width - 4))));
+					const listHeader = dim(` Staged rules (${list.length}) `);
+					const listPosition = dim(` ${sel + 1}/${list.length} `);
+
+					const out: string[] = [];
+					out.push(accent("╭─") + title + accent("─".repeat(Math.max(0, width - 4 - visibleLength(title)))) + accent("╮"));
+					const headerText = listHeader + " ".repeat(Math.max(0, innerWidth - visibleLength(listHeader) - visibleLength(listPosition))) + listPosition;
+					out.push(accent("│") + " " + headerText + " ".repeat(Math.max(0, innerWidth - visibleLength(headerText))) + "  " + accent("│"));
+					for (let r = 0; r < listCap; r++) {
+						const idx = listStart + r;
+						if (idx >= list.length) {
+							out.push(accent("│") + " ".repeat(innerWidth + 3) + accent("│"));
+							continue;
+						}
+						const item = list[idx];
+						const isSelected = idx === sel;
+						const avail = Math.max(0, innerWidth - 3);
+						const nameText = item.name.slice(0, avail);
+						const tagText = `${item.meta?.tier ? ` · ${item.meta.tier}` : ""}${typeof item.meta?.score === "number" ? ` ${item.meta.score.toFixed(2)}` : ""}`.slice(0, Math.max(0, avail - nameText.length));
+						const marker = isSelected ? accent("▸") : " ";
+						const namePart = isSelected ? theme.bold(nameText) : nameText;
+						const row = `${marker} ${namePart}${dim(tagText)}`;
+						out.push(accent("│") + " " + row + " ".repeat(Math.max(0, innerWidth - visibleLength(row))) + " " + gutterBar(r, listCap, list.length, listStart) + accent("│"));
+					}
+					out.push(accent("├─") + accent("─".repeat(Math.max(0, width - 4))) + accent("┤"));
+					for (let i = 0; i < contentPage; i++) {
+						const line = clip(body[i] ?? "", innerWidth);
+						out.push(accent("│") + " " + line + " ".repeat(Math.max(0, innerWidth - visibleLength(line))) + " " + gutterBar(i, contentPage, contentTotal, contentTop) + accent("│"));
+					}
+					out.push(
+						accent("╰─") +
+							scrollLabel +
+							accent("─".repeat(Math.max(0, width - 4 - visibleLength(scrollLabel) - visibleLength(hintText)))) +
+							hintText +
+							accent("╯"),
+					);
+					return out;
+				},
+				invalidate() {
+					contentMd.invalidate();
+				},
+				handleInput(data: string) {
+					if (pendingReject) {
+						pendingReject = false;
+						if (matchesKey(data, "d")) reject();
+						return;
+					}
+					if (matchesKey(data, "escape")) {
+						close();
+					} else if (matchesKey(data, "enter")) {
+						arm();
+					} else if (matchesKey(data, "d")) {
+						pendingReject = true;
+					} else if (matchesKey(data, "down")) {
+						if (sel < list.length - 1) showItem(sel + 1);
+					} else if (matchesKey(data, "up")) {
+						if (sel > 0) showItem(sel - 1);
+					} else if (matchesKey(data, "pageUp")) {
+						scroll(-contentPage);
+					} else if (matchesKey(data, "pageDown") || data === " ") {
+						scroll(contentPage);
+					} else if (matchesKey(data, "home") || data === "g") {
+						contentTop = 0;
+					} else if (matchesKey(data, "end") || data === "G") {
+						contentTop = Number.MAX_SAFE_INTEGER;
+					} else if (data === "j") {
+						scroll(1);
+					} else if (data === "k") {
+						scroll(-1);
+					}
+				},
+				handleMouse(event: TuiMouseEvent) {
+					if (event.type === "wheel" && event.wheelDelta) {
+						scroll(event.wheelDelta);
+						return { handled: true };
+					}
+					return undefined;
+				},
+			};
+		},
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 } },
+	);
+};
+
+const appendHistory = (entry: HistoryEntry): void => {
+	mkdirSync(REFINE_DIR, { recursive: true });
+	appendFileSync(HISTORY_FILE, `${JSON.stringify(entry)}\n`, "utf8");
 };
 
 const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx: ExtensionContext, source: "auto" | "manual" = "manual"): Promise<void> => {
@@ -368,7 +585,7 @@ const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx:
 		evidence: proposal.evidence,
 		source,
 	};
-	await appendHistory(entry);
+	appendHistory(entry);
 
 	ctx.ui.notify(
 		proposal.kind === "rule" ? `Applied rule → ${targetPath} (verify with /ttsr)` : `Applied note → ${targetPath}`,
@@ -489,9 +706,9 @@ const collectHashes = async (): Promise<Set<string>> => {
 };
 
 // A rejected draft is remembered by content hash so the auto loop cannot re-stage it.
-const recordRejected = async (name: string, content: string): Promise<void> => {
-	await mkdir(REFINE_DIR, { recursive: true });
-	await appendFile(REJECTED_FILE, `${JSON.stringify({ name, hash: hashContent(content), rejectedAt: new Date().toISOString() })}\n`, "utf8");
+const recordRejected = (name: string, content: string): void => {
+	mkdirSync(REFINE_DIR, { recursive: true });
+	appendFileSync(REJECTED_FILE, `${JSON.stringify({ name, hash: hashContent(content), rejectedAt: new Date().toISOString() })}\n`, "utf8");
 };
 
 const buildJevState = (proposals: Proposal[], trajectory: string, bodies: { rules: CoverageBody[]; notes: CoverageBody[] }): Record<string, unknown> => ({
@@ -784,7 +1001,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("refine-review", {
-		description: "Review staged auto-refine rules — arm (promote to live TTSR rules), keep staged, or reject each; 'discard' arg rejects directly",
+		description: "Review staged auto-refine rules in a two-panel reader — select with ↑/↓, arm, reject, or close; 'discard' arg rejects directly",
 		handler: async (args, ctx) => {
 			const discard = args?.trim().toLowerCase() === "discard";
 			const staged = (await readdir(STAGING_DIR).catch(() => [] as string[])).filter((f) => f.endsWith(".md")).sort();
@@ -801,7 +1018,7 @@ export default function (pi: ExtensionAPI) {
 				if (!confirmed) return;
 				const name = selected.replace(/\.md$/, "");
 				const content = await readFile(join(STAGING_DIR, selected), "utf8").catch(() => "");
-				if (content) await recordRejected(name, content);
+				if (content) recordRejected(name, content);
 				await unlink(join(STAGING_DIR, selected)).catch(() => {});
 				await unlink(join(STAGING_DIR, `${name}.meta.json`)).catch(() => {});
 				auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "discarded" });
@@ -809,58 +1026,63 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const items: ReviewItem[] = [];
 			for (const file of staged) {
 				const name = file.replace(/\.md$/, "");
-				const stagedPath = join(STAGING_DIR, file);
 				let meta: StagedMeta | null = null;
 				try {
 					meta = JSON.parse(await readFile(join(STAGING_DIR, `${name}.meta.json`), "utf8")) as StagedMeta;
 				} catch {
 					meta = null;
 				}
-				const proposal: Proposal = {
-					kind: "rule",
+				items.push({
 					name,
 					title: `${meta?.tier === "near-miss" ? "[near-miss] " : ""}${meta?.title ?? name}`,
 					evidence: meta?.evidence ?? "(staged by background auto-refine)",
-					content: (await readFile(stagedPath, "utf8")).trim(),
-				};
-				const outcome = await showProposalUi(proposal, ctx, true);
-				if (outcome === "reject") {
-					const confirmed = await ctx.ui.confirm("Reject staged rule?", `"${name}" will be deleted without arming.`);
-					if (confirmed) {
-						await recordRejected(name, proposal.content);
-						await unlink(stagedPath).catch(() => {});
-						await unlink(join(STAGING_DIR, `${name}.meta.json`)).catch(() => {});
-						auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "discarded", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
-						ctx.ui.notify(`Rejected "${name}"`, "info");
-						continue;
-					}
-				}
-				if (outcome !== "apply") {
-					auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "kept-staged", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
-					continue;
-				}
-				const target = join(RULES_DIR, `${name}.md`);
-				if (existsSync(target)) {
-					ctx.ui.notify(`Skipped "${name}" — ${target} already exists`, "warning");
-					auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "duplicate" });
-					continue;
-				}
-				mkdirSync(RULES_DIR, { recursive: true });
-				await rename(stagedPath, target);
-				await unlink(join(STAGING_DIR, `${name}.meta.json`)).catch(() => {});
-				await appendHistory({
-					id: uuidv7(),
-					timestamp: new Date().toISOString(),
-					kind: "rule",
-					name,
-					path: target,
-					evidence: proposal.evidence,
-					source: "auto",
+					content: (await readFile(join(STAGING_DIR, file), "utf8")).trim(),
+					meta,
 				});
-				auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "armed", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
-				ctx.ui.notify(`Armed "${name}" → ${target} — run /ttsr-reload to activate`, "info");
+			}
+
+			const outcome = await showReviewSession(items, ctx, {
+				arm: (item) => {
+					const target = join(RULES_DIR, `${item.name}.md`);
+					if (existsSync(target)) {
+						ctx.ui.notify(`Skipped "${item.name}" — ${target} already exists`, "warning");
+						auditAuto({ session: sessionId, stage: "review", kind: "rule", name: item.name, decision: "duplicate" });
+						return false;
+					}
+					mkdirSync(RULES_DIR, { recursive: true });
+					renameSync(join(STAGING_DIR, `${item.name}.md`), target);
+					const metaPath = join(STAGING_DIR, `${item.name}.meta.json`);
+					if (existsSync(metaPath)) unlinkSync(metaPath);
+					appendHistory({
+						id: uuidv7(),
+						timestamp: new Date().toISOString(),
+						kind: "rule",
+						name: item.name,
+						path: target,
+						evidence: item.evidence,
+						source: "auto",
+					});
+					auditAuto({ session: sessionId, stage: "review", kind: "rule", name: item.name, decision: "armed", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
+					ctx.ui.notify(`Armed "${item.name}" → ${target} — run /ttsr-reload to activate`, "info");
+					return true;
+				},
+				reject: (item) => {
+					recordRejected(item.name, item.content);
+					const stagedPath = join(STAGING_DIR, `${item.name}.md`);
+					if (existsSync(stagedPath)) unlinkSync(stagedPath);
+					const metaPath = join(STAGING_DIR, `${item.name}.meta.json`);
+					if (existsSync(metaPath)) unlinkSync(metaPath);
+					auditAuto({ session: sessionId, stage: "review", kind: "rule", name: item.name, decision: "discarded", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
+					ctx.ui.notify(`Rejected "${item.name}"`, "info");
+					return true;
+				},
+			});
+			// Rules viewed but left undecided stay staged; audit each once.
+			for (const kept of outcome.keptStaged) {
+				auditAuto({ session: sessionId, stage: "review", kind: "rule", name: kept.name, decision: "kept-staged", score: kept.meta?.score ?? null, parts: kept.meta?.parts ?? null, tier: kept.meta?.tier ?? null });
 			}
 		},
 	});
