@@ -300,6 +300,25 @@ fs.mkdirSync(underPi, { recursive: true });
 const under = buildContextRules(underPi, true);
 check(under.entries.every((e) => e.origin === "user"), "user registry is not double-loaded as project");
 
+// ─── Refine-armed context fragments ─────────────────────────────────────
+// A fragment is one bare entry file under contexts/entries/, authored by
+// refine's context arm action. It loads after the main registry and never
+// shadows an existing id.
+const fragHome = path.join(root, "frag-home");
+const fragUser = path.join(fragHome, ".pi", "contexts");
+fs.mkdirSync(path.join(fragUser, "entries"), { recursive: true });
+fs.writeFileSync(path.join(fragUser, "existing.md"), "# existing\n");
+fs.writeFileSync(path.join(fragUser, "frag.md"), "# frag\n");
+fs.writeFileSync(path.join(fragUser, "registry.yaml"), "version: 1\ncontexts:\n  - id: existing\n    file: existing.md\n");
+fs.writeFileSync(path.join(fragUser, "entries", "frag.yaml"), "id: frag\nfile: frag.md\nwhen: \"fragment entry\"\ntriggers:\n  - tool: '^frag$'\n");
+fs.writeFileSync(path.join(fragUser, "entries", "dup.yaml"), "id: existing\nfile: frag.md\nwhen: \"duplicate\"\n");
+process.env.HOME = fragHome;
+const frag = buildContextRules(fakeCwd, false);
+check(frag.entries.some((e) => e.id === "frag" && e.origin === "user"), "context fragment loads as a user entry");
+check(frag.rules.some((r) => r.name === "ctx-frag"), "context fragment synthesizes a rule");
+check(frag.warnings.some((w) => w.includes('duplicate context id "existing"')), "duplicate fragment id is warned and ignored");
+check(frag.entries.filter((e) => e.id === "existing").length === 1, "fragment never shadows a registry id");
+
 fs.rmSync(root, { recursive: true, force: true });
 say(fail === 0 ? `REGISTRY TESTS OK (${rules.length} rules, ${entries.length} entries)` : `${fail} failures`);
 process.exit(fail === 0 ? 0 : 1);

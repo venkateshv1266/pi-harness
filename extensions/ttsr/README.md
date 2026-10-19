@@ -76,6 +76,10 @@ Context docs registered in a registry become TTSR rules automatically — no
 hand-written rule file per doc. Two registries merge (project wins by id):
 
 - `~/.pi/contexts/registry.yaml` — user contexts
+- `~/.pi/contexts/entries/*.yaml` — one-entry fragment files (refine arms context
+  proposals here; a fragment may be a bare `id:` entry instead of a `contexts:`
+  list, and is loaded after the main registry so it never shadows a
+  hand-written id)
 - `<dir>/contexts/registry.yaml` — project contexts, trusted sessions only; the
   nearest ancestor of cwd (up to `$HOME`) carrying one is used, so a workspace
   root registry also applies inside its sub-repos.

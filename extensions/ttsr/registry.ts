@@ -131,7 +131,11 @@ interface RegistryDoc {
 function readRegistryDoc(file: string, warnings: string[]): RegistryDoc | null {
 	if (!fs.existsSync(file)) return null;
 	try {
-		return (parseYaml(fs.readFileSync(file, "utf8")) ?? {}) as RegistryDoc;
+		const parsed = (parseYaml(fs.readFileSync(file, "utf8")) ?? {}) as RegistryDoc & { id?: string };
+		// A fragment file may hold one bare entry (`id:` at top level) instead of a
+		// `contexts:` list; refine writes that shape so each edit owns one file.
+		if (!parsed.contexts && typeof parsed.id === "string") return { contexts: [parsed as unknown as RegistryEntry] };
+		return parsed;
 	} catch (e) {
 		warnings.push(`${file}: ${(e as Error).message}`);
 		return null;
@@ -197,6 +201,27 @@ export function loadContextRegistry(cwd: string, trusted: boolean): { entries: L
 	const userDoc = readRegistryDoc(userFile, warnings);
 	let digest = mergeDigest(DEFAULT_DIGEST, userDoc?.digest);
 	for (const e of loadOne(userDoc, userFile, "user", path.join(home, ".pi", "contexts"), home, warnings)) byId.set(e.id, e);
+	// Refine arms context proposals as one fragment file per entry; load those
+	// after the main registry so a fragment never silently shadows a hand-written id.
+	const fragmentsDir = path.join(home, ".pi", "contexts", "entries");
+	let fragments: string[] = [];
+	try {
+		fragments = fs.readdirSync(fragmentsDir).filter((f) => f.endsWith(".yaml") || f.endsWith(".yml")).sort();
+	} catch (e) {
+		// expected: no refine-armed fragments yet
+		if ((e as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`${fragmentsDir}: ${(e as Error).message}`);
+	}
+	for (const fragment of fragments) {
+		const abs = path.join(fragmentsDir, fragment);
+		const doc = readRegistryDoc(abs, warnings);
+		for (const e of loadOne(doc, abs, "user", path.join(home, ".pi", "contexts"), home, warnings)) {
+			if (byId.has(e.id)) {
+				warnings.push(`${abs}: duplicate context id "${e.id}" ignored (already registered by ${byId.get(e.id)?.registryFile ?? "another file"})`);
+				continue;
+			}
+			byId.set(e.id, e);
+		}
+	}
 	if (trusted) {
 		const projFile = findProjectRegistry(cwd);
 		if (projFile) {
