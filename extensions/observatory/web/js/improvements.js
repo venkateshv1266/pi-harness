@@ -10,7 +10,7 @@
 // so the default view is a morning glance, not a log viewer.
 import { api, clear, fmtInt, h, openDrawer, timeAgo } from "./util.js";
 import { spark } from "./charts.js";
-import { bars, banner, card, chip, emptyState, helpButton, kpi, pill, table } from "./ui.js";
+import { bars, banner, card, chip, emptyState, kpi, pill, table } from "./ui.js";
 import { state } from "./pages.js";
 
 const HELP = {
@@ -99,16 +99,16 @@ const HELP = {
 	tuning: {
 		title: "Tuning proposals",
 		what: "The decision-tuner's weekly pass: rules to prune, triggers to reword, and config knobs to review, each with the evidence behind it. Prunes are applyable; the rest are advisory.",
-		formula: "Runs, proposals and statuses come from the tuner's audit and proposal logs, filtered to the selected window. Open prunes are also surfaced in the attention row.",
+		formula: "Proposals and statuses come from the tuner's proposal log, filtered to the selected window and by the status filter. Open prunes are also surfaced in the attention row.",
 		source: "~/.pi/agent/jev-decisions/decision-tuner/{proposals,tuner}.jsonl.",
 		action: "Apply a prune (renames to .disabled; rename back to re-enable) or dismiss it for a 30-day cooldown. Advisory proposals explain why nothing is applied automatically.",
 	},
 	diagnostics: {
-		title: "Loop diagnostics",
-		what: "The refinement loop's own behaviour in the selected window: what it concluded each run, where it spent effort, how close rule proposals came to the Jev floors, and the recent audit trail.",
-		formula: "Counts come from refine/auto-refine.jsonl; gate calibration re-derives bands from the logged part scores and the current floors.",
+		title: "Loop decisions",
+		what: "The refinement loop's own behaviour in the selected window: what it concluded each run, and which gate band each rule proposal landed in.",
+		formula: "Decisions count refine/auto-refine.jsonl records by decision; gate bands re-derive ready / near-miss / below from the logged part scores and the current floors.",
 		source: "~/.pi/agent/jev-decisions/refine/auto-refine.jsonl.",
-		action: "A part whose max never reaches its floor means the floor is unreachable; near-miss filling while ready stays empty means the trigger requirement is the binding constraint.",
+		action: "Near-miss filling while ready stays empty means the trigger requirement is the binding constraint; a growing below band means proposals are not clearing the evidence floor.",
 	},
 };
 
@@ -252,14 +252,15 @@ async function openDay(date) {
 	}
 }
 
-const region = (build) => {
-	const node = h("div");
+const region = (build, className = null) => {
+	const node = h("div", className ? { class: className } : {});
 	return { node, render: (data) => node.replaceChildren(...build(data)) };
 };
 
 let compareTo = null;
 let compareFrom = null;
 let kindFilter = "all";
+let tunerFilter = "all";
 
 const probeTone = (row) => {
 	if (row.gateOk === false || row.probe?.verdict === "false-positive") return "error";
@@ -347,12 +348,12 @@ export async function improvementsPage(view, ctx) {
 			h(
 				"div",
 				{ class: "attn-hint small muted" },
-				h("span", { class: "mono" }, "/refine-review"),
-				"arm or reject staged edits · ",
-				h("span", { class: "mono" }, "/refine-probe"),
-				"measure now · ",
-				h("span", { class: "mono" }, "/decision-tuner list"),
-				"apply or dismiss prunes",
+				h("span", { class: "attn-title" }, "Next actions"),
+				h("span", { class: "attn-action" }, h("span", { class: "mono" }, "/refine-review"), h("span", { class: "attn-label" }, "arm or reject staged edits")),
+				h("span", { class: "attn-sep" }, "·"),
+				h("span", { class: "attn-action" }, h("span", { class: "mono" }, "/refine-probe"), h("span", { class: "attn-label" }, "measure now")),
+				h("span", { class: "attn-sep" }, "·"),
+				h("span", { class: "attn-action" }, h("span", { class: "mono" }, "/decision-tuner list"), h("span", { class: "attn-label" }, "apply or dismiss prunes")),
 			),
 		];
 	});
@@ -596,79 +597,42 @@ export async function improvementsPage(view, ctx) {
 		];
 	});
 
-	// ── 7. Diagnostics: depth without noise ──────────────────────────────
+	// ── 7. Loop decisions: how the loop concluded each run ───────────────
 	const diagnostics = region((d) => {
 		const refine = d.refine;
 		const gate = refine.gate;
-		const parts = Object.entries(gate?.parts ?? {}).map(([part, stats]) => ({ key: part, part, ...stats }));
-		const proposals = (refine.proposals ?? []).slice(0, 12).map((row) => ({ ...row, key: `${row.ts}-${row.kind}-${row.name}` }));
 		return [
-			h(
-				"details",
-			{ class: "details" },
-			h("summary", {}, `Loop diagnostics — ${fmtInt(refine.runs ?? 0)} run(s) in ${rangeLabel()}, gate calibration, recent decisions`, helpButton(HELP.diagnostics)),
-			h(
-				"div",
-				{ class: "grid cols-2" },
-				card({ title: "Loop decisions", sub: "what the auto loop concluded each run", body: bars(Object.entries(refine.byDecision ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }) }),
-				card({ title: "Stages", sub: "where runs spent their effort", body: bars(Object.entries(refine.byStage ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }) }),
-			),
 			card({
-				title: "Gate calibration",
-				sub: "rule proposals: how close each part came to its floor, and which band it landed in",
-				body: gate
-					? h(
-							"div",
-							{ class: "grid cols-2" },
-							table({
-								columns: [
-									{ label: "Part", render: (row) => h("span", { class: "mono" }, row.part) },
-									{ label: "Avg", right: true, render: (row) => (row.avg === null || row.avg === undefined ? "—" : row.avg.toFixed(2)) },
-									{ label: "Max", right: true, render: (row) => (row.max === null || row.max === undefined ? "—" : row.max.toFixed(2)) },
-									{ label: "Floor", right: true, render: (row) => (row.floor === null || row.floor === undefined ? "—" : row.floor.toFixed(2)) },
-									{ label: "Headroom", right: true, render: (row) => (row.max === null || row.max === undefined || row.floor === null || row.floor === undefined ? "—" : h("span", { style: { color: row.max - row.floor >= 0 ? "var(--ok)" : "var(--err)" } }, (row.max - row.floor).toFixed(2))) },
-								],
-								rows: parts,
-							}),
-							bars(Object.entries(gate.bands ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }),
-						)
-					: emptyState(`No gate data in the ${rangeLabel()} window.`),
+				title: "Loop decisions",
+				sub: `what the auto loop concluded each run in ${rangeLabel()}`,
+				help: HELP.diagnostics,
+				body: h(
+					"div",
+					{ class: "grid" },
+					bars(Object.entries(refine.byDecision ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }),
+					gate
+						? h(
+								"div",
+								{},
+								h("div", { class: "small muted", style: { marginBottom: "7px" } }, "Rule gate bands"),
+								bars(Object.entries(gate.bands ?? {}).map(([label, value]) => ({ label, value })), { valueFmt: fmtInt }),
+							)
+						: emptyState(`No gate data in the ${rangeLabel()} window.`),
+				),
 			}),
-			card({
-				title: "Recent loop decisions",
-				sub: "the audit trail behind the numbers — staged, armed, suppressed, rejected",
-				flush: true,
-				body: proposals.length
-					? table({
-							columns: [
-								{ label: "When", render: (row) => h("span", { class: "small muted" }, timeAgo(row.ts)) },
-								{ label: "Decision", render: (row) => pill(row.decision ?? "?", row.decision === "armed" || row.decision === "applied" ? "ok" : row.decision === "staged" ? "accent" : row.decision === "suppressed" ? "neutral" : row.decision === "gate-blocked" ? "error" : "warn") },
-								{ label: "Item", render: (row) => h("span", { class: "mono", style: { fontSize: "11.5px" } }, `${row.kind ?? "rule"} · ${row.name ?? "—"}`) },
-								{ label: "Tier", render: (row) => (row.tier ? pill(row.tier, row.tier === "ready" ? "ok" : "warn") : "—") },
-								{ label: "Score", right: true, render: (row) => (typeof row.score === "number" ? row.score.toFixed(2) : "—") },
-							],
-							rows: proposals,
-							maxHeight: "320px",
-						})
-					: emptyState(`No loop decisions in the ${rangeLabel()} window.`),
-			}),
-		),
-	];
-	});
+		];
+	}, "grid-cell");
 
-	// ── 8. Tuning: the old Tuner page, folded in and collapsed ───────────
+	// ── 8. Tuning proposals: open, applied and dismissed in one list ─────
 	const tuning = region((d) => {
 		const proposals = (d.tuner.proposals ?? []).filter((proposal) => inWindow(proposal.createdAt ?? proposal.ts));
+		const statusOf = (proposal) => proposal.status ?? "open";
 		const counts = proposals.reduce((acc, proposal) => {
-			const status = proposal.status ?? "open";
+			const status = statusOf(proposal);
 			acc[status] = (acc[status] ?? 0) + 1;
 			return acc;
 		}, {});
-		const runs = Array.isArray(d.tuner.runs) ? d.tuner.runs.length : 0;
-		const lastRun = d.tuner.state?.lastRun;
-		const open = counts.open ?? 0;
-		const applied = counts.applied ?? 0;
-		const dismissed = counts.dismissed ?? 0;
+		const filtered = tunerFilter === "all" ? proposals : proposals.filter((proposal) => statusOf(proposal) === tunerFilter);
 		const fileButton = (row) => {
 			if (!row.file || row.fileExists === false) {
 				return h("span", { class: "small faint nowrap", "data-tip": row.file ? `recorded at ${row.file} — not on disk` : "no file recorded for this proposal" }, "no file");
@@ -680,37 +644,53 @@ export async function improvementsPage(view, ctx) {
 				label,
 			);
 		};
+		const chips = h("div", { class: "chiprow" });
+		for (const status of ["all", "open", "applied", "dismissed"]) {
+			chips.append(
+				chip(status === "all" ? "All" : status, status === "all" ? proposals.length : (counts[status] ?? 0), {
+					active: tunerFilter === status,
+					onClick: () => {
+						tunerFilter = status;
+						renderAll(d);
+					},
+				}),
+			);
+		}
 		return [
-			h(
-				"details",
-				{ class: "details" },
-				h("summary", {}, `Tuning proposals — ${open} open in ${rangeLabel()}`, helpButton(HELP.tuning)),
-				h(
+			card({
+				title: "Tuning proposals",
+				sub: "the decision-tuner's weekly pass — filter by status",
+				help: HELP.tuning,
+				body: h(
 					"div",
-					{ class: "grid kpis" },
-					kpi({ label: "Tuner runs", value: fmtInt(runs), sub: lastRun ? `last ${timeAgo(lastRun)}` : "never run", help: HELP.tuning }),
-					kpi({ label: "Proposals", value: fmtInt(proposals.length), sub: Object.entries(counts).map(([status, n]) => `${n} ${status}`).join(" · ") || "none yet" }),
-					kpi({ label: "Open", value: fmtInt(open), sub: "awaiting your review", valueClass: open ? "warn" : "good" }),
-					kpi({ label: "Applied / dismissed", value: fmtInt(applied + dismissed), sub: `${applied} applied · ${dismissed} dismissed` }),
+					{ class: "grid" },
+					chips,
+					filtered.length
+						? table({
+								columns: [
+									{
+										label: "Proposal",
+										render: (row) =>
+											h(
+												"div",
+												{},
+												h("div", { class: "mono", style: { fontSize: "11.5px" } }, row.target ?? "—"),
+												h("div", { class: "small muted", "data-tip": row.evidence ?? "" }, row.evidence ?? "—"),
+											),
+									},
+									{ label: "Kind", render: (row) => pill(row.kind ?? "?", row.kind === "prune" ? "warn" : "info", row.system ? `system: ${row.system}` : null) },
+									{ label: "Status", render: (row) => pill(statusOf(row), statusOf(row) === "applied" ? "ok" : statusOf(row) === "dismissed" ? "neutral" : "warn") },
+									{ label: "When", right: true, render: (row) => h("span", { class: "small muted nowrap" }, timeAgo(row.decidedAt ?? row.createdAt ?? row.ts)) },
+									{ label: "", width: "64px", render: fileButton },
+								],
+								rows: filtered.map((row) => ({ ...row, key: row.id ?? `${row.ts}-${row.target}` })),
+								maxHeight: "360px",
+							})
+						: emptyState(`No ${tunerFilter === "all" ? "" : `${tunerFilter} `}tuner proposals in the ${rangeLabel()} window.`),
 				),
-				proposals.length
-					? table({
-							columns: [
-								{ label: "Kind", render: (row) => pill(row.kind ?? "?", row.kind === "prune" ? "warn" : "info") },
-								{ label: "System", render: (row) => h("span", { class: "mono" }, row.system ?? "—") },
-								{ label: "Target", render: (row) => h("span", { class: "mono", style: { fontSize: "11.5px" } }, row.target ?? "—") },
-								{ label: "Evidence", render: (row) => h("span", { class: "small muted truncate", "data-tip": row.evidence ?? "" }, row.evidence ?? "—") },
-								{ label: "Status", render: (row) => pill(row.status ?? "open", row.status === "applied" ? "ok" : row.status === "dismissed" ? "neutral" : "warn") },
-								{ label: "When", right: true, render: (row) => h("span", { class: "small muted" }, timeAgo(row.decidedAt ?? row.createdAt ?? row.ts)) },
-								{ label: "", width: "78px", render: fileButton },
-							],
-							rows: proposals.map((row) => ({ ...row, key: row.id ?? `${row.ts}-${row.target}` })),
-							maxHeight: "360px",
-						})
-					: emptyState(`No tuner proposals in the ${rangeLabel()} window.`),
-			),
+			}),
 		];
-	});
+	}, "grid-cell");
 
 	view.append(
 		h(
@@ -722,8 +702,7 @@ export async function improvementsPage(view, ctx) {
 			card({ title: "Day strip", sub: "one row per day: what changed, what it did, whether the harness digest moved", body: dayStrip.node, help: HELP }),
 			card({ title: "Staged now", sub: "the review queue — every kind, sorted by risk; arm with /refine-review", body: staged.node, help: HELP.staged }),
 			card({ title: "Improvement ledger", sub: "the human-readable one-liner per day, newest first", body: ledger.node, help: HELP }),
-			tuning.node,
-			diagnostics.node,
+			h("div", { class: "grid cols-2" }, diagnostics.node, tuning.node),
 		),
 	);
 
