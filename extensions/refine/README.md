@@ -18,7 +18,7 @@ Nothing in the auto loop writes ungated: rules are never armed automatically, ev
 |---|---|
 | `/refine [focus]` | Analyzes the full session trajectory (user/assistant text plus assistant tool calls). Sends it to the session model at high reasoning effort with the rule-file format, recent memory lessons, and existing coverage. Each returned proposal is shown in an interactive overlay — Enter applies, Esc skips. Optional arg becomes a `focus` hint recorded in history. |
 | `/refine-history` | Lists applied refinements; selecting one (after confirmation) deletes its file and marks the entry rolled back. |
-| `/refine-review [discard]` | Reviews rules staged by the auto loop. Each staged rule is shown in the same overlay (near-miss drafts are labeled): Enter arms it (moves it into the live rules directory), Esc keeps it staged. With the `discard` argument, a selected staged rule and its metadata are deleted instead. |
+| `/refine-review [discard]` | Reviews rules staged by the auto loop. Each staged rule is shown in the same overlay (near-miss drafts are labeled): Enter arms it (moves it into the live rules directory), Esc keeps it staged, and `d` rejects it — after confirmation the staged rule and its metadata are deleted and its content hash is recorded in `rejected.jsonl` so the auto loop will not re-stage identical content. With the `discard` argument, a selected staged rule is rejected the same way without showing the overlay. |
 | `refine_propose` | Agent-callable tool to queue a proposal draft. Parameters: `kind` (`rule` \| `note`), `name` (kebab-case slug), `title`, `evidence`, `content`. Rule content must be a complete TTSR rule file including frontmatter with a `condition` or `astCondition`; note content is plain markdown. The user must approve the overlay — in a non-TUI session the tool skips with a warning. |
 
 Manual applies land rules in `~/.pi/agent/rules/<name>.md` and notes in `~/.pi/agent/jev-decisions/refine/notes/<name>.md`. An existing file is never overwritten — a duplicate name is skipped with a warning.
@@ -47,6 +47,7 @@ All environment variables, with defaults read from code:
 
 - `~/.pi/agent/jev-decisions/refine/notes/` — applied notes (passive markdown).
 - `~/.pi/agent/jev-decisions/refine/rules-staging/` — auto-proposed rules awaiting review: `<name>.md` plus `<name>.meta.json` (title, evidence, score, score parts, session id, staged timestamp, trigger, tier).
+- `~/.pi/agent/jev-decisions/refine/rejected.jsonl` — content hashes of rules removed via reject/discard, merged into the auto loop's dedupe so identical proposals are not re-staged.
 - `~/.pi/agent/jev-decisions/refine/history.jsonl` — every apply/arm: id, timestamp, kind, name, path, evidence, source (`manual`/`auto`), optional `focus`, and `rolledBack` after a rollback.
 - `~/.pi/agent/jev-decisions/refine/auto-refine.jsonl` — audit log of every auto-loop decision: stage (`plan`/`jev`/`apply`/`review`), decision (`skipped`/`degraded`/`no-proposals`/`suppressed`/`staged`/`applied`/`duplicate`/`kept-staged`/`armed`/`discarded`/`error`), score and parts, tier for staged/reviewed rules, latency, trigger, and error text.
 - Live rules live in `~/.pi/agent/rules/` (owned by [ttsr](../ttsr/README.md)); refine only adds files there via manual approval or an armed staged rule.

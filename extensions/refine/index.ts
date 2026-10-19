@@ -71,6 +71,7 @@ const RULES_DIR = join(homedir(), ".pi", "agent", "rules");
 const HERMES_FAILURES = join(homedir(), ".pi", "agent", "pi-hermes-memory", "failures.md");
 const STAGING_DIR = join(REFINE_DIR, "rules-staging");
 const AUDIT_FILE = join(REFINE_DIR, "auto-refine.jsonl");
+const REJECTED_FILE = join(REFINE_DIR, "rejected.jsonl");
 
 const MAX_TRAJECTORY_CHARS = 60_000;
 const MAX_LESSON_CHARS = 8_000;
@@ -305,10 +306,12 @@ const readHistory = async (): Promise<HistoryEntry[]> => {
 	}
 };
 
-const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext): Promise<boolean> => {
+type ProposalOutcome = "apply" | "skip" | "reject";
+
+const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext, rejectable = false): Promise<ProposalOutcome> => {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify(`Refine: proposal "${proposal.name}" requires interactive TUI review — skipped`, "warning");
-		return false;
+		return "skip";
 	}
 
 	return ctx.ui.custom((_tui, theme, _kb, done) => {
@@ -320,15 +323,16 @@ const showProposalUi = async (proposal: Proposal, ctx: ExtensionContext): Promis
 		container.addChild(new Text(theme.fg("accent", theme.bold(`Refine proposal [${proposal.kind}]: ${proposal.title}`)), 1, 0));
 		container.addChild(new Text(theme.fg("dim", `evidence: ${proposal.evidence}`), 1, 1));
 		container.addChild(new Markdown(proposal.content, 1, 1, mdTheme));
-		container.addChild(new Text(theme.fg("dim", "Enter = apply, Esc = skip"), 1, 0));
+		container.addChild(new Text(theme.fg("dim", rejectable ? "Enter = apply, Esc = keep staged, d = reject" : "Enter = apply, Esc = skip"), 1, 0));
 		container.addChild(border);
 
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
-				if (matchesKey(data, "enter")) done(true);
-				if (matchesKey(data, "escape")) done(false);
+				if (matchesKey(data, "enter")) done("apply");
+				if (matchesKey(data, "escape")) done("skip");
+				if (rejectable && matchesKey(data, "d")) done("reject");
 			},
 		};
 	});
@@ -471,7 +475,23 @@ const collectHashes = async (): Promise<Set<string>> => {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
+	try {
+		const raw = await readFile(REJECTED_FILE, "utf8");
+		for (const line of raw.split("\n")) {
+			if (!line.trim()) continue;
+			const parsed = JSON.parse(line) as { hash?: string };
+			if (typeof parsed.hash === "string") hashes.add(parsed.hash);
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	return hashes;
+};
+
+// A rejected draft is remembered by content hash so the auto loop cannot re-stage it.
+const recordRejected = async (name: string, content: string): Promise<void> => {
+	await mkdir(REFINE_DIR, { recursive: true });
+	await appendFile(REJECTED_FILE, `${JSON.stringify({ name, hash: hashContent(content), rejectedAt: new Date().toISOString() })}\n`, "utf8");
 };
 
 const buildJevState = (proposals: Proposal[], trajectory: string, bodies: { rules: CoverageBody[]; notes: CoverageBody[] }): Record<string, unknown> => ({
@@ -716,8 +736,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			for (const proposal of proposals) {
-				const apply = await showProposalUi(proposal, ctx);
-				if (apply) await applyProposal(proposal, focus, ctx);
+				const outcome = await showProposalUi(proposal, ctx);
+				if (outcome === "apply") await applyProposal(proposal, focus, ctx);
 			}
 		},
 	});
@@ -764,7 +784,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("refine-review", {
-		description: "Review staged auto-refine rules — arm (promote to live TTSR rules), keep staged, or discard (pass 'discard' arg)",
+		description: "Review staged auto-refine rules — arm (promote to live TTSR rules), keep staged, or reject each; 'discard' arg rejects directly",
 		handler: async (args, ctx) => {
 			const discard = args?.trim().toLowerCase() === "discard";
 			const staged = (await readdir(STAGING_DIR).catch(() => [] as string[])).filter((f) => f.endsWith(".md")).sort();
@@ -780,6 +800,8 @@ export default function (pi: ExtensionAPI) {
 				const confirmed = await ctx.ui.confirm("Discard staged rule?", `"${selected}" will be deleted without arming.`);
 				if (!confirmed) return;
 				const name = selected.replace(/\.md$/, "");
+				const content = await readFile(join(STAGING_DIR, selected), "utf8").catch(() => "");
+				if (content) await recordRejected(name, content);
 				await unlink(join(STAGING_DIR, selected)).catch(() => {});
 				await unlink(join(STAGING_DIR, `${name}.meta.json`)).catch(() => {});
 				auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "discarded" });
@@ -803,8 +825,19 @@ export default function (pi: ExtensionAPI) {
 					evidence: meta?.evidence ?? "(staged by background auto-refine)",
 					content: (await readFile(stagedPath, "utf8")).trim(),
 				};
-				const apply = await showProposalUi(proposal, ctx);
-				if (!apply) {
+				const outcome = await showProposalUi(proposal, ctx, true);
+				if (outcome === "reject") {
+					const confirmed = await ctx.ui.confirm("Reject staged rule?", `"${name}" will be deleted without arming.`);
+					if (confirmed) {
+						await recordRejected(name, proposal.content);
+						await unlink(stagedPath).catch(() => {});
+						await unlink(join(STAGING_DIR, `${name}.meta.json`)).catch(() => {});
+						auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "discarded", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
+						ctx.ui.notify(`Rejected "${name}"`, "info");
+						continue;
+					}
+				}
+				if (outcome !== "apply") {
 					auditAuto({ session: sessionId, stage: "review", kind: "rule", name, decision: "kept-staged", score: meta?.score ?? null, parts: meta?.parts ?? null, tier: meta?.tier ?? null });
 					continue;
 				}
