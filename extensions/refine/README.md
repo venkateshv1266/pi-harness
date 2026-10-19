@@ -233,6 +233,11 @@ backup; they apply from the next session.
   arms them; rules and contexts additionally need `/ttsr-reload` to take effect.
 - **Nothing overwrites.** Arming skips when any target file already exists; memory entries are
   deduped by body text; settings patches that change nothing are refused.
+- **The instruments are out of bounds.** Every bundle passes `utils/anti-cheat.ts` before staging:
+  instructions or code that remove, redirect, overwrite, suppress or fabricate `jev-decisions/`
+  records, observatory adapters, or the outcomes loggers are rejected (extensions keep the
+  stricter gate rule — any reference to the telemetry store is refused). A legitimate mention of
+  the decision logs remains legal.
 - **Rollback is real.** Every arm writes pre-arm backups; `/refine-history` restores or removes
   the recorded targets instead of blindly deleting a path.
 - **Everything is auditable.** Every auto decision — including suppressions, degradations, and

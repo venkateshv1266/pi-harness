@@ -77,6 +77,23 @@ agents, skills, contexts, extensions, memory, settings; `.disabled` excluded)
 recorded whenever anything arms, so "the harness changed today" is provable.
 Tests: `node --test utils/harness-surface.test.ts`.
 
+## anti-cheat.ts
+
+Instrument-suppression scan shared by every proposal kind. `validateBundle` runs it over the whole
+bundle before the kind validator, so a rule, note, memory entry, context, agent or skill cannot
+teach the agent to remove, redirect, overwrite, suppress or fabricate the telemetry it is judged on,
+or to reassign the outcomes loggers. The scan is narrow (imperative shell/file-operation shapes and
+logger reassignment) and negation-aware, so a legitimate mention — "read
+`jev-decisions/ttsr-jev.jsonl` for unresolved outcomes" — stays legal. The extension gate keeps a
+stricter rule: an extension is live code, so any reference to the telemetry store is refused.
+
+```ts
+import { instrumentSuppressionError } from "../utils/anti-cheat.ts";
+
+const blocker = instrumentSuppressionError(bundleText);
+if (blocker) return { ok: false, error: blocker };
+```
+
 ## model-role.ts
 
 Model-role resolution shared by the subagent engines, `summarize`, and the

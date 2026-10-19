@@ -19,6 +19,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 
+import { instrumentSuppressionError } from "./anti-cheat.ts";
+
 export const HARNESS_KINDS = ["rule", "note", "memory", "context", "agent", "skill", "settings", "extension"] as const;
 
 export type HarnessKind = (typeof HARNESS_KINDS)[number];
@@ -344,6 +346,9 @@ export function validateBundle(kind: HarnessKind, name: string, files: ProposalF
 		if (typeof content !== "string") return { ok: false, error: `bundle file "${rel}" has no string content` };
 		if (content.length > 120_000) return { ok: false, error: `bundle file "${rel}" exceeds 120k characters` };
 	}
+	const suppression = instrumentSuppressionError(entries.map(([, content]) => content).join("\n"));
+	if (suppression) return { ok: false, error: suppression };
+
 	const error = spec.validate(name, files);
 	return error ? { ok: false, error } : { ok: true };
 }
