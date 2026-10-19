@@ -389,6 +389,8 @@ export interface StagedManifest {
 	files: ProposalFiles;
 	/** Extension usage signal (`tool:<name>` / `command:<name>`), read by the daily snapshot. */
 	expectation?: string;
+	/** Library lesson ids injected into the prompt that produced this item (lineage). */
+	recalled?: string[];
 	probe?: Record<string, unknown>;
 }
 

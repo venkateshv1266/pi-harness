@@ -70,6 +70,34 @@ never break a turn), and `/refine-probe` runs it on demand. The review overlay s
 under the Jev tier — both are kept, never silently overridden: the tier is the paper judgement, the
 probe line is what the trigger actually did, and a false positive is flagged in red.
 
+## Lessons library
+
+Every outcome window feeds a deterministic experience pass. It distils **at most one** lesson, and
+only when the record shows a concrete contrast: a rule/extension rolled back after arming, an
+extension blocked by the validation gate, a probe that measured false positives, or a rule the tuner
+pruned. A window with no contrast produces **NO_ENTRY** — no file, no placeholder. That is the
+feature, not a failure.
+
+Lessons are grouped by proposal class so the planner recalls the relevant class instead of one flat
+blob:
+
+```
+~/.pi/agent/harness-library/<domain>/INDEX.md
+~/.pi/agent/harness-library/<domain>/entries/<slug>.md
+```
+
+Domains: `rule-triggers`, `extension-adoption`, `settings-tiers`, `context-precision`, `general`.
+Entries carry `cue` (the shape of the situation), `lesson` (the operation, naming kind + target),
+`evidence` (audit/history ids), `confidence`, `created`, and the harness digest at adoption.
+Cue-similarity dedupe stops the same lesson from accumulating in different words.
+
+`recallLessons` ranks entries by cue similarity to the current trajectory, then recency, and the
+rendered section is character-bounded (4k by default) before it enters `buildProposalPrompt`
+alongside the hermes memory lessons. Lesson ids that informed a proposal are recorded on its staged
+manifest (`recalled`) and carried into `history.jsonl` on arm, so the daily snapshot can show the
+lesson → proposal → arm → outcome lineage. The pass runs after arm and rollback, and nightly with
+the probe sweep.
+
 ## Extension adoption gate
 
 A proposed extension is inert until it passes `extensions/refine/extension-gate.ts`:
@@ -130,6 +158,11 @@ overlay shows each check and its result; a failed gate cannot be armed.
   (`skipped`/`degraded`/`no-proposals`/`suppressed`/`staged`/`applied`/`duplicate`/`kept-staged`/`armed`/`discarded`/`error`),
   score and parts, tier, kind, latency, trigger, and error text. `apply` lines for rules/contexts
   also carry the measured `probe` verdict (hits, misses, false positives, pass rate).
+- `~/.pi/agent/harness-library/<domain>/{INDEX.md,entries/<slug>.md}` — lessons distilled by the
+  experience pass, grouped by proposal class; recalled into the planner prompt and linked from
+  staged/armed history via `recalled`.
+- `~/.pi/agent/jev-decisions/lessons.jsonl` — one record per experience pass
+  (`written` / `no-entry` / `duplicate`), so a quiet day is visible as a deliberate no-op.
 - `~/.pi/agent/jev-decisions/refine/probe/last-sweep.json` — date guard for the daily probe sweep.
 - `~/.pi/agent/jev-decisions/probe.jsonl` — probe decision stream (one record per stage-write
   probe, sweep or `/refine-probe` run) with per-rule verdicts; the Improvements snapshot aggregates

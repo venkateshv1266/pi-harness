@@ -34,6 +34,7 @@ import {
 } from "./harness.ts";
 import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
 import { logProbe, markProbeSweep, probeLine, probeOne, probeStaged, probeSweepDue, type RuleProbe } from "./probe.ts";
+import { recallLibraryText, runExperiencePass } from "./library.ts";
 
 type HistoryEntry = {
 	id: string;
@@ -77,10 +78,13 @@ const RULES_DIR = join(AGENT_ROOT, "rules");
 const HERMES_FAILURES = join(AGENT_ROOT, "pi-hermes-memory", "failures.md");
 const AUDIT_FILE = join(REFINE_DIR, "auto-refine.jsonl");
 const REJECTED_FILE = join(REFINE_DIR, "rejected.jsonl");
+const DECISIONS_ROOT = join(AGENT_ROOT, "jev-decisions");
+const LIBRARY_ROOT = join(AGENT_ROOT, "harness-library");
 
 const MAX_TRAJECTORY_CHARS = 60_000;
 const MAX_LESSON_CHARS = 8_000;
 const MAX_LESSONS = 12;
+const MAX_LIBRARY_CHARS = 4_000;
 
 const RULE_FORMAT = `
 TTSR rule files live in ~/.pi/agent/rules/ and are DORMANT until the agent's live
@@ -109,7 +113,7 @@ If you cannot write a precise condition/astCondition, use kind "note" instead.
 Never write always-apply guidance as a rule.
 `.trim();
 
-const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Coverage, bodies?: CoverageBodies, focus?: string): string =>
+const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Coverage, bodies?: CoverageBodies, focus?: string, library: string[] = []): string =>
 	[
 		"You are a refinement planner for a coding agent. Analyze the session trajectory below and propose the SMALLEST possible harness edit(s) that would measurably improve future sessions.",
 		"",
@@ -148,6 +152,11 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"<memory-lessons>",
 		...(lessons.length > 0 ? lessons : ["(none)"]),
 		"</memory-lessons>",
+		"",
+		"Lessons from the harness library, grouped by domain. These are past PROPOSAL outcomes, not trajectory facts — treat them as priors. Do not re-propose what a lesson records as rolled back, gate-blocked, pruned, or measured with false positives; propose around that shape instead:",
+		"<harness-library>",
+		...(library.length > 0 ? library : ["(none)"]),
+		"</harness-library>",
 		"",
 		`Existing refine coverage (do NOT duplicate): rules: [${coverage.rules.join(", ") || "none"}]; notes: [${coverage.notes.join(", ") || "none"}]; contexts: [${coverage.contexts.join(", ") || "none"}]; agents: [${coverage.agents.join(", ") || "none"}]; skills: [${coverage.skills.join(", ") || "none"}]; extensions: [${coverage.extensions.join(", ") || "none"}]`,
 		"Existing notes are passive records, not enforcement. If the trajectory shows one of those lessons being violated AGAIN, propose its rule version — promotion is expected, not duplication (the rule still needs a precise trigger).",
@@ -570,7 +579,7 @@ const armDirect = async (proposal: Proposal): Promise<ArmResult> => {
 	return armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item });
 };
 
-const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx: ExtensionContext, source: "auto" | "manual" = "manual"): Promise<void> => {
+const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx: ExtensionContext, source: "auto" | "manual" = "manual", recalled: string[] = []): Promise<void> => {
 	const result = await armDirect(proposal);
 	if (!result.ok) {
 		ctx.ui.notify(`Skipped "${proposal.name}" — ${result.reason}`, "warning");
@@ -590,6 +599,7 @@ const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx:
 		source,
 		digest: harnessDigest(AGENT_ROOT),
 		expectation: proposal.expectation,
+		...(recalled.length > 0 ? { recalled } : {}),
 	});
 
 	const hint =
@@ -601,6 +611,9 @@ const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx:
 					? " — applies from the next session"
 					: "";
 	ctx.ui.notify(`Applied ${KIND_SPECS[proposal.kind].label} "${proposal.name}" → ${primary}${hint}`, "info");
+	void runExperiencePass({ refineRoot: REFINE_DIR, libraryRoot: LIBRARY_ROOT, decisionsRoot: DECISIONS_ROOT, trigger: "arm" }).catch(() => {
+		// expected: the lesson pass is best-effort and must never break an arm
+	});
 };
 
 // ─── Auto-refine: background Jev-gated self-improvement loop ────────────────
@@ -810,7 +823,7 @@ const auditAuto = (entry: Record<string, unknown>): void => {
 	}
 };
 
-const stageKind = async (p: Proposal, v: { score: number; parts: JevParts }, session: string, trigger: string, tier: "ready" | "near-miss"): Promise<boolean> =>
+const stageKind = async (p: Proposal, v: { score: number; parts: JevParts }, session: string, trigger: string, tier: "ready" | "near-miss", recalled: string[] = []): Promise<boolean> =>
 	stageProposal(REFINE_DIR, p, {
 		kind: p.kind,
 		name: p.name,
@@ -823,6 +836,7 @@ const stageKind = async (p: Proposal, v: { score: number; parts: JevParts }, ses
 		stagedAt: new Date().toISOString(),
 		trigger,
 		tier,
+		...(recalled.length > 0 ? { recalled } : {}),
 	});
 
 export default function (pi: ExtensionAPI) {
@@ -849,7 +863,13 @@ export default function (pi: ExtensionAPI) {
 			auditAuto({ session: sessionId, stage: "plan", decision: "skipped", err: "no-model", trigger });
 			return;
 		}
-		const [lessons, coverage, bodies] = await Promise.all([readHermesLessons(), listCoverage(AGENT_ROOT, REFINE_DIR), readCoverageBodies(AGENT_ROOT, REFINE_DIR)]);
+		const [lessons, coverage, bodies, library] = await Promise.all([
+			readHermesLessons(),
+			listCoverage(AGENT_ROOT, REFINE_DIR),
+			readCoverageBodies(AGENT_ROOT, REFINE_DIR),
+			recallLibraryText(LIBRARY_ROOT, { text: trajectory.slice(-4_000), maxChars: MAX_LIBRARY_CHARS }),
+		]);
+		const recalled = library.entries.map((entry) => entry.id);
 
 		// Jev is the sole write gate: on degrade, skip the planner entirely — nothing can be written.
 		if (AUTO_JEV_KILL || !jevKey()) {
@@ -865,7 +885,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			response = await ctx.modelRegistry.complete(
 				model,
-				{ messages: [{ role: "user", content: [{ type: "text", text: buildProposalPrompt(trajectory, lessons, coverage, bodies) }], timestamp: Date.now() }] },
+				{ messages: [{ role: "user", content: [{ type: "text", text: buildProposalPrompt(trajectory, lessons, coverage, bodies, undefined, library.lines) }], timestamp: Date.now() }] },
 				{ reasoningEffort: "high", cacheRetention: "none", sessionId: uuidv7() },
 			);
 		} catch (error) {
@@ -897,7 +917,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const tier = p.kind === "note" ? null : kindTier(p.kind, v.parts);
 			if (p.kind !== "note" && tier) {
-				if (await stageKind(p, v, sessionId, trigger, tier)) {
+				if (await stageKind(p, v, sessionId, trigger, tier, recalled)) {
 					let gateSummary: Record<string, unknown> | undefined;
 					let probeSummary: Record<string, unknown> | undefined;
 					if (p.kind === "extension") {
@@ -916,7 +936,7 @@ export default function (pi: ExtensionAPI) {
 					} else {
 						applied.push(`${p.kind} "${p.name}" staged (${tier})`);
 					}
-					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger, ...(gateSummary ? { gate: gateSummary } : {}), ...(probeSummary ? { probe: probeSummary } : {}) });
+					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, score: v.score, parts: v.parts, tier, decision: "staged", mode: "verified", latencyMs: latencyJev, trigger, ...(gateSummary ? { gate: gateSummary } : {}), ...(probeSummary ? { probe: probeSummary } : {}), ...(recalled.length > 0 ? { recalled } : {}) });
 				} else {
 					auditAuto({ session: sessionId, stage: "apply", kind: p.kind, name: p.name, decision: "duplicate", trigger });
 				}
@@ -965,6 +985,7 @@ export default function (pi: ExtensionAPI) {
 			if (!(await probeSweepDue(REFINE_DIR, day))) return;
 			const { report } = await probeStaged(REFINE_DIR);
 			logProbe(report, "sweep");
+			await runExperiencePass({ refineRoot: REFINE_DIR, libraryRoot: LIBRARY_ROOT, decisionsRoot: DECISIONS_ROOT, trigger: "nightly" });
 			await markProbeSweep(REFINE_DIR, day);
 		})().catch(() => {
 			// expected: probing is best-effort and must never break the turn
@@ -1022,13 +1043,19 @@ export default function (pi: ExtensionAPI) {
 
 			ctx.ui.notify("Refine: analyzing trajectory...", "info");
 
-			const [lessons, coverage, bodies] = await Promise.all([readHermesLessons(), listCoverage(AGENT_ROOT, REFINE_DIR), readCoverageBodies(AGENT_ROOT, REFINE_DIR)]);
+			const [lessons, coverage, bodies, library] = await Promise.all([
+				readHermesLessons(),
+				listCoverage(AGENT_ROOT, REFINE_DIR),
+				readCoverageBodies(AGENT_ROOT, REFINE_DIR),
+				recallLibraryText(LIBRARY_ROOT, { text: `${focus ?? ""}\n${trajectory.slice(-4_000)}`, maxChars: MAX_LIBRARY_CHARS }),
+			]);
+			const recalled = library.entries.map((entry) => entry.id);
 
 			let response;
 			try {
 				response = await ctx.modelRegistry.complete(
 					model,
-					{ messages: [{ role: "user", content: [{ type: "text", text: buildProposalPrompt(trajectory, lessons, coverage, bodies, focus) }], timestamp: Date.now() }] },
+					{ messages: [{ role: "user", content: [{ type: "text", text: buildProposalPrompt(trajectory, lessons, coverage, bodies, focus, library.lines) }], timestamp: Date.now() }] },
 					{ reasoningEffort: "high", cacheRetention: "none", sessionId: uuidv7() },
 				);
 			} catch (error) {
@@ -1049,7 +1076,7 @@ export default function (pi: ExtensionAPI) {
 
 			for (const proposal of proposals) {
 				const outcome = await showProposalUi(proposal, ctx);
-				if (outcome === "apply") await applyProposal(proposal, focus, ctx);
+				if (outcome === "apply") await applyProposal(proposal, focus, ctx, "manual", recalled);
 			}
 		},
 	});
@@ -1090,6 +1117,9 @@ export default function (pi: ExtensionAPI) {
 				"utf8",
 			);
 			ctx.ui.notify(`Rolled back "${entry.name}"`, "info");
+			void runExperiencePass({ refineRoot: REFINE_DIR, libraryRoot: LIBRARY_ROOT, decisionsRoot: DECISIONS_ROOT, trigger: "rollback" }).catch(() => {
+				// expected: the lesson pass is best-effort and must never break a rollback
+			});
 		},
 	});
 
@@ -1187,10 +1217,14 @@ export default function (pi: ExtensionAPI) {
 						source: "auto",
 						digest: harnessDigest(AGENT_ROOT),
 						expectation: stagedItem.meta.expectation,
+						...(stagedItem.meta.recalled?.length ? { recalled: stagedItem.meta.recalled } : {}),
 					});
-					auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "armed", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null });
+					auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "armed", score: item.meta?.score ?? null, parts: item.meta?.parts ?? null, tier: item.meta?.tier ?? null, ...(stagedItem.meta.recalled?.length ? { recalled: stagedItem.meta.recalled } : {}) });
 					const hint = item.kind === "rule" || item.kind === "context" ? " — run /ttsr-reload to activate" : item.kind === "settings" ? " — applies from the next session" : "";
 					ctx.ui.notify(`Armed ${KIND_SPECS[item.kind].label} "${item.name}" → ${result.targets[0]}${hint}`, "info");
+					void runExperiencePass({ refineRoot: REFINE_DIR, libraryRoot: LIBRARY_ROOT, decisionsRoot: DECISIONS_ROOT, trigger: "arm" }).catch(() => {
+						// expected: the lesson pass is best-effort and must never break an arm
+					});
 					return true;
 				},
 				reject: async (item) => {

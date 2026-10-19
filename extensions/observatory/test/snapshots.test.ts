@@ -21,18 +21,23 @@ const fixture = (): { root: string; sources: SnapshotSources; cleanup: () => voi
 		libraryRoot: join(root, "agent", "harness-library"),
 	};
 	mkdirSync(join(sources.agentRoot, "rules"), { recursive: true });
+	mkdirSync(join(sources.agentRoot, "harness-library", "rule-triggers", "entries"), { recursive: true });
 	mkdirSync(join(sources.decisionsRoot, "decision-tuner"), { recursive: true });
 	mkdirSync(sources.refineRoot, { recursive: true });
 	mkdirSync(join(sources.sessionsRoot, "2026-10-19"), { recursive: true });
 	mkdirSync(sources.snapshotsDir, { recursive: true });
 
 	writeFileSync(join(sources.agentRoot, "rules", "no-x.md"), "---\nname: no-x\ncondition: [x]\n---\nbody\n");
+	writeFileSync(
+		join(sources.agentRoot, "harness-library", "rule-triggers", "entries", "lesson-1.md"),
+		"---\nid: lesson-1\ndomain: rule-triggers\ncue: \"rule staged as ready was rolled back\"\nconfidence: 0.70\ncreated: 2026-10-19T09:30:00.000Z\nevidence: [\"h1\"]\n---\n\nRequire a probe pass before arming.\n",
+	);
 	writeFileSync(join(sources.agentRoot, "settings.json"), '{"modelRouter":{"threshold":0.8}}\n');
 
 	writeFileSync(
 		join(sources.refineRoot, "history.jsonl"),
 		jsonl([
-			{ id: "h1", timestamp: "2026-10-19T10:00:00.000Z", kind: "rule", name: "no-x", path: "/x", evidence: "e", source: "auto", digest: "aaaa" },
+			{ id: "h1", timestamp: "2026-10-19T10:00:00.000Z", kind: "rule", name: "no-x", path: "/x", evidence: "e", source: "auto", digest: "aaaa", recalled: ["lesson-1"] },
 			{ id: "h2", timestamp: "2026-10-18T09:00:00.000Z", kind: "extension", name: "json-diff", path: "/x", evidence: "e", source: "auto", expectation: "tool:json_diff", digest: "aaaa" },
 			{ id: "h3", timestamp: "2026-10-19T11:00:00.000Z", kind: "agent", name: "explorer", path: "/x", evidence: "e", source: "auto", digest: "aaaa" },
 			{ id: "h4", timestamp: "2026-10-19T12:00:00.000Z", kind: "rule", name: "old-rule", path: "/x", evidence: "e", source: "auto", rolledBack: true, digest: "aaaa" },
@@ -117,11 +122,14 @@ test("computeSnapshot derives the day strip fields from raw streams", () => {
 		assert.equal(snapshot.extensions.armed, 1);
 		assert.deepEqual(snapshot.extensions.used, ["json-diff"]);
 		assert.deepEqual(snapshot.extensions.silent, []);
-		assert.equal(snapshot.lessons.libraryPresent, false);
+		assert.equal(snapshot.lessons.libraryPresent, true);
+		assert.equal(snapshot.lessons.added, 1);
+		assert.equal(snapshot.lessons.recalled, 1);
 		assert.match(snapshot.digest ?? "", /^[0-9a-f]{16}$/);
 		assert.deepEqual(snapshot.ledger.length > 0, true);
 		assert.match(snapshot.ledger.join("\n"), /Armed 2: rule no-x, agent explorer/);
 		assert.match(snapshot.ledger.join("\n"), /Probes: 2\/2 hit, 1 false-pos/);
+		assert.match(snapshot.ledger.join("\n"), /Lessons: 1 added, 1 recalled/);
 	} finally {
 		cleanup();
 	}
@@ -168,6 +176,10 @@ test("improvementsView compares N against N-1 with percentage-point deltas", () 
 		assert.ok(ruleProbeRate);
 		assert.equal(ruleProbeRate?.from, null);
 		assert.equal(ruleProbeRate?.to, 1);
+		const lessonsAdded = view.compare.metrics.find((metric) => metric.key === "lessonsAdded");
+		const lessonsRecalled = view.compare.metrics.find((metric) => metric.key === "lessonsRecalled");
+		assert.ok(lessonsAdded);
+		assert.ok(lessonsRecalled);
 
 		const armed = view.compare.metrics.find((metric) => metric.key === "armed");
 		assert.equal(armed?.from, 1);

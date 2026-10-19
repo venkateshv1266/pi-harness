@@ -126,6 +126,44 @@ function readJsonFile(file: string): unknown {
 	}
 }
 
+/** Count library lessons whose frontmatter `created` date falls in the window. */
+function countLessonsAdded(root: string, start: number, end: number): number {
+	let domains: string[];
+	try {
+		domains = readdirSync(root);
+	} catch (error) {
+		// expected: the library has not been created yet
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+		throw error;
+	}
+	let count = 0;
+	for (const domain of domains) {
+		let files: string[];
+		try {
+			files = readdirSync(join(root, domain, "entries"));
+		} catch (error) {
+			// expected: a domain directory without an entries/ subdirectory
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw error;
+		}
+		for (const file of files) {
+			if (!file.endsWith(".md")) continue;
+			let raw: string;
+			try {
+				raw = readFileSync(join(root, domain, "entries", file), "utf8").slice(0, 400);
+			} catch (error) {
+				// expected: an entry removed between readdir and read
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw error;
+			}
+			const created = /^created:\s*(\S+)/m.exec(raw)?.[1];
+			const ms = created ? Date.parse(created) : Number.NaN;
+			if (Number.isFinite(ms) && ms >= start && ms < end) count++;
+		}
+	}
+	return count;
+}
+
 /** Runtime guard for snapshot files: a truncated or hand-edited file is ignored, not cast. */
 function isSnapshot(value: unknown): value is Snapshot {
 	if (value === null || typeof value !== "object") return false;
@@ -343,9 +381,18 @@ export function computeSnapshot(date: string, sources: SnapshotSources): Snapsho
 	if (used.length > 0 || silent.length > 0) ledger.push(`Extensions: ${used.length} used${used.length ? ` (${used.join(", ")})` : ""}, ${silent.length} silent${silent.length ? ` (${silent.join(", ")})` : ""}`);
 	if (digest && digestFrom) ledger.push(digest === digestFrom ? `Harness unchanged (${digest})` : `Harness changed: ${digestFrom} → ${digest}`);
 	else if (digest) ledger.push(`Harness digest ${digest} (no earlier snapshot)`);
-	if (ledger.length === 0) ledger.push("No harness changes and no rule outcomes recorded");
 
 	const libraryPresent = existsSync(sources.libraryRoot);
+	const lessonsAdded = countLessonsAdded(sources.libraryRoot, start, end);
+	const recalledIds = new Set<string>();
+	for (const entry of [...history, ...audit]) {
+		const ts = typeof entry.timestamp === "string" ? entry.timestamp : entry.ts;
+		if (!inWindow(ts, start, end) || !Array.isArray(entry.recalled)) continue;
+		for (const id of entry.recalled) if (typeof id === "string") recalledIds.add(id);
+	}
+	if (lessonsAdded > 0 || recalledIds.size > 0) ledger.push(`Lessons: ${lessonsAdded} added, ${recalledIds.size} recalled`);
+
+	if (ledger.length === 0) ledger.push("No harness changes and no rule outcomes recorded");
 
 	return {
 		version: SNAPSHOT_VERSION,
@@ -369,7 +416,7 @@ export function computeSnapshot(date: string, sources: SnapshotSources): Snapsho
 		},
 		ruleOutcomes: mix,
 		extensions: { armed: extensionDetail.length, used, silent, unknown, detail: extensionDetail },
-		lessons: { added: 0, recalled: 0, libraryPresent },
+		lessons: { added: lessonsAdded, recalled: recalledIds.size, libraryPresent },
 		ledger,
 		counts: { armed: armedList.length, rolledBack: rolledBack.length, pruned: pruned.length, rejected },
 	};
@@ -441,6 +488,8 @@ export function improvementsView(options: { date?: string; sources?: SnapshotSou
 		{ key: "ruleSurvival", label: "Rule survival", from: previous ? rateOf(previous) : null, to: latest ? rateOf(latest) : null, delta: pp(previous ? rateOf(previous) : null, latest ? rateOf(latest) : null), unit: "pp" },
 		{ key: "extensionsUsed", label: "Extensions used", from: previous?.extensions.used.length ?? null, to: latest?.extensions.used.length ?? null, delta: deltaCount(previous?.extensions.used.length ?? null, latest?.extensions.used.length ?? null), unit: "count" },
 		{ key: "extensionsSilent", label: "Extensions silent", from: previous?.extensions.silent.length ?? null, to: latest?.extensions.silent.length ?? null, delta: deltaCount(previous?.extensions.silent.length ?? null, latest?.extensions.silent.length ?? null), unit: "count" },
+		{ key: "lessonsAdded", label: "Lessons added", from: previous?.lessons.added ?? null, to: latest?.lessons.added ?? null, delta: deltaCount(previous?.lessons.added ?? null, latest?.lessons.added ?? null), unit: "count" },
+		{ key: "lessonsRecalled", label: "Lessons recalled", from: previous?.lessons.recalled ?? null, to: latest?.lessons.recalled ?? null, delta: deltaCount(previous?.lessons.recalled ?? null, latest?.lessons.recalled ?? null), unit: "count" },
 	];
 	return {
 		days,
