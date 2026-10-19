@@ -11,6 +11,7 @@ import { loadAdapters } from "./adapters/registry";
 import { ingestAll } from "./ingest";
 import { log } from "./log";
 import * as queries from "./queries";
+import { computeSnapshot, defaultSources, ensureSnapshot, improvementsView, snapshotPath } from "./snapshots";
 
 const config = loadConfig();
 const db = openDb();
@@ -19,6 +20,13 @@ const startedAt = Date.now();
 log.info("initial ingest…");
 const first = await ingestAll(db);
 log.info(`ingest: ${first.events} events, ${first.calls} model calls, ${first.sessionFiles} sessions in ${first.ms}ms`);
+
+try {
+	const snapshot = ensureSnapshot();
+	if (snapshot.created) log.info(`wrote daily snapshot ${snapshot.date}`);
+} catch (err) {
+	log.warn(`daily snapshot failed: ${err instanceof Error ? err.message : String(err)}`);
+}
 
 // ------------------------------------------------------------------ live updates
 
@@ -265,6 +273,18 @@ const server = Bun.serve({
 			}
 			if (p === "/api/extensions") return json(await queries.extensionsInventory(db));
 			if (p === "/api/refine") return json(queries.refineOverview(db, rangeFrom(url)));
+			if (p === "/api/improvements") {
+				const date = url.searchParams.get("date") ?? undefined;
+				return json({ ...improvementsView({ date }), snapshotsDir: defaultSources().snapshotsDir });
+			}
+			if (p === "/api/improvements/day") {
+				const date = url.searchParams.get("date");
+				if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "date parameter required (YYYY-MM-DD)" }, 400);
+				const sources = defaultSources();
+				const file = snapshotPath(sources, date);
+				if (url.searchParams.get("refresh") !== "1" && existsSync(file)) return json(JSON.parse(readFileSync(file, "utf8")));
+				return json(computeSnapshot(date, sources));
+			}
 			if (p === "/api/tuner") return json(queries.tunerOverview(db, rangeFrom(url)));
 			if (p === "/api/file") {
 				const requested = url.searchParams.get("path");

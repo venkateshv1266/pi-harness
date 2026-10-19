@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { log } from "./log";
+import { log } from "./log.ts";
 
 export function agentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR ?? path.join(homedir(), ".pi", "agent");
