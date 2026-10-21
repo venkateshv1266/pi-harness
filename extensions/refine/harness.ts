@@ -287,11 +287,11 @@ async function stagedKeys(refineRoot: string): Promise<string[]> {
 	return keys;
 }
 
-export async function listCoverage(agentRoot: string, refineRoot: string): Promise<Coverage> {
+export async function listCoverage(agentRoot: string, refineRoot: string, contextsRoot: string): Promise<Coverage> {
 	return {
 		rules: await mdNames(join(agentRoot, "rules")),
 		notes: await mdNames(join(refineRoot, "notes")),
-		contexts: await contextIds(join(agentRoot, "contexts")),
+		contexts: await contextIds(contextsRoot),
 		agents: await mdNames(join(agentRoot, "agents")),
 		skills: await subdirNames(join(agentRoot, "skills")),
 		extensions: await extensionNames(join(agentRoot, "extensions")),
@@ -496,6 +496,8 @@ async function backupFile(refineRoot: string, backupDir: string, target: string)
 
 export type ArmOptions = {
 	agentRoot: string;
+	/** Context docs + registry fragments live where the ttsr registry reads them (`~/.pi/contexts`), not under agentRoot. */
+	contextsRoot: string;
 	refineRoot: string;
 	item: StagedItem;
 	timestamp?: string;
@@ -504,7 +506,7 @@ export type ArmOptions = {
 };
 
 /** Arm one staged bundle. Writes a pre-arm backup for every target it touches. */
-export async function armProposal({ agentRoot, refineRoot, item, timestamp, gate }: ArmOptions): Promise<ArmResult> {
+export async function armProposal({ agentRoot, contextsRoot, refineRoot, item, timestamp, gate }: ArmOptions): Promise<ArmResult> {
 	const stamp = timestamp ?? new Date().toISOString().replace(/[:.]/g, "-");
 	const backupDir = join(refineRoot, "backups", `${stamp}-${item.kind}-${item.name}`);
 	const armed: ArmTarget[] = [];
@@ -529,8 +531,8 @@ export async function armProposal({ agentRoot, refineRoot, item, timestamp, gate
 		await writeFile(target, item.content.endsWith("\n") ? item.content : `${item.content}\n`, "utf8");
 		armed.push({ target });
 	} else if (item.kind === "context") {
-		const docTarget = join(agentRoot, "contexts", `${item.name}.md`);
-		const entryTarget = join(agentRoot, "contexts", "entries", `${item.name}.yaml`);
+		const docTarget = join(contextsRoot, `${item.name}.md`);
+		const entryTarget = join(contextsRoot, "entries", `${item.name}.yaml`);
 		const blocked = checkFree([docTarget, entryTarget]);
 		if (blocked) return { ok: false, reason: blocked };
 		const doc = item.files[`${item.name}.md`];
@@ -579,8 +581,8 @@ export async function armProposal({ agentRoot, refineRoot, item, timestamp, gate
 		if (pairing.pairing.kind === "rule") {
 			writes.push({ target: join(agentRoot, "rules", `${pairing.pairing.name}.md`), content: pairing.pairing.content });
 		} else {
-			writes.push({ target: join(agentRoot, "contexts", `${pairing.pairing.name}.md`), content: pairing.pairing.doc });
-			writes.push({ target: join(agentRoot, "contexts", "entries", `${pairing.pairing.name}.yaml`), content: pairing.pairing.entry });
+			writes.push({ target: join(contextsRoot, `${pairing.pairing.name}.md`), content: pairing.pairing.doc });
+			writes.push({ target: join(contextsRoot, "entries", `${pairing.pairing.name}.yaml`), content: pairing.pairing.entry });
 		}
 		const blocked = checkFree(writes.map((write) => write.target));
 		if (blocked) return { ok: false, reason: blocked };
@@ -649,7 +651,7 @@ export async function rollbackArm(entry: { kind: HarnessKind; name: string; arme
 }
 
 /** Arm-target preview used by the review overlay. */
-export async function describeArm(agentRoot: string, item: StagedItem): Promise<string[]> {
+export async function describeArm(agentRoot: string, contextsRoot: string, item: StagedItem): Promise<string[]> {
 	if (item.kind === "settings") return previewArm(agentRoot, item);
 	if (item.kind === "extension") {
 		const pairing = extensionPairing(item.files);
@@ -659,10 +661,10 @@ export async function describeArm(agentRoot: string, item: StagedItem): Promise<
 			`write ${join(agentRoot, "extensions", item.name, "README.md")}`,
 			pairing.pairing.kind === "rule"
 				? `pair rule ${pairing.pairing.name} → ${join(agentRoot, "rules", `${pairing.pairing.name}.md`)}`
-				: `pair context ${pairing.pairing.name} → ${join(agentRoot, "contexts", `${pairing.pairing.name}.md`)} + entries/`,
+				: `pair context ${pairing.pairing.name} → ${join(contextsRoot, `${pairing.pairing.name}.md`)} + entries/`,
 		];
 	}
-	if (item.kind === "context") return [`write ${join(agentRoot, "contexts", `${item.name}.md`)}`, `write ${join(agentRoot, "contexts", "entries", `${item.name}.yaml`)}`];
+	if (item.kind === "context") return [`write ${join(contextsRoot, `${item.name}.md`)}`, `write ${join(contextsRoot, "entries", `${item.name}.yaml`)}`];
 	return item.kind === "skill" ? [`write ${join(agentRoot, "skills", item.name, "SKILL.md")}`] : [`write ${join(agentRoot, item.kind === "rule" ? "rules" : `${item.kind}s`, `${item.name}.md`)}`];
 }
 

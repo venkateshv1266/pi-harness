@@ -23,11 +23,11 @@
 |---|---|---|---|
 | `rule` | `<name>.md` with TTSR frontmatter (`condition` or `astCondition`) | `~/.pi/agent/rules/` | evidence / trigger / novelty floors |
 | `note` | `<name>.md` | `refine/notes/` (passive record) | evidence / novelty; weakest-link ≥ threshold |
-| `context` | `<name>.md` + `entry.yaml` (registry fragment) | `~/.pi/agent/contexts/<name>.md` + `contexts/entries/<name>.yaml` | evidence / trigger precision / novelty |
+| `context` | `<name>.md` + `entry.yaml` (registry fragment) | `~/.pi/contexts/<name>.md` + `~/.pi/contexts/entries/<name>.yaml` (where the ttsr registry reads them) | evidence / trigger precision / novelty |
 | `agent` | `<name>.md` with `name`, `description`, optional `tools`/`model`/`thinking` | `~/.pi/agent/agents/` | evidence / role fit / novelty |
 | `skill` | `SKILL.md` with `name`, `description` | `~/.pi/agent/skills/<name>/SKILL.md` | evidence / reusability / novelty |
 | `settings` | `patch.json` (allowlisted primitive patch) | merged into `~/.pi/agent/settings.json` | evidence / precision / novelty (0.7 floors) |
-| `extension` | `index.ts` + `README.md` + `pairing.md` (TTSR rule) or `pairing.md` + `pairing.yaml` (context entry), plus `expectation: tool:<name>` / `command:<name>` | `~/.pi/agent/extensions/<name>/{index.ts,README.md}` **and** the pairing target under `rules/` or `contexts/`, atomically | compile + fake-pi smoke + safety scan; telemetry suppression hard-rejects |
+| `extension` | `index.ts` + `README.md` + `pairing.md` (TTSR rule) or `pairing.md` + `pairing.yaml` (context entry), plus `expectation: tool:<name>` / `command:<name>` | `~/.pi/agent/extensions/<name>/{index.ts,README.md}` **and** the pairing target under `~/.pi/agent/rules/` or `~/.pi/contexts/`, atomically | compile + fake-pi smoke + safety scan; telemetry suppression hard-rejects |
 
 `utils/harness-surface.ts` is the single registry for this table: kind specs, per-kind
 validators, per-part floors, bundle hashing and the armed-harness digest.

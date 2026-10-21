@@ -73,6 +73,8 @@ type ContentBlock = {
 };
 
 const AGENT_ROOT = join(homedir(), ".pi", "agent");
+/** ttsr reads context docs and registry fragments from here, not from AGENT_ROOT. */
+const CONTEXTS_ROOT = join(homedir(), ".pi", "contexts");
 const REFINE_DIR = join(AGENT_ROOT, "jev-decisions", "refine");
 const NOTES_DIR = join(REFINE_DIR, "notes");
 const HISTORY_FILE = join(REFINE_DIR, "history.jsonl");
@@ -595,7 +597,7 @@ const armDirect = async (proposal: Proposal): Promise<ArmResult> => {
 			trigger: "manual",
 		},
 	};
-	return armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item });
+	return armProposal({ agentRoot: AGENT_ROOT, contextsRoot: CONTEXTS_ROOT, refineRoot: REFINE_DIR, item });
 };
 
 const applyProposal = async (proposal: Proposal, focus: string | undefined, ctx: ExtensionContext, source: "auto" | "manual" = "manual", recalled: string[] = []): Promise<void> => {
@@ -883,7 +885,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const [lessons, coverage, bodies, library] = await Promise.all([
 			readHermesLessons(),
-			listCoverage(AGENT_ROOT, REFINE_DIR),
+			listCoverage(AGENT_ROOT, REFINE_DIR, CONTEXTS_ROOT),
 			readCoverageBodies(AGENT_ROOT, REFINE_DIR),
 			recallLibraryText(LIBRARY_ROOT, { text: trajectory.slice(-4_000), maxChars: MAX_LIBRARY_CHARS }),
 		]);
@@ -1066,7 +1068,7 @@ export default function (pi: ExtensionAPI) {
 
 			const [lessons, coverage, bodies, library] = await Promise.all([
 				readHermesLessons(),
-				listCoverage(AGENT_ROOT, REFINE_DIR),
+				listCoverage(AGENT_ROOT, REFINE_DIR, CONTEXTS_ROOT),
 				readCoverageBodies(AGENT_ROOT, REFINE_DIR),
 				recallLibraryText(LIBRARY_ROOT, { text: `${focus ?? ""}\n${trajectory.slice(-4_000)}`, maxChars: MAX_LIBRARY_CHARS }),
 			]);
@@ -1199,7 +1201,7 @@ export default function (pi: ExtensionAPI) {
 					files: item.files,
 					content: item.content,
 					meta: item.meta,
-					armHint: await describeArm(AGENT_ROOT, item),
+					armHint: await describeArm(AGENT_ROOT, CONTEXTS_ROOT, item),
 					gate: item.kind === "extension" ? cachedGate ?? (await runExtensionGate({ name: item.name, files: item.files, expectation: item.meta.expectation })) : undefined,
 					probe: cachedProbe,
 				});
@@ -1221,7 +1223,7 @@ export default function (pi: ExtensionAPI) {
 							return false;
 						}
 					}
-					const result = await armProposal({ agentRoot: AGENT_ROOT, refineRoot: REFINE_DIR, item: stagedItem, gate });
+					const result = await armProposal({ agentRoot: AGENT_ROOT, contextsRoot: CONTEXTS_ROOT, refineRoot: REFINE_DIR, item: stagedItem, gate });
 					if (!result.ok) {
 						ctx.ui.notify(`Skipped "${item.kind} ${item.name}" — ${result.reason}`, "warning");
 						auditAuto({ session: sessionId, stage: "review", kind: item.kind, name: item.name, decision: "duplicate" });
@@ -1292,7 +1294,7 @@ export default function (pi: ExtensionAPI) {
 					`Invalid proposal: kind must be one of ${PROPOSABLE_KINDS.join(", ")}, name must be kebab-case, and the files bundle must pass that kind's validation (e.g. a rule needs frontmatter with condition/astCondition; an extension needs index.ts + README.md + a pairing trigger and an expectation).`,
 				);
 			}
-			const coverage = await listCoverage(AGENT_ROOT, REFINE_DIR);
+			const coverage = await listCoverage(AGENT_ROOT, REFINE_DIR, CONTEXTS_ROOT);
 			if (dedupeProposals([proposal], coverage).length === 0) {
 				return {
 					content: [{ type: "text", text: `Skipped: "${proposal.kind} ${proposal.name}" already exists in refine coverage. Nothing queued.` }],
