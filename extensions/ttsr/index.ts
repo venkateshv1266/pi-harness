@@ -966,7 +966,11 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		if (fired.length === 0) return undefined;
 		const noBlock = new Set(fired.filter((r) => verdicts?.get(r.name)?.degraded && r.verify?.onFail === "degrade").map((r) => r.name));
 
-		const escalatedBlock = fired.some((r) => r.context && r.context.kind === "trigger" && compliance.get(r.name)?.escalated);
+		// A context push never blocks write/edit: the content is already generated, so
+		// blocking discards the whole file to force a doc read. The reminder still
+		// lands on tool_result; cheap actions keep the escalation block.
+		const contentTool = event.toolName === "write" || event.toolName === "edit";
+		const escalatedBlock = !contentTool && fired.some((r) => r.context && r.context.kind === "trigger" && compliance.get(r.name)?.escalated);
 		const willBlock = escalatedBlock || fired.some((r) => r.interrupt && !noBlock.has(r.name));
 		recordFires(fired, "tool", ctx, {
 			delivered: true,

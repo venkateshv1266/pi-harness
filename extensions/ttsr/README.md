@@ -170,8 +170,10 @@ threshold, i.e. every fire suppressed (a dead rule). Rules for gated entries:
   re-do finished delegations).
 - Session ledger: trigger rules re-arm only when their doc changed since the
   last receipt (`read` and `read_context` both count); an ignored push gets one
-  retry (advisory), then a block (gated); ≤2 context pushes per turn; repeated
-  identical adjudications are cached.
+  retry (advisory), then a block (gated) — except on `write`/`edit`, where the
+  content is already generated and a block would discard the whole file; those
+  keep the reminder on the tool result and never block. ≤2 context pushes per
+  turn; repeated identical adjudications are cached.
 - `tier: index-only` entries synthesize no rule — pull them with
   `context_list` / `read_context`; `status: retired` is skipped.
 - Session start writes `~/.pi/contexts/INDEX.md` (generated; do not hand-edit)
