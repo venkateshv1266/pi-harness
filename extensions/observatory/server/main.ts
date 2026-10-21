@@ -11,7 +11,7 @@ import { loadAdapters } from "./adapters/registry";
 import { ingestAll } from "./ingest";
 import { log } from "./log";
 import * as queries from "./queries";
-import { computeSnapshot, defaultSources, ensureSnapshot, improvementsView, snapshotPath } from "./snapshots";
+import { defaultSources, ensureSnapshot, improvementsView, todayUtc } from "./snapshots";
 
 const config = loadConfig();
 const db = openDb();
@@ -275,15 +275,21 @@ const server = Bun.serve({
 			if (p === "/api/refine") return json(queries.refineOverview(db, rangeFrom(url)));
 			if (p === "/api/improvements") {
 				const date = url.searchParams.get("date") ?? undefined;
-				return json({ ...improvementsView({ date }), snapshotsDir: defaultSources().snapshotsDir });
+				const sources = defaultSources();
+				// the page is a materialized view: revalidate the day it renders so an
+				// armed rule shows up without waiting for the UTC day to roll over
+				try {
+					ensureSnapshot(date ?? todayUtc(), sources);
+				} catch (err) {
+					log.warn(`snapshot refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				return json({ ...improvementsView({ date, sources }), snapshotsDir: sources.snapshotsDir });
 			}
 			if (p === "/api/improvements/day") {
 				const date = url.searchParams.get("date");
 				if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "date parameter required (YYYY-MM-DD)" }, 400);
-				const sources = defaultSources();
-				const file = snapshotPath(sources, date);
-				if (url.searchParams.get("refresh") !== "1" && existsSync(file)) return json(JSON.parse(readFileSync(file, "utf8")));
-				return json(computeSnapshot(date, sources));
+				const force = url.searchParams.get("refresh") === "1";
+				return json(ensureSnapshot(date, defaultSources(), { force }).snapshot);
 			}
 			if (p === "/api/tuner") return json(queries.tunerOverview(db, rangeFrom(url)));
 			if (p === "/api/file") {

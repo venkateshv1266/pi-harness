@@ -486,23 +486,72 @@ function safeDigest(agentRoot: string): string | null {
 	}
 }
 
+/**
+ * Streams whose writes change a snapshot's contents. Sessions are deliberately
+ * excluded: that tree changes on every turn and adoption is already measured
+ * over 30 days, so including it would recompute on nearly every read.
+ */
+const snapshotInputs = (sources: SnapshotSources): string[] => [
+	join(sources.refineRoot, "history.jsonl"),
+	join(sources.refineRoot, "auto-refine.jsonl"),
+	join(sources.decisionsRoot, "ttsr-jev.jsonl"),
+	join(sources.decisionsRoot, "decision-tuner", "proposals.jsonl"),
+	join(sources.decisionsRoot, "probe.jsonl"),
+];
+
+function newestInputWrite(sources: SnapshotSources): number {
+	let newest = 0;
+	for (const file of snapshotInputs(sources)) {
+		try {
+			newest = Math.max(newest, statSync(file).mtimeMs);
+		} catch {
+			// expected: a subsystem has not written its stream yet
+		}
+	}
+	return newest;
+}
+
+function isStale(snapshot: Snapshot, sources: SnapshotSources): boolean {
+	const generated = Date.parse(snapshot.generatedAt);
+	if (!Number.isFinite(generated)) return true;
+	return newestInputWrite(sources) > generated;
+}
+
 export function snapshotPath(sources: SnapshotSources, date: string): string {
 	return join(sources.snapshotsDir, `${date}.json`);
 }
 
-/** Materialize one day's snapshot; an existing file is never rewritten. */
-export function ensureSnapshot(date = todayUtc(), sources = defaultSources()): { date: string; path: string; created: boolean; snapshot: Snapshot } {
+/**
+ * Materialize one day's snapshot. A cached file is reused only while it is newer
+ * than every input stream; otherwise the day is recomputed and atomically
+ * replaced, so a read never serves data older than its sources. `force` rewrites
+ * even when nothing looks stale.
+ *
+ * Concurrent calls are safe across processes: the compute is synchronous, so a
+ * single process cannot interleave, and the temp-file rename means a concurrent
+ * writer (the server and refine's turn-end guard) leaves readers with one whole
+ * file — last writer wins, and both compute from the same streams.
+ */
+export function ensureSnapshot(
+	date = todayUtc(),
+	sources = defaultSources(),
+	options: { force?: boolean } = {},
+): { date: string; path: string; created: boolean; snapshot: Snapshot } {
 	const path = snapshotPath(sources, date);
-	if (existsSync(path)) {
+	const existed = existsSync(path);
+	if (!options.force && existed) {
 		const existing = readJsonFile(path);
-		if (isSnapshot(existing)) return { date, path, created: false, snapshot: existing };
+		if (isSnapshot(existing) && !isStale(existing, sources)) return { date, path, created: false, snapshot: existing };
 	}
-	const snapshot = computeSnapshot(date, sources);
+	// stamp the read, not the completion: a write landing mid-compute then keeps a
+	// newer mtime and revalidates next read instead of being silently lost
+	const startedAt = Date.now();
+	const snapshot = { ...computeSnapshot(date, sources), generatedAt: new Date(startedAt).toISOString() };
 	mkdirSync(sources.snapshotsDir, { recursive: true });
 	const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
 	writeFileSync(temp, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
 	renameSync(temp, path);
-	return { date, path, created: true, snapshot };
+	return { date, path, created: !existed, snapshot };
 }
 
 export function readSnapshots(sources = defaultSources()): Snapshot[] {

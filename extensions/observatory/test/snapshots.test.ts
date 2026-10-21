@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -148,17 +148,58 @@ test("computeSnapshot derives the day strip fields from raw streams", () => {
 	}
 });
 
-test("ensureSnapshot writes once and never recomputes an existing day", () => {
+test("ensureSnapshot reuses a day whose inputs have not moved", () => {
 	const { sources, cleanup } = fixture();
 	try {
 		const first = ensureSnapshot("2026-10-19", sources);
 		assert.equal(first.created, true);
 		const raw = readFileSync(snapshotPath(sources, "2026-10-19"), "utf8");
 
-		writeFileSync(join(sources.refineRoot, "history.jsonl"), jsonl([]));
 		const second = ensureSnapshot("2026-10-19", sources);
 		assert.equal(second.created, false);
 		assert.equal(readFileSync(snapshotPath(sources, "2026-10-19"), "utf8"), raw);
+	} finally {
+		cleanup();
+	}
+});
+
+test("ensureSnapshot recomputes once an input stream is newer than the day", () => {
+	const { sources, cleanup } = fixture();
+	try {
+		const first = ensureSnapshot("2026-10-19", sources);
+		assert.equal(first.snapshot.counts.armed, 2);
+
+		const history = join(sources.refineRoot, "history.jsonl");
+		writeFileSync(
+			history,
+			jsonl([
+				{ id: "h1", timestamp: "2026-10-19T10:00:00.000Z", kind: "rule", name: "no-x", path: "/x", evidence: "e", source: "auto", digest: "aaaa" },
+				{ id: "h3", timestamp: "2026-10-19T11:00:00.000Z", kind: "agent", name: "explorer", path: "/x", evidence: "e", source: "auto", digest: "aaaa" },
+				{ id: "h5", timestamp: "2026-10-19T13:00:00.000Z", kind: "rule", name: "armed-later", path: "/y", evidence: "e", source: "manual", digest: "bbbb" },
+			]),
+		);
+		// pin the write ahead of the snapshot stamp: same-millisecond writes are not
+		// reliably newer than generatedAt on coarse-mtime filesystems
+		const ahead = new Date(Date.now() + 60_000);
+		utimesSync(history, ahead, ahead);
+
+		const second = ensureSnapshot("2026-10-19", sources);
+		assert.equal(second.created, false);
+		assert.equal(second.snapshot.counts.armed, 3);
+		assert.equal(JSON.parse(readFileSync(snapshotPath(sources, "2026-10-19"), "utf8")).counts.armed, 3);
+	} finally {
+		cleanup();
+	}
+});
+
+test("ensureSnapshot force rewrites a day that looks fresh", () => {
+	const { sources, cleanup } = fixture();
+	try {
+		const first = ensureSnapshot("2026-10-19", sources);
+		const forced = ensureSnapshot("2026-10-19", sources, { force: true });
+		assert.equal(forced.created, false);
+		assert.notEqual(forced.snapshot.generatedAt, first.snapshot.generatedAt);
+		assert.equal(forced.snapshot.counts.armed, first.snapshot.counts.armed);
 	} finally {
 		cleanup();
 	}

@@ -80,9 +80,15 @@ pi logs on disk ──► adapters (server/adapters/*) ──► SQLite (bun:sql
   idempotent.
 - **Daily snapshots** are materialized views: `server/snapshots.ts` computes one
   JSON per day from refine's audit/history, TTSR outcomes, tuner proposals and
-  session tool calls. The server writes today's on start; refine writes it at the
-  first turn of a session when the file is missing. Raw JSONL remains the source
-  of truth, so any snapshot is recomputable.
+  session tool calls. A cached day is reused only while it is newer than every
+  input stream, so a read never serves data older than its sources: `GET
+  /api/improvements` revalidates the day it renders, `?refresh=1` forces a
+  recompute, and refine forces a rewrite on every history append (arm, rollback
+  or note) — an armed rule shows up on the next page load instead of waiting for
+  the UTC day to roll over. Steady state costs a few `stat` calls because the
+  `generatedAt` stamp is taken when the inputs are read, so a write landing
+  mid-compute still revalidates next time. Raw JSONL remains the source of
+  truth, so any snapshot is recomputable.
 - **Live updates** come from recursive `fs.watch` on the data dirs; the UI
   refreshes over SSE. `POST /api/emit` accepts pushed events for subsystems
   that want zero-latency streaming.

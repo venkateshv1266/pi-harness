@@ -550,9 +550,27 @@ const showReviewSession = (
 	);
 };
 
+// Observatory's daily snapshot is a materialized view over the streams appended
+// below, so every harness change invalidates the day. One shared import promise:
+// concurrent callers join it, and a failed load clears it so a later call retries
+// instead of inheriting a permanently rejected promise.
+let snapshotModule: Promise<typeof import("../observatory/server/snapshots.ts")> | null = null;
+const refreshSnapshot = (force = false): void => {
+	snapshotModule ??= import("../observatory/server/snapshots.ts");
+	void snapshotModule
+		.then((module) => {
+			module.ensureSnapshot(undefined, undefined, { force });
+		})
+		.catch(() => {
+			// expected: observatory is not installed alongside refine
+			snapshotModule = null;
+		});
+};
+
 const appendHistory = (entry: HistoryEntry): void => {
 	mkdirSync(REFINE_DIR, { recursive: true });
 	appendFileSync(HISTORY_FILE, `${JSON.stringify(entry)}\n`, "utf8");
+	refreshSnapshot(true);
 };
 
 const armDirect = async (proposal: Proposal): Promise<ArmResult> => {
@@ -959,21 +977,10 @@ export default function (pi: ExtensionAPI) {
 		autoToolErrors.set(sig, (autoToolErrors.get(sig) ?? 0) + 1);
 	});
 
-	// The daily Improvements snapshot is materialized once: first turn of the
-	// session checks for today's file, then imports the observatory snapshot
-	// module lazily so refine still loads when observatory is not installed.
-	let snapshotDay = "";
+	// Cheap on every turn: ensureSnapshot recomputes only when an input stream is
+	// newer than the day's file, so steady state is a handful of stat calls.
 	const maybeDailySnapshot = (): void => {
-		const day = new Date().toISOString().slice(0, 10);
-		if (snapshotDay === day) return;
-		snapshotDay = day;
-		void import("../observatory/server/snapshots.ts")
-			.then((module) => {
-				module.ensureSnapshot(day);
-			})
-			.catch(() => {
-				// expected: observatory is not installed alongside refine
-			});
+		refreshSnapshot();
 	};
 
 	let probeDay = "";
