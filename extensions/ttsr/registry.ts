@@ -54,6 +54,8 @@ export interface RegistryEntry {
 	status?: string;
 	subagents?: boolean;
 	reads?: string[];
+	/** Injected under `## Validation` in the synthesized rule body: how to check the artifact after the trigger. */
+	validate?: string;
 	triggers?: RegistryTrigger[];
 	gate?: RegistryGate;
 }
@@ -304,6 +306,7 @@ export function synthesizeRules(e: LoadedEntry): SynthesizedRule[] {
 		"",
 		"Read before proceeding:",
 		...readPaths.map((p) => `- ${p}`),
+		...(typeof e.validate === "string" && e.validate.trim() ? ["", "## Validation", "", e.validate.trim()] : []),
 	].join("\n");
 
 	const out: SynthesizedRule[] = [];

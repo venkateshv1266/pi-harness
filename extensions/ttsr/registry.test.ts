@@ -155,6 +155,7 @@ contexts:
   - id: alpha
     file: missing.md
     when: "project override of alpha"
+    validate: "re-check the file with ask_jev before calling it done"
     triggers:
       - tool: '^bash$'
         match: '(^|[;&|\\n]\\s*)alpha-override(\\s|$)'
@@ -230,6 +231,7 @@ if (alphaRule) {
 	check(p.verify !== null && p.verify.type === "noul", "alpha: noul verify synthesized");
 	const scope = p.fm.scope as string[] | undefined;
 	check(scope?.[0] === "tool" && p.fm.interrupt === false, "alpha: tool scope, non-interrupting");
+	check(alphaRule.source.includes("## Validation") && alphaRule.source.includes("ask_jev"), "alpha: validate hint injected into the rule body");
 }
 
 const beta2 = rules.find((r) => r.name === "ctx-beta-2");
