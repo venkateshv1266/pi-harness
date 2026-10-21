@@ -914,33 +914,40 @@ function projectStoreNames(cwd: string): string[] {
 	return [...names].filter(Boolean);
 }
 
-function skillRoots(): { label: string; dir: string }[] {
+/** How a root's loader discovers skills — must mirror pi:
+ * pi/agents (pi core collectSkillEntries): a dir holding SKILL.md is one skill (no
+ * recursion); pi roots also load root-level .md, agents roots load .md in subdirs at
+ * any depth. claude (claude-compat): only top-level subdirs holding SKILL.md. */
+type SkillRootMode = "pi" | "agents" | "claude";
+
+function skillRoots(): { label: string; dir: string; mode: SkillRootMode }[] {
 	const home = homedir();
 	const cwd = process.cwd();
-	const roots = [
-		{ label: "user", dir: join(home, ".pi", "agent", "skills") },
-		{ label: "project", dir: join(cwd, ".pi", "skills") },
-		{ label: "user · agents", dir: join(home, ".agents", "skills") },
-		{ label: "project · agents", dir: join(cwd, ".agents", "skills") },
-		{ label: "user · claude", dir: join(home, ".claude", "skills") },
-		{ label: "project · claude", dir: join(cwd, ".claude", "skills") },
-		{ label: "user · memory", dir: join(home, ".pi", "agent", "jev-memory", "skills") },
+	const roots: { label: string; dir: string; mode: SkillRootMode }[] = [
+		{ label: "user", dir: join(home, ".pi", "agent", "skills"), mode: "pi" },
+		{ label: "project", dir: join(cwd, ".pi", "skills"), mode: "pi" },
+		{ label: "user · agents", dir: join(home, ".agents", "skills"), mode: "agents" },
+		{ label: "project · agents", dir: join(cwd, ".agents", "skills"), mode: "agents" },
+		{ label: "user · claude", dir: join(home, ".claude", "skills"), mode: "claude" },
+		{ label: "project · claude", dir: join(cwd, ".claude", "skills"), mode: "claude" },
+		{ label: "user · memory", dir: join(home, ".pi", "agent", "jev-memory", "skills"), mode: "pi" },
 	];
 	for (const name of projectStoreNames(cwd)) {
 		roots.push({
 			label: `project · memory (${name})`,
 			dir: join(home, ".pi", "agent", "projects-memory", name, "skills"),
+			mode: "pi",
 		});
 	}
 	return roots;
 }
 
-/** Mirrors pi's loader: a dir holding SKILL.md is one skill (no recursion); otherwise walk subdirs and take root-level .md files. */
-function scanSkillRoot(dir: string, root: string, out: SkillEntry[], seen: Set<string>, depth = 0): void {
+function scanSkillRoot(dir: string, root: string, mode: SkillRootMode, out: SkillEntry[], seen: Set<string>, depth = 0): void {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
 	} catch {
+		// expected: EACCES or nonexistent dir — nothing to scan
 		return;
 	}
 
@@ -959,27 +966,78 @@ function scanSkillRoot(dir: string, root: string, out: SkillEntry[], seen: Set<s
 		}
 		return;
 	}
+	if (mode === "claude" && depth > 0) return;
 
 	for (const entry of entries) {
 		if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 		const full = join(dir, entry.name);
 		if (isDirectoryEntry(dir, entry)) {
-			if (depth < 8) scanSkillRoot(full, root, out, seen, depth + 1);
+			if (depth < 8) scanSkillRoot(full, root, mode, out, seen, depth + 1);
 			continue;
 		}
-		if (depth > 0) continue;
+		if (mode === "claude") continue;
+		if (mode === "pi" && depth > 0) continue;
+		if (mode === "agents" && depth === 0) continue;
 		const enabled = entry.name.endsWith(".md");
+		const disabled = entry.name.endsWith(`.md${DISABLED_SUFFIX}`);
+		if (!enabled && !disabled) continue;
 		const name = enabled
 			? entry.name.slice(0, -".md".length)
-			: entry.name.endsWith(`.md${DISABLED_SUFFIX}`)
-				? entry.name.slice(0, -(`.md${DISABLED_SUFFIX}`).length)
-				: "";
-		if (!name) continue;
+			: entry.name.slice(0, -(`.md${DISABLED_SUFFIX}`).length);
 		const key = canonicalPath(full);
 		if (seen.has(key)) continue;
 		seen.add(key);
 		out.push({ name, file: full, root, enabled });
 	}
+}
+
+/** Rename nested *.md ↔ *.md.disabled inside a skill dir so no loader can discover
+ * partial content while the skill is off. Never touches the dir's own SKILL.md (the
+ * caller renames it separately), symlinks, dotfiles, or a name whose target exists. */
+function renameNestedMarkdown(dir: string, enable: boolean): number {
+	let renamed = 0;
+	const walk = (d: string): void => {
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(d, { withFileTypes: true });
+		} catch {
+			// expected: EACCES or dir removed mid-walk — skip
+			return;
+		}
+		for (const entry of entries) {
+			if (entry.isSymbolicLink()) continue;
+			if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+			const full = join(d, entry.name);
+			if (entry.isDirectory()) {
+				walk(full);
+				continue;
+			}
+			if (!entry.isFile()) continue;
+			if (d === dir && (entry.name === SKILL_FILE || entry.name === `${SKILL_FILE}${DISABLED_SUFFIX}`)) continue;
+			if (enable) {
+				if (!entry.name.endsWith(`.md${DISABLED_SUFFIX}`)) continue;
+				const target = full.slice(0, -DISABLED_SUFFIX.length);
+				if (existsSync(target)) continue;
+				try {
+					renameSync(full, target);
+					renamed++;
+				} catch {
+					// expected: EACCES/EPERM on a locked file — the next toggle resumes the remaining renames
+				}
+			} else {
+				if (!entry.name.endsWith(".md")) continue;
+				if (existsSync(`${full}${DISABLED_SUFFIX}`)) continue;
+				try {
+					renameSync(full, `${full}${DISABLED_SUFFIX}`);
+					renamed++;
+				} catch {
+					// expected: EACCES/EPERM on a locked file — the next toggle resumes the remaining renames
+				}
+			}
+		}
+	};
+	walk(dir);
+	return renamed;
 }
 
 function skillFrontmatter(file: string): { name?: string; description?: string } {
@@ -1028,7 +1086,7 @@ function skillItem(entry: SkillEntry, disambiguate: boolean): SetupItem {
 			`File: ${entry.file}`,
 			entry.enabled
 				? `Enabled — loaded at startup and available as /skill:${name}.`
-				: `Disabled — renamed to ${basename(entry.file)}; pi skips this directory at startup.`,
+				: `Disabled — SKILL.md and nested .md files are renamed to *.disabled; pi skips this directory tree.`,
 		]
 			.join("\n"),
 		effect: "next start · /reload",
@@ -1039,13 +1097,21 @@ function skillItem(entry: SkillEntry, disambiguate: boolean): SetupItem {
 			const enable = value === "on";
 			const from = enable ? disabledFile : baseFile;
 			const to = enable ? baseFile : disabledFile;
-			if (!existsSync(from)) return `✗ ${name}: ${from} not found`;
+			if (!existsSync(from)) return `✗ ${name}: ${basename(from)} not found`;
+			if (existsSync(to)) return `✗ ${name}: ${basename(to)} already exists`;
+			const isDeclared = basename(baseFile) === SKILL_FILE;
 			try {
-				renameSync(from, to);
+				// Renaming only SKILL.md is not a complete disable: with SKILL.md gone,
+				// pi's ~/.agents/skills discovery recurses into the dir and loads every
+				// nested .md as its own skill. Hide SKILL.md first (restore it last),
+				// then hide (restore) every nested .md file.
+				if (!enable) renameSync(from, to);
+				const nested = isDeclared ? renameNestedMarkdown(dirname(baseFile), enable) : 0;
+				if (enable) renameSync(from, to);
+				return `skill ${name} ${enable ? "enabled" : "disabled"}${nested > 0 ? ` (+${nested} nested .md)` : ""}`;
 			} catch (error) {
 				return `✗ ${name}: ${error instanceof Error ? error.message : String(error)}`;
 			}
-			return `skill ${name} ${enable ? "enabled" : "disabled"}`;
 		},
 	};
 }
@@ -1053,7 +1119,7 @@ function skillItem(entry: SkillEntry, disambiguate: boolean): SetupItem {
 function skillsSection(): SetupSection {
 	const entries: SkillEntry[] = [];
 	const seen = new Set<string>();
-	for (const root of skillRoots()) scanSkillRoot(root.dir, root.label, entries, seen);
+	for (const root of skillRoots()) scanSkillRoot(root.dir, root.label, root.mode, entries, seen);
 	entries.sort((a, b) => a.name.localeCompare(b.name) || a.root.localeCompare(b.root));
 	const counts = new Map<string, number>();
 	for (const entry of entries) counts.set(entry.name, (counts.get(entry.name) ?? 0) + 1);
@@ -1061,7 +1127,7 @@ function skillsSection(): SetupSection {
 		id: "skills",
 		title: "Skills",
 		detail:
-			"Every discovered skill. Toggling off renames SKILL.md to SKILL.md.disabled so pi skips it at startup; toggling on restores it. Package/plugin skills are enabled per plugin in Packages.",
+			"Every skill pi can discover, mirroring each root's loader. Toggling off renames SKILL.md and every nested .md to *.disabled so nothing inside can load; toggling on restores all of them. Package/plugin skills are enabled per plugin in Packages.",
 		items: entries.map((entry) => skillItem(entry, (counts.get(entry.name) ?? 0) > 1)),
 	};
 }

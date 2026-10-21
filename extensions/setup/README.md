@@ -20,6 +20,7 @@ Outside the TUI (`ctx.mode !== "tui"`), `/setup` prints every section and curren
 | Appearance | Theme, TUI mode | pi core · `/theme`, `/settings` |
 | Core | Project trust, steering, follow-ups, double-escape, quiet startup, thinking blocks, skill commands, HTTP idle timeout | pi core · `/settings` |
 | Packages | Installed pi packages and marketplace plugins | pi core packages · `/plugins` |
+| Skills | Every skill pi can discover across the user, project, `.agents`, `.claude`, and jev-memory roots; toggling off hides `SKILL.md` and every nested `.md` | pi core skills · `/skill:name` |
 | Commands | Every slash command in the session, sorted by source | per-item source |
 | Rules | TTSR rule files and their triggers/scopes | [ttsr](../ttsr/README.md) · `/ttsr` |
 | Skills | Every discovered skill, with an enable/disable toggle | pi skills · `/skill:<name>` |
@@ -147,4 +148,5 @@ export default function setup(): SetupSection {
 - Edits persist immediately, but most take effect later — check the `applies:` line. Theme changes need a restart or `/reload`; new thinking overrides appear in the list after a restart or `/reload`; packages and most Core flags need a restart.
 - `⌫` removal is immediate, with no confirmation.
 - Rules, MCP, and Commands are display-only sections.
+- Skills are listed per root, mirroring each loader's real discovery rules (a skill dir holding `SKILL.md` is one skill; `.agents` roots also load nested `.md`). Toggling a skill off renames `SKILL.md` **and every nested `.md`** to `*.disabled` — renaming only `SKILL.md` would let pi recurse into the dir and load the child files as separate skills. Toggling back on restores all of them.
 - Contributor files are re-imported per `/setup` invocation, but an already-imported module may stay cached for the life of the process — contributor edits may require a restart (not documented in code).
