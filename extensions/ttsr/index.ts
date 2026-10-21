@@ -135,6 +135,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 	let verifyCache = new Map<string, Verdict>();
 	let digestCache: { turn: number; variant: string; text: string; source: string } | null = null;
 	let gapCounters = new Map<string, number>();
+	let coveredLogged = new Set<string>();
 	let turnCount = 0;
 
 	let textBuf = "";
@@ -231,9 +232,40 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 		} catch { /* non-file read target */ }
 	}
 
+	// The rule's own covering doc was read this session and is unchanged: its text
+	// already states what the rule body repeats, so a reminder is pure noise.
+	function coveredRead(rule: Rule): string | null {
+		if (rule.coveredBy.length === 0) return null;
+		for (const p of readReceipts.keys()) {
+			if (!rule.coveredBy.some((re) => re.test(p))) continue;
+			if (noveltySatisfied([p], readReceipts)) return p;
+		}
+		return null;
+	}
+
+	// A silent skip must stay auditable: rule-noise audits read this ledger.
+	function logCoveredSkip(rule: Rule, coveredBy: string) {
+		const key = `${rule.name}:${turnCount}`;
+		if (coveredLogged.has(key)) return;
+		coveredLogged.add(key);
+		try {
+			const dir = path.join(homeDir(), ".pi", "agent", "jev-decisions");
+			fs.mkdirSync(dir, { recursive: true });
+			fs.appendFileSync(
+				path.join(dir, "ttsr-jev.jsonl"),
+				JSON.stringify({ ts: new Date().toISOString(), rule: rule.name, decision: "suppressed", mode: "covered", coveredBy }) + "\n",
+			);
+		} catch { /* logging must never break rule evaluation */ }
+	}
+
 	function canFire(rule: Rule): boolean {
 		if (rule.repeat === "once") {
 			if (injectedNames.has(rule.name)) return false;
+			const covered = coveredRead(rule);
+			if (covered) {
+				logCoveredSkip(rule, covered);
+				return false;
+			}
 			// Already read and unchanged: satisfied without a push. Re-arms when the
 			// doc's mtime moves (see refreshContextCompliance).
 			if (rule.context && rule.context.kind === "trigger" && noveltySatisfied(rule.context.reads, readReceipts)) {
@@ -764,6 +796,7 @@ export default async function ttsrExtension(pi: ExtensionAPI) {
 
 	pi.on("turn_start", () => {
 		abortArmed = false;
+		coveredLogged = new Set();
 		pendingToolReminders = new Map();
 		pendingVerify = new Set();
 		suppressCache = new Map();

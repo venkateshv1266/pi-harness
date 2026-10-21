@@ -51,13 +51,23 @@ scope: [text, thinking, tool]              # default: all three
 globs: ["src/**/*.ts"]                     # optional path gate (tool scope only)
 interrupt: true                            # default: true for text/thinking, false for tool
 repeat: once                               # "once" | "after-gap:3"
+coveredBy: ["**/skills/push-changes/SKILL.md"]  # optional: a read of these silences the rule
 flags: i                                   # optional regex flags (e.g. i for case-insensitive)
 verify: {"type":"noul","instructions":"...","threshold":0.8}  # optional Jev intent gate
 ---
 Rule body — the reminder injected on match.
 ```
 
-Legacy aliases: `ttsrTrigger`/`ttsr_trigger` → `condition`; `ast_condition` → `astCondition`.
+Legacy aliases: `ttsrTrigger`/`ttsr_trigger` → `condition`; `ast_condition` → `astCondition`;
+`covered_by` → `coveredBy`.
+
+`coveredBy` (globs) silences a rule while a matching doc has been read this
+session and is unchanged since: the doc states what the rule body repeats, so
+the reminder is noise. Coverage is decided in `canFire` — before the verify gate
+and before any interrupt — so it costs no Jev call; each skip is logged to
+`ttsr-jev.jsonl` as `mode: "covered"` so a rule that goes quiet stays auditable.
+Example: `bitgo-commit-standards` is covered by the `/push-changes` skill, whose
+text already spells out the commit standard.
 
 ### Subagent children never enforce text/thinking rules
 

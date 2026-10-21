@@ -82,6 +82,8 @@ export interface Rule {
 	astConditions: string[];
 	scope: Scope[];
 	globs: RegExp[] | null;
+	/** Docs whose read already covers this rule: no reminder while one is fresh. */
+	coveredBy: RegExp[];
 	interrupt: boolean;
 	repeat: "once" | { afterGap: number };
 	description: string | null;
@@ -243,12 +245,13 @@ export function parseRuleSource(raw: string, file: string): Rule | null {
 
 	const scope = toScopeList(fm.scope) ?? ["text", "thinking", "tool"];
 	const globs = toGlobList(fm.globs)?.map(globToRegex) ?? null;
+	const coveredBy = toGlobList(fm.coveredBy ?? fm.covered_by)?.map(globToRegex) ?? [];
 	const interruptDefault = scope.includes("tool") ? false : true;
 	const interrupt = fm.interrupt === undefined ? interruptDefault : Boolean(fm.interrupt);
 	const repeat = parseRepeat(fm.repeat);
 	const flags = typeof fm.flags === "string" ? fm.flags : "";
 
-	return { name, bucket, conditions, astConditions, scope, globs, interrupt, repeat, description, verify, body, file, flags };
+	return { name, bucket, conditions, astConditions, scope, globs, coveredBy, interrupt, repeat, description, verify, body, file, flags };
 }
 
 // ─── Matching ────────────────────────────────────────────────────────────
