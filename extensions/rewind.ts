@@ -26,8 +26,9 @@
  * messages are not deleted — they remain recoverable via `/tree`.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { Container, SelectList, type SelectItem, Text } from "@earendil-works/pi-tui";
 import { chmod, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
@@ -210,6 +211,82 @@ function userMessagesOnBranch(entries: SessionEntry[]): SessionEntry[] {
 }
 
 // ---------------------------------------------------------------------------
+// Scrollable selector
+// ---------------------------------------------------------------------------
+
+/** Viewport floor so the list stays usable on very short terminals. */
+const MIN_VISIBLE_ROWS = 5;
+
+/** Half the terminal height, leaving the transcript visible above and below. */
+function halfHeightRows(tui: { terminal: { rows: number } }): number {
+	return Math.max(MIN_VISIBLE_ROWS, Math.floor(tui.terminal.rows / 2));
+}
+
+/**
+ * Single-select list bounded to half the terminal height.
+ *
+ * `ctx.ui.select` renders every option, so a long prompt history pushes the
+ * tail below the bottom of the screen and the last entries cannot be reached.
+ * SelectList keeps the selection in view and scrolls instead.
+ */
+function selectScrollable(
+	ctx: ExtensionContext,
+	title: string,
+	items: SelectItem[],
+): Promise<string | null> {
+	return ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+
+		const listTheme = {
+			selectedPrefix: (t: string) => theme.fg("accent", t),
+			selectedText: (t: string) => theme.fg("accent", t),
+			description: (t: string) => theme.fg("muted", t),
+			scrollInfo: (t: string) => theme.fg("dim", t),
+			noMatch: (t: string) => theme.fg("warning", t),
+		};
+
+		const buildList = (visibleRows: number): SelectList => {
+			const list = new SelectList(items, visibleRows, listTheme);
+			list.onSelect = (item) => done(item.value);
+			list.onCancel = () => done(null);
+			return list;
+		};
+
+		let visibleRows = halfHeightRows(tui);
+		let list = buildList(visibleRows);
+		const listSlot = container.children.length;
+		container.addChild(list);
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate · enter select · esc cancel"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+		return {
+			render(width: number) {
+				const rows = halfHeightRows(tui);
+				if (rows !== visibleRows) {
+					// Rebuild on resize so the viewport keeps tracking the terminal.
+					const selected = list.getSelectedItem();
+					const index = selected ? items.findIndex((i) => i.value === selected.value) : -1;
+					visibleRows = rows;
+					list = buildList(rows);
+					if (index >= 0) list.setSelectedIndex(index);
+					container.children[listSlot] = list;
+				}
+				return container.render(width);
+			},
+			invalidate() {
+				container.invalidate();
+			},
+			handleInput(data: string) {
+				list.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -355,10 +432,11 @@ export default function rewindExtension(pi: ExtensionAPI): void {
 				entryIds.push(entry.id);
 			});
 
-			const choice = await ctx.ui.select("Rewind to which prompt?", items);
-			if (choice === undefined) return; // cancelled
-			const idx = items.indexOf(choice);
-			if (idx === -1) return;
+			const selectItems: SelectItem[] = items.map((label, i) => ({ value: String(i), label }));
+			const choice = await selectScrollable(ctx, "Rewind to which prompt?", selectItems);
+			if (choice === null) return; // cancelled
+			const idx = Number(choice);
+			if (!Number.isInteger(idx) || idx < 0 || idx >= entryIds.length) return;
 			const selectedEntryId = entryIds[idx];
 			const selectedEntry = userMsgs[idx];
 
