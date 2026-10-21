@@ -34,6 +34,7 @@ import {
 	type StagedManifest,
 } from "../../utils/harness-surface.ts";
 import { runExtensionGate, type ExtensionGateResult } from "./extension-gate.ts";
+import { synthesizeFragmentRules } from "../ttsr/registry.ts";
 
 export type Proposal = {
 	kind: HarnessKind;
@@ -82,17 +83,52 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 	value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 
 /**
+ * First reason a bundle would be rejected, or null when it is valid.
+ * Context fragments are checked against the ttsr synthesizer that will consume
+ * them: a fragment that yields no rule would arm silently and never fire.
+ */
+export function describeInvalidProposal(kind: HarnessKind, name: string, files: ProposalFiles): string | null {
+	const bundle = validateBundle(kind, name, files);
+	if (!bundle.ok) return bundle.error;
+	if (kind === "extension") {
+		const pairing = extensionPairing(files);
+		if (!pairing.ok || pairing.pairing.kind !== "context") return null;
+		if (synthesizeFragmentRules(pairing.pairing.entry, pairing.pairing.name, `${pairing.pairing.name}.md`).length === 0) {
+			return "pairing.yaml synthesizes no TTSR rule — triggers must be objects with a `tool:` key (`- tool: bash`, plus optional `match:` / `globs:`), or set `subagents: true` with `reads:`";
+		}
+		return null;
+	}
+	if (kind !== "context") return null;
+	const fragment = files["entry.yaml"];
+	if (typeof fragment !== "string") return "context bundle is missing entry.yaml";
+	if (synthesizeFragmentRules(fragment, name, `${name}.md`).length === 0) {
+		return "entry.yaml synthesizes no TTSR rule — triggers must be objects with a `tool:` key (`- tool: bash`, plus optional `match:` / `globs:`), or set `subagents: true` with `reads:`";
+	}
+	return null;
+}
+
+/**
  * Normalize planner/tool output into a bundle. Accepts the legacy
  * `{ kind, name, content }` shape for rule/note so old prompts and staged
  * items keep working, and the bundle shape `{ files: {...} }` for everything.
+ * `onError` receives the rejection reason so callers can feed it back to the model.
  */
-export function toProposal(input: unknown): Proposal | null {
+export function toProposal(input: unknown, onError?: (reason: string) => void): Proposal | null {
 	const raw = asRecord(input);
-	if (!raw) return null;
+	if (!raw) {
+		onError?.("proposal must be an object");
+		return null;
+	}
 	const kind = raw.kind as HarnessKind;
-	if (!HARNESS_KINDS.includes(kind)) return null;
+	if (!HARNESS_KINDS.includes(kind)) {
+		onError?.(`kind must be one of ${PROPOSABLE_KINDS.join(", ")}`);
+		return null;
+	}
 	const name = slugOrThrow(raw.name);
-	if (!name) return null;
+	if (!name) {
+		onError?.("name must be kebab-case");
+		return null;
+	}
 
 	const filesRaw = asRecord(raw.files);
 	let files: ProposalFiles | null = null;
@@ -103,12 +139,22 @@ export function toProposal(input: unknown): Proposal | null {
 		const spec = KIND_SPECS[kind];
 		files = { [spec.primaryFile(name, {})]: raw.content.trim() };
 	}
-	if (!files) return null;
+	if (!files) {
+		onError?.("bundle has no string files");
+		return null;
+	}
 
-	const validation = validateBundle(kind, name, files);
-	if (!validation.ok) return null;
+	const invalid = describeInvalidProposal(kind, name, files);
+	if (invalid) {
+		onError?.(invalid);
+		return null;
+	}
 	const expectation = typeof raw.expectation === "string" ? raw.expectation.trim() : undefined;
-	if (kind === "extension" && validateExpectation(expectation)) return null;
+	const expectationError = kind === "extension" ? validateExpectation(expectation) : null;
+	if (expectationError) {
+		onError?.(expectationError);
+		return null;
+	}
 
 	const rawDimension = typeof raw.dimension === "string" ? raw.dimension.trim().toLowerCase() : "";
 	const dimension = rawDimension === "inv" || rawDimension === "invariant" ? "inv" : rawDimension === "dom" || rawDimension === "domain" ? "dom" : undefined;
@@ -140,7 +186,7 @@ export function parseProposals(raw: string): Proposal[] {
 
 	const proposals = (parsed as { proposals?: unknown }).proposals;
 	if (!Array.isArray(proposals)) return [];
-	return proposals.map(toProposal).filter((p): p is Proposal => p !== null);
+	return proposals.map((item) => toProposal(item)).filter((p): p is Proposal => p !== null);
 }
 
 export const proposalContent = (p: Proposal): string => primaryContent(p.kind, p.name, p.files);

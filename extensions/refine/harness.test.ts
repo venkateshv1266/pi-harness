@@ -9,6 +9,7 @@ import {
 	aggregateProposals,
 	dedupeProposals,
 	describeArm,
+	describeInvalidProposal,
 	listCoverage,
 	listStaged,
 	migrateLegacyStaging,
@@ -182,6 +183,23 @@ test("stage -> list -> arm -> rollback for a rule", async () => {
 	} finally {
 		cleanup();
 	}
+});
+
+test("a context fragment that synthesizes no rule is refused with a reason", () => {
+	const doc = "# Doc\n\nBody.\n";
+	const inert = { "inert-doc.md": doc, "entry.yaml": "id: inert-doc\nfile: inert-doc.md\ntier: advisory\ntriggers:\n  - '~/.pi/agent/rules/**'\n" };
+	let reason = "";
+	const refused = toProposal({ kind: "context", name: "inert-doc", title: "t", evidence: "e", files: inert }, (why) => {
+		reason = why;
+	});
+	assert.equal(refused, null);
+	assert.match(reason, /synthesizes no TTSR rule/);
+
+	const valid = { "ok-doc.md": doc, "entry.yaml": "id: ok-doc\nfile: ok-doc.md\ntier: advisory\ntriggers:\n  - tool: bash\n    match: 'ok-doc'\n" };
+	assert.equal(describeInvalidProposal("context", "ok-doc", valid), null);
+	assert.notEqual(toProposal({ kind: "context", name: "ok-doc", title: "t", evidence: "e", files: valid }), null);
+	const badTier = { ...valid, "entry.yaml": valid["entry.yaml"].replace("tier: advisory", "tier: task") };
+	assert.match(describeInvalidProposal("context", "ok-doc", badTier) ?? "", /tier "task" is invalid/);
 });
 
 test("context arm writes the doc and registry fragment", async () => {

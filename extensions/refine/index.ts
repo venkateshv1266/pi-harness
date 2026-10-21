@@ -136,7 +136,8 @@ const buildProposalPrompt = (trajectory: string, lessons: string[], coverage: Co
 		"Kinds (pick the smallest one that carries the edit):",
 		'- "rule": a stream-triggered TTSR rule (format below). ONLY when the anti-pattern has a precise trigger signature in agent output AND it recurred 2+ times. Prefer astCondition over text regex; intent-level behavior belongs in a note.',
 		'- "note": passive markdown record for observations with no stream-matchable signature.',
-		'- "context": a doc plus a registry fragment entry.yaml (id, file, tier, triggers) that makes it fire when relevant.',
+		'- "context": a doc plus a registry fragment entry.yaml that makes ttsr push the doc when relevant. entry.yaml MUST use this shape exactly — triggers are objects with a `tool:` key (a plain string trigger is rejected, as is a fragment that synthesizes no rule):\n' +
+			"  id: <name>\n  file: <name>.md\n  when: <one line: the situation that needs this doc>\n  tier: advisory                 # advisory | gated | index-only\n  triggers:\n    - tool: bash                 # a tool name, or \"(write|edit)\" / \"(read|bash)\"\n      match: '<regex over the tool payload>'    # optional\n      globs: ['**/path/**']                     # optional, write/edit only\n  gate:\n    threshold: 0.75\n    criteria:\n      read_now: '<when the doc is genuinely required, decidable from tool name + payload>'\n      not_needed: '<the incidental match that must not fire>'",
 		'- "agent": a subagent definition with frontmatter name/description/tools/model/thinking. Use when delegation divides labor cleanly.',
 		'- "skill": a SKILL.md with frontmatter name/description and structured procedure steps. Use for a repeatable multi-step workflow.',
 		'- "settings": a narrow settings patch (patch.json) for modelRouter/courseCheck/decisionTuner/refine keys only; primitives only.',
@@ -1288,11 +1289,12 @@ export default function (pi: ExtensionAPI) {
 			dimension: Type.Optional(StringEnum(["inv", "dom"])),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const proposal = toProposal(params);
+			let reason = "kind must be one of " + PROPOSABLE_KINDS.join(", ");
+			const proposal = toProposal(params, (why) => {
+				reason = why;
+			});
 			if (!proposal) {
-				throw new Error(
-					`Invalid proposal: kind must be one of ${PROPOSABLE_KINDS.join(", ")}, name must be kebab-case, and the files bundle must pass that kind's validation (e.g. a rule needs frontmatter with condition/astCondition; an extension needs index.ts + README.md + a pairing trigger and an expectation).`,
-				);
+				throw new Error(`Invalid proposal: ${reason}. Fix the bundle and propose again.`);
 			}
 			const coverage = await listCoverage(AGENT_ROOT, REFINE_DIR, CONTEXTS_ROOT);
 			if (dedupeProposals([proposal], coverage).length === 0) {

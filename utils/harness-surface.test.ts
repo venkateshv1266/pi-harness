@@ -48,6 +48,12 @@ test("context bundle pairs a doc with a registry fragment", () => {
 	assert.equal(validateBundle("context", "grafana-runbook", files).ok, true);
 	const mismatch = validateBundle("context", "grafana-runbook", { ...files, "entry.yaml": "id: other\nfile: grafana-runbook.md\n" });
 	assert.equal(mismatch.ok, false);
+	const badTier = validateBundle("context", "grafana-runbook", { ...files, "entry.yaml": files["entry.yaml"].replace("tier: advisory", "tier: task") });
+	assert.equal(badTier.ok, false);
+	if (!badTier.ok) assert.match(badTier.error, /tier "task" is invalid/);
+	const noTier = validateBundle("context", "grafana-runbook", { ...files, "entry.yaml": "id: grafana-runbook\nfile: grafana-runbook.md\n" });
+	assert.equal(noTier.ok, false);
+	if (!noTier.ok) assert.match(noTier.error, /tier/);
 });
 
 test("agent and skill bundles require frontmatter with a description", () => {

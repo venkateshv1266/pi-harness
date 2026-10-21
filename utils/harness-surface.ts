@@ -88,6 +88,8 @@ function validateNote(name: string, files: ProposalFiles): string | null {
 	return null;
 }
 
+const CONTEXT_TIERS = ["advisory", "gated", "index-only"];
+
 function validateContext(name: string, files: ProposalFiles): string | null {
 	const doc = files[`${name}.md`];
 	const entry = files["entry.yaml"];
@@ -95,7 +97,9 @@ function validateContext(name: string, files: ProposalFiles): string | null {
 	if (typeof entry !== "string" || !entry.trim()) return "context bundle must contain entry.yaml (the registry fragment)";
 	if (!new RegExp(`^\\s*id\\s*:\\s*["']?${name}["']?\\s*$`, "m").test(entry)) return `entry.yaml must declare id: ${name}`;
 	if (!/^\s*file\s*:/m.test(entry)) return "entry.yaml must declare the doc via `file:`";
-	if (!/^\s*tier\s*:/m.test(entry) && !/^\s*triggers\s*:/m.test(entry)) return "entry.yaml needs a tier or at least one trigger";
+	const tier = /^\s*tier\s*:\s*["']?([A-Za-z-]+)["']?\s*$/m.exec(entry)?.[1];
+	if (!tier) return "entry.yaml must declare `tier:` (advisory | gated | index-only)";
+	if (!CONTEXT_TIERS.includes(tier)) return `entry.yaml tier "${tier}" is invalid — use advisory | gated | index-only`;
 	return null;
 }
 
