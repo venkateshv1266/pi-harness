@@ -33,9 +33,7 @@
  */
 
 import type { BeforeAgentStartEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { jevCall as sharedJevCall, scrubSecrets, type Question } from "../../utils/jev-client.ts";
 import { looksLikeUserCorrection, logDecision, logEvent, logOutcome, type Verdict as OutcomeVerdict } from "../../utils/jev-outcomes.ts";
 import {
 	buildNudgeDrafts,
@@ -58,8 +56,6 @@ import { resolveLiveConfig, updateCourseSettings } from "./settings.ts";
 
 const SYSTEM = "course-check";
 const LOG_FILE = "course-check.jsonl";
-const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
-const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
 const MAX_FAILS = 3;
 const COOLDOWN_MS = 30 * 60_000;
 
@@ -105,59 +101,20 @@ const PROMPT_QUESTIONS = {
 	},
 } as const;
 
-let jevKeyCache: string | null | undefined;
 
-function jevKey(): string | null {
-	if (jevKeyCache !== undefined) return jevKeyCache;
-	jevKeyCache = process.env.JEV_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
-	if (!jevKeyCache) {
-		try {
-			const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8")) as { openrouter?: { key?: string } };
-			jevKeyCache = typeof auth.openrouter?.key === "string" ? auth.openrouter.key : null;
-		} catch {
-			jevKeyCache = null;
-		}
-	}
-	return jevKeyCache;
-}
 
-const SECRET_PATTERNS: RegExp[] = [
-	/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-	/\bsk-[A-Za-z0-9_-]{10,}/g,
-	/\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-	/\bAKIA[0-9A-Z]{16}\b/g,
-	/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-];
-
-function scrubSecrets(s: string): string {
-	let out = s;
-	for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
-	return out;
-}
-
-async function jevCall(state: string, timeoutMs: number, questions: Record<string, unknown> = QUESTIONS): Promise<Record<string, unknown> | null> {
-	const key = jevKey();
-	if (!key) return null;
-	let res: { ok: boolean; json(): Promise<unknown> };
+async function jevCall(
+	state: string,
+	timeoutMs: number,
+	questions: Record<string, unknown> = QUESTIONS,
+): Promise<Record<string, unknown> | null> {
 	try {
-		res = await fetch(`${JEV_BASE_URL}/v1/systemone`, {
-			method: "POST",
-			headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-			body: JSON.stringify({ model: JEV_MODEL, state, questions }),
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-	} catch {
-		return null;
-	}
-	if (!res.ok) return null;
-	try {
-		const j = (await res.json()) as { answers?: Record<string, unknown> };
-		return j.answers ?? null;
+		const result = await sharedJevCall(state, questions as unknown as Record<string, Question>, { timeoutMs, retries: 0 });
+		return result.answers;
 	} catch {
 		return null;
 	}
 }
-
 function sessionId(ctx: ExtensionContext): string {
 	try {
 		return ctx.sessionManager.getSessionId();

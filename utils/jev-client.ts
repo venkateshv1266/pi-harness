@@ -34,25 +34,31 @@ export type Question = NoulQuestion | ChoiceQuestion | ScoreQuestion;
 export type JevAnswers = Record<string, Record<string, unknown>>;
 export type JevResult = { answers: JevAnswers; costUsd: number; model: string };
 
-let keyCache: string | null | undefined;
+let keyCache: string | null = null;
+
+export function resetJevKeyCache(): void {
+	keyCache = null;
+}
 
 export function jevKey(): string | null {
-	if (keyCache !== undefined) return keyCache;
-	keyCache = process.env.JEV_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
-	if (!keyCache) {
-		try {
-			const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8")) as {
-				openrouter?: { key?: string; access?: string };
-			};
-			keyCache =
-				typeof auth.openrouter?.key === "string"
-					? auth.openrouter.key
-					: typeof auth.openrouter?.access === "string"
-						? auth.openrouter.access
-						: null;
-		} catch {
-			keyCache = null;
-		}
+	if (keyCache) return keyCache;
+	const direct = process.env.JEV_API_KEY ?? process.env.OPENROUTER_API_KEY;
+	if (direct) {
+		keyCache = direct;
+		return keyCache;
+	}
+	try {
+		const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8")) as {
+			openrouter?: { key?: string; access?: string };
+		};
+		keyCache =
+			typeof auth.openrouter?.key === "string"
+				? auth.openrouter.key
+				: typeof auth.openrouter?.access === "string"
+					? auth.openrouter.access
+					: null;
+	} catch {
+		keyCache = null;
 	}
 	return keyCache;
 }
@@ -86,13 +92,18 @@ function sleep(ms: number) {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function jevCall(state: unknown, questions: Record<string, Question>, opts: { timeoutMs?: number } = {}): Promise<JevResult> {
-	const key = jevKey();
+export async function jevCall(
+	state: unknown,
+	questions: Record<string, Question>,
+	opts: { timeoutMs?: number; retries?: number; model?: string; key?: string } = {},
+): Promise<JevResult> {
+	const key = opts.key ?? jevKey();
 	if (!key) throw new Error("no Jev key: set JEV_API_KEY or OPENROUTER_API_KEY, sign in to OpenRouter with pi, or add openrouter.key to ~/.pi/agent/auth.json");
-	const body = JSON.stringify({ model: JEV_MODEL, state: deepScrub(state), questions });
+	const body = JSON.stringify({ model: opts.model ?? JEV_MODEL, state: deepScrub(state), questions });
 	const timeoutMs = opts.timeoutMs ?? JEV_TIMEOUT_MS;
+	const retries = Math.max(0, opts.retries ?? RETRIES);
 	let lastErr: unknown;
-	for (let attempt = 0; attempt <= RETRIES; attempt++) {
+	for (let attempt = 0; attempt <= retries; attempt++) {
 		let res: Response;
 		try {
 			res = await fetch(`${JEV_BASE_URL}/v1/systemone`, {

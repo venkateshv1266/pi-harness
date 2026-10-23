@@ -94,6 +94,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { jevCall as sharedJevCall, jevKey, scrubSecrets, type Question } from "../../utils/jev-client.ts";
 import { logDecision as logTelemetryDecision, logEvent, logOutcome } from "../../utils/jev-outcomes.ts";
 import { curatorEnabled, readTopLevelSetting, resolveCuratorConfig } from "./settings.ts";
 import { autoCompactDecision, pushPctSample, resolveGates, type Gates } from "./tiering.ts";
@@ -186,7 +187,6 @@ const CFG = {
 };
 
 const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
-const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
 const JEV_TIMEOUT_MS = CONFIG.jevTimeoutMs;
 
 type AgentMessage = SessionMessageEntry["message"];
@@ -1769,38 +1769,7 @@ async function distillSeedObjective(sessionId?: string): Promise<void> {
 	}
 }
 
-let jevKeyCache: string | null | undefined;
 
-function jevKey(): string | null {
-	if (jevKeyCache !== undefined) return jevKeyCache;
-	jevKeyCache = process.env.JEV_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
-	if (!jevKeyCache) {
-		try {
-			const auth = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "auth.json"), "utf8")) as {
-				openrouter?: { key?: string };
-			};
-			jevKeyCache = typeof auth.openrouter?.key === "string" ? auth.openrouter.key : null;
-		} catch {
-			// unreadable auth file is expected on fresh machines; curator fails open
-			jevKeyCache = null;
-		}
-	}
-	return jevKeyCache;
-}
-
-const SECRET_PATTERNS: RegExp[] = [
-	/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-	/\bsk-[A-Za-z0-9_-]{10,}/g,
-	/\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-	/\bAKIA[0-9A-Z]{16}\b/g,
-	/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-];
-
-function scrubSecrets(s: string): string {
-	let out = s;
-	for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
-	return out;
-}
 
 async function jevAsk(
 	state: string,
@@ -1808,8 +1777,7 @@ async function jevAsk(
 	timeoutMs: number = JEV_TIMEOUT_MS,
 ): Promise<Record<string, JevChoiceAnswer> | null> {
 	if (jevBreakerOpen) return null;
-	const key = jevKey();
-	if (!key) return null;
+	if (!jevKey()) return null;
 	// a failed call counts toward the breaker: once Jev is down, the rest of
 	// the boundary fails open instead of paying serial timeouts; each
 	// boundary gets one fresh probe
@@ -1821,37 +1789,13 @@ async function jevAsk(
 		}
 		return null;
 	};
-	// one retry with backoff: a transient 429/5xx should not silently degrade a verdict
-	for (let attempt = 0; attempt < 2; attempt++) {
-		let res: Response;
-		try {
-			res = await fetch(`${JEV_BASE_URL}/v1/systemone`, {
-				method: "POST",
-				headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-				body: JSON.stringify({ model: JEV_MODEL, state, questions }),
-				signal: AbortSignal.timeout(timeoutMs),
-			});
-		} catch {
-			await new Promise((r) => setTimeout(r, 600));
-			continue;
-		}
-		if (!res.ok) {
-			if (res.status === 429 || res.status >= 500) {
-				await new Promise((r) => setTimeout(r, 600));
-				continue;
-			}
-			return fail();
-		}
-		try {
-			const j = (await res.json()) as JevResponse;
-			if (j.answers) jevFailStreak = 0;
-			return j.answers ?? fail();
-		} catch {
-			// non-JSON body only happens on provider-side faults; fail open
-			return fail();
-		}
+	try {
+		const result = await sharedJevCall(state, questions as unknown as Record<string, Question>, { timeoutMs, retries: 1 });
+		jevFailStreak = 0;
+		return result.answers as unknown as Record<string, JevChoiceAnswer>;
+	} catch {
+		return fail();
 	}
-	return fail();
 }
 
 // ─── Verdict ─────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { jevCall as sharedJevCall, jevKey, scrubSecrets, type Question } from "../../utils/jev-client.ts";
 
 import { KIND_SPECS, PROPOSABLE_KINDS, harnessDigest, type HarnessKind, type StagedManifest } from "../../utils/harness-surface.ts";
 import {
@@ -660,58 +661,14 @@ const AUTO_NEAR_MISS_FLOOR = clamp01(process.env.REFINE_AUTO_NEAR_MISS_FLOOR, 0.
 const CORRECTION_RE =
 	/\b(don'?t|do not|stop doing|not what (i|we) (asked|wanted|meant)|that'?s (wrong|incorrect)|wrong (file|approach|direction|thing)|revert (that|this|it)|undo (that|this)|redo)\b/i;
 
-const JEV_BASE_URL = process.env.JEV_BASE_URL ?? "https://openrouter.ai/api";
-const JEV_MODEL = process.env.JEV_MODEL ?? "jev-latest";
 const JEV_TIMEOUT_MS = Number(process.env.JEV_TIMEOUT_MS ?? "2000");
 
-let jevKeyCache: string | null | undefined;
 
-const jevKey = (): string | null => {
-	if (jevKeyCache !== undefined) return jevKeyCache;
-	jevKeyCache = process.env.JEV_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
-	if (!jevKeyCache) {
-		try {
-			const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8")) as { openrouter?: { key?: string } };
-			jevKeyCache = typeof auth.openrouter?.key === "string" ? auth.openrouter.key : null;
-		} catch {
-			jevKeyCache = null;
-		}
-	}
-	return jevKeyCache;
-};
-
-const SECRET_PATTERNS: RegExp[] = [
-	/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-	/\bsk-[A-Za-z0-9_-]{10,}/g,
-	/\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-	/\bAKIA[0-9A-Z]{16}\b/g,
-	/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-];
-
-const scrubSecrets = (s: string): string => {
-	let out = s;
-	for (const re of SECRET_PATTERNS) out = out.replace(re, "[redacted]");
-	return out;
-};
 
 const jevCall = async (state: string, questions: Record<string, unknown>): Promise<JevAnswers | null> => {
-	const key = jevKey();
-	if (!key) return null;
-	let res: Response;
 	try {
-		res = await fetch(`${JEV_BASE_URL}/v1/systemone`, {
-			method: "POST",
-			headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
-			body: JSON.stringify({ model: JEV_MODEL, state, questions }),
-			signal: AbortSignal.timeout(JEV_TIMEOUT_MS),
-		});
-	} catch {
-		return null;
-	}
-	if (!res.ok) return null;
-	try {
-		const j = (await res.json()) as { answers?: JevAnswers };
-		return j.answers ?? null;
+		const result = await sharedJevCall(state, questions as unknown as Record<string, Question>, { timeoutMs: JEV_TIMEOUT_MS, retries: 0 });
+		return result.answers as JevAnswers;
 	} catch {
 		return null;
 	}
