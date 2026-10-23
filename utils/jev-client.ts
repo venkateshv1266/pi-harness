@@ -9,7 +9,7 @@
  * before it leaves the machine.
  *
  * Key resolution (same chain as the ttsr verifier and jev-ask.mjs):
- * JEV_API_KEY | OPENROUTER_API_KEY | ~/.pi/agent/auth.json (openrouter.key).
+ * JEV_API_KEY | OPENROUTER_API_KEY | ~/.pi/agent/auth.json (openrouter.key or openrouter.access).
  *
  * Env: JEV_BASE_URL (default https://openrouter.ai/api), JEV_MODEL (default
  * jev-latest), JEV_TIMEOUT_MS (default 10000), JEV_RETRIES (default 1, on
@@ -42,9 +42,14 @@ export function jevKey(): string | null {
 	if (!keyCache) {
 		try {
 			const auth = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8")) as {
-				openrouter?: { key?: string };
+				openrouter?: { key?: string; access?: string };
 			};
-			keyCache = typeof auth.openrouter?.key === "string" ? auth.openrouter.key : null;
+			keyCache =
+				typeof auth.openrouter?.key === "string"
+					? auth.openrouter.key
+					: typeof auth.openrouter?.access === "string"
+						? auth.openrouter.access
+						: null;
 		} catch {
 			keyCache = null;
 		}
@@ -83,7 +88,7 @@ function sleep(ms: number) {
 
 export async function jevCall(state: unknown, questions: Record<string, Question>, opts: { timeoutMs?: number } = {}): Promise<JevResult> {
 	const key = jevKey();
-	if (!key) throw new Error("no Jev key: set JEV_API_KEY or OPENROUTER_API_KEY, or add openrouter.key to ~/.pi/agent/auth.json");
+	if (!key) throw new Error("no Jev key: set JEV_API_KEY or OPENROUTER_API_KEY, sign in to OpenRouter with pi, or add openrouter.key to ~/.pi/agent/auth.json");
 	const body = JSON.stringify({ model: JEV_MODEL, state: deepScrub(state), questions });
 	const timeoutMs = opts.timeoutMs ?? JEV_TIMEOUT_MS;
 	let lastErr: unknown;
