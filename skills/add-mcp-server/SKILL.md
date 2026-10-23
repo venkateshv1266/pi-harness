@@ -68,21 +68,29 @@ Other values: `deferred` (declared on demand via `tool_search`), `hidden`.
   pre-registered client: `oauth: { clientId, clientSecret, callbackPort,
   callbackUrl, scope, clientName }`. `callbackUrl` is sent exactly as written.
 
-## Cookie-gate auth hooks (grafana-\*/redash-\*)
+## Cookie-gate auth hooks (grafana-\*/redash-\*/snowflake-\*)
 
 The `mcp-cookie-gate` extension runs a pre-call hook before every
-`mcp__<grafana-*>` or `mcp__<redash-*>` tool call. The hook validates SSO
-cookies and launches browser re-auth when they expired; a non-zero exit blocks
-the call and surfaces the hook output. Hook scripts live under
-`$MCP_SERVERS_ROOT` (default `~/mcp-servers`):
+`mcp__<grafana-*>`, `mcp__<redash-*>`, or `mcp__<snowflake-*>` tool call. The
+grafana/redash hooks validate SSO cookies and launch browser re-auth when they
+expired; the snowflake hook validates the OAuth tokens in
+`~/.pi/agent/mcp-auth.json` and runs `pi mcp login` when they are missing or
+expired (Snowflake issues no refresh token, so pi cannot always auto-refresh;
+`pi mcp login` tries the stored refresh token first and opens the browser only
+when that is impossible). A non-zero exit blocks the call and surfaces the
+hook output. Hook scripts live under `$MCP_SERVERS_ROOT` (default
+`~/mcp-servers`):
 
 | Server name starts with | Hook script | Server env it reads |
 |---|---|---|
 | `grafana-` | `grafana-mcp/check-grafana-cookies.sh` | `GRAFANA_URL`, `GRAFANA_COOKIE_FILE` |
 | `redash-` | `redash-mcp/check-redash-cookies.sh` | `REDASH_URL`, `REDASH_COOKIE_FILE` |
+| `snowflake-` | `snowflake-mcp/check-snowflake-token.sh` | none (reads `~/.pi/agent/mcp-auth.json`) |
 
 - Adding another Grafana/Redash instance: name it `<brand>-<env>` and put the
   URL + cookie file in the server's `env` — the hook applies automatically.
+- Adding another Snowflake instance: name it `snowflake-<env>` — the hook
+  resolves its `mcp-auth.json` entry from the tool name automatically.
 - Adding a new brand with its own `check-*-cookies.sh`: add one line to
   `AUTH_HOOKS` in `~/.pi/agent/extensions/mcp-cookie-gate.ts`, then `/reload`.
 

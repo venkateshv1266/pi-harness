@@ -65,7 +65,8 @@ Common entry points:
   above without memorizing individual commands
 - **MCP servers** — pi's built-in MCP support plus
   [mcp-cookie-gate](extensions/README.md#mcp-cookie-gate) (pre-call SSO cookie
-  hooks); walkthrough: [add-mcp-server](skills/add-mcp-server/SKILL.md)
+  and lazy OAuth re-login hooks); walkthrough:
+  [add-mcp-server](skills/add-mcp-server/SKILL.md)
 
 ## Updating an existing setup
 

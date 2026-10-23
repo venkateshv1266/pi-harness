@@ -4,7 +4,10 @@
  * Ports the pre-call auth hooks of the former mcp-bridge extension onto pi's
  * built-in MCP support: before any mcp__<grafana-*> or mcp__<redash-*> tool
  * call, runs the matching check-*-cookies.sh hook, which validates SSO cookies
- * and triggers browser re-auth when they expired. Non-zero exit blocks the call.
+ * and triggers browser re-auth when they expired. mcp__<snowflake-*> calls are
+ * gated on the OAuth tokens in ~/.pi/agent/mcp-auth.json instead; the hook runs
+ * `pi mcp login` when they are missing or expired (Snowflake issues no refresh
+ * token, so pi cannot auto-refresh). Non-zero exit blocks the call.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,10 +23,16 @@ const MCP_SERVERS_ROOT =
 const AUTH_HOOKS: Record<string, string> = {
 	"grafana-": path.join(MCP_SERVERS_ROOT, "grafana-mcp", "check-grafana-cookies.sh"),
 	"redash-": path.join(MCP_SERVERS_ROOT, "redash-mcp", "check-redash-cookies.sh"),
+	"snowflake-": path.join(MCP_SERVERS_ROOT, "snowflake-mcp", "check-snowflake-token.sh"),
 };
 
 /** Hook must exit 0 within this budget; the SSO re-auth flow lives inside it. */
 const HOOK_TIMEOUT_MS = 120_000;
+
+/** Per-prefix budget overrides; a snowflake sign-in (`pi mcp login --timeout 300`) outlives the default. */
+const HOOK_TIMEOUT_OVERRIDES: Record<string, number> = {
+	"snowflake-": 330_000,
+};
 
 /** Env-var denylist: uppercase substring match, stripped before the server's own env is merged. */
 const SENSITIVE_ENV_PATTERNS = [
@@ -85,7 +94,12 @@ export default function (pi: ExtensionAPI) {
 		if (fs.existsSync(projectPath)) Object.assign(servers, readServers(projectPath));
 	});
 
-	function runHook(script: string, toolName: string, serverEnv?: Record<string, string>): Promise<HookResult> {
+	function runHook(
+		script: string,
+		toolName: string,
+		serverEnv?: Record<string, string>,
+		timeoutMs = HOOK_TIMEOUT_MS,
+	): Promise<HookResult> {
 		return new Promise((resolve) => {
 			if (!fs.existsSync(script)) {
 				return resolve({ ok: false, message: `Auth hook not found: ${script}` });
@@ -117,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 			child.stdin?.write(JSON.stringify({ tool_name: toolName }));
 			child.stdin?.end();
 
-			timer = setTimeout(() => killTree(child), HOOK_TIMEOUT_MS);
+			timer = setTimeout(() => killTree(child), timeoutMs);
 
 			child.on("close", (code) => {
 				finish(
@@ -146,7 +160,12 @@ export default function (pi: ExtensionAPI) {
 		if (!prefix) return;
 
 		if (ctx.hasUI) ctx.ui.notify(`mcp-cookie-gate: auth check for ${serverName}…`, "info");
-		const auth = await runHook(AUTH_HOOKS[prefix], toolName, servers[serverName]?.env);
+		const auth = await runHook(
+			AUTH_HOOKS[prefix],
+			toolName,
+			servers[serverName]?.env,
+			HOOK_TIMEOUT_OVERRIDES[prefix] ?? HOOK_TIMEOUT_MS,
+		);
 		if (!auth.ok) {
 			return {
 				block: true,

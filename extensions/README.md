@@ -39,7 +39,7 @@ New docs follow
 | [`decisions-report`](#decisions-report) | `/decisions-report` joins decision logs to outcomes and flags prune/reword candidates. |
 | [`dirty-repo-guard`](#dirty-repo-guard) | Blocks session switch/fork while the repo has uncommitted changes. |
 | [`handoff`](#handoff) | `/handoff <goal>` distills the conversation into a fresh focused session. |
-| [`mcp-cookie-gate`](#mcp-cookie-gate) | Pre-call SSO cookie checks before `mcp__grafana-*`/`mcp__redash-*` tool calls; blocks the call and launches browser re-auth. |
+| [`mcp-cookie-gate`](#mcp-cookie-gate) | Pre-call auth hooks before `mcp__grafana-*`/`mcp__redash-*` (SSO cookie checks) and `mcp__snowflake-*` (OAuth token check + lazy `pi mcp login`) tool calls; blocks the call and launches browser re-auth when needed. |
 | [`model-fallback`](#model-fallback) | Switches to a fallback model on provider-attributable failures; loops and transport errors are guarded. |
 | [`model-roles`](#model-roles) | `/roles` assigns the `@smol`/`@slow`/`@plan`/`@task`/`@designer` role settings. |
 | [`model-router`](#model-router) | Route-ahead: Jev classifies each new task and picks the tier before the first token. |
@@ -141,13 +141,13 @@ Claude-Code-style checkpointing with `/rewind` to restore code and/or conversati
 
 ## mcp-cookie-gate
 
-Pre-call SSO cookie checks for MCP servers, layered on pi's built-in MCP support.
+Pre-call auth hooks for MCP servers, layered on pi's built-in MCP support.
 
-**What it does** — Before any `mcp__<grafana-*>` or `mcp__<redash-*>` tool call, runs the matching `check-*-cookies.sh` hook (under `$MCP_SERVERS_ROOT`, default `~/mcp-servers`). The hook validates SSO cookies and launches browser re-auth when they expired; exit 0 allows the call, anything else blocks it with the hook output shown to the model.
+**What it does** — Before any `mcp__<grafana-*>` or `mcp__<redash-*>` tool call, runs the matching `check-*-cookies.sh` hook (under `$MCP_SERVERS_ROOT`, default `~/mcp-servers`): it validates SSO cookies and launches browser re-auth when they expired. Before any `mcp__<snowflake-*>` tool call, runs `check-snowflake-token.sh`, which validates the OAuth tokens in `~/.pi/agent/mcp-auth.json` and runs `pi mcp login` when they are missing or expired (Snowflake issues no refresh token, so pi cannot always auto-refresh; the login tries a silent refresh first and opens the browser only when that fails). Exit 0 allows the call, anything else blocks it with the hook output shown to the model.
 
-**How it works** — `session_start` reads `~/.pi/agent/mcp.json` plus the project `.pi/mcp.json` override to resolve server env; a `tool_call` handler matches the server-name prefix against `AUTH_HOOKS` and spawns the hook detached (its own process group) with stdin `{"tool_name": …}` and an env of denylist-filtered `process.env` merged with the server's configured env, so URL/cookie-file vars reach the hook. The 120 s timeout and `session_shutdown` SIGKILL the whole process group, reaping wrapper-script grandchildren.
+**How it works** — `session_start` reads `~/.pi/agent/mcp.json` plus the project `.pi/mcp.json` override to resolve server env; a `tool_call` handler matches the server-name prefix against `AUTH_HOOKS` and spawns the hook detached (its own process group) with stdin `{"tool_name": …}` and an env of denylist-filtered `process.env` merged with the server's configured env, so URL/cookie-file vars reach the hook. Hooks run under a 120 s timeout (snowflake: 330 s, covering `pi mcp login --timeout 300`); timeout and `session_shutdown` SIGKILL the whole process group, reaping wrapper-script grandchildren.
 
-**Caveats** — A new brand with its own `check-*-cookies.sh` needs one line added to `AUTH_HOOKS`. The hook's exit code is the contract: 0 allow, non-zero block. Removing the extension removes cookie-SSO re-auth for grafana/redash MCP servers.
+**Caveats** — A new brand with its own `check-*-cookies.sh` needs one line added to `AUTH_HOOKS`. The hook's exit code is the contract: 0 allow, non-zero block. Removing the extension removes cookie-SSO re-auth for grafana/redash and lazy re-login for snowflake MCP servers.
 
 ## model-fallback
 
