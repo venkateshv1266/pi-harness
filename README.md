@@ -15,6 +15,11 @@ installer asks before it installs those parts.
 - **pi >= 0.87.0** — `npm i -g @earendil-works/pi-coding-agent`.
 - **git** and **rsync**. macOS has `rsync`; on Linux install it with your package manager.
 
+**No OpenRouter key is required.** The `core` tier works with whatever provider pi is already
+logged into. The installer only offers a model-role preset for providers it detects; for any other
+provider it lists that provider's models and lets you pick per role. `./install.sh --list-models`
+shows what it can see.
+
 **Install**
 
 ```bash
@@ -36,6 +41,7 @@ Then restart pi (or run `/reload`).
 ./install.sh --tier core,jev          # pick tiers
 ./install.sh --only ttsr,todo         # pick components
 ./install.sh --dry-run                # show the plan, write nothing
+./install.sh --list-models            # providers and models the installer can see
 ```
 
 ## What you get

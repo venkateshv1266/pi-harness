@@ -56,7 +56,7 @@ same data.
 | `JEV_API_KEY` | `ask-jev`, `jev-memory`, `jev-context-curator`, `course-check`, `refine`, and the optional classifier in `ttsr` / `model-router` / `jev-guard` | only for the `jev` tier |
 | `JEV_BASE_URL` | same | has a default in `utils/jev-client.ts` |
 | `JEV_MODEL` | same | has a default |
-| `OPENROUTER_API_KEY` | the model-role preset and `model-router` | only if you use the OpenRouter preset |
+| `OPENROUTER_API_KEY` | the optional OpenRouter model-role preset | only if you choose that preset; any provider pi is logged into works |
 | `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY` | `web-search` | optional; free fallbacks are used without them |
 | `MCP_SERVERS_ROOT` | `mcp-cookie-gate` | optional; defaults to `~/.pi/agent/mcp.json` |
 | `OBSERVATORY_HOST`, `OBSERVATORY_PORT` | `observatory` | optional |
@@ -64,6 +64,9 @@ same data.
 
 Everything else in the code is a tuning knob with a default. The installer never writes secrets; it
 only tells you which variables are still missing.
+
+The core tier requires no model credentials of its own: it uses the provider pi is already
+authenticated with. `./install.sh --list-models` shows the providers and models the installer can see.
 
 ## Behaviour when a dependency is absent
 

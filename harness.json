@@ -19,6 +19,26 @@
     { "id": "themes", "type": "themes", "tier": "core", "dir": "themes", "exclude": ["README.md"], "summary": "Pi themes." },
     { "id": "skills", "type": "skills", "tier": "core", "dir": "skills", "exclude": ["README.md"], "summary": "Reusable procedures (add-rule, add-agent, add-mcp-server, code-review, orchestrate)." }
   ],
+  "presets": {
+    "models": {
+      "provider": "openrouter",
+      "settings": {
+        "smolModel": "openrouter/deepseek/deepseek-v4.1-flash-1017:high",
+        "slowModel": "openrouter/z-ai/glm-5.3:max",
+        "planModel": "openrouter/openai/gpt-6.1-sol:xhigh",
+        "taskModel": "openrouter/deepseek/deepseek-v4.1-flash-1017:max",
+        "openrouterGuardrails": { "monthlyLimit": 500, "dailyLimit": 75 },
+        "modelRouter": {
+          "enabled": true,
+          "threshold": 0.75,
+          "timeoutMs": 1500,
+          "fast": "openrouter/deepseek/deepseek-v4.1-flash-1017:high",
+          "mid": "openrouter/z-ai/glm-5.3:max",
+          "deep": "openrouter/openai/gpt-6.1-sol:xhigh"
+        }
+      }
+    }
+  },
   "components": [
     { "id": "ttsr", "type": "extension", "tier": "core", "path": "extensions/ttsr", "npm": true, "env": [], "requires": [], "summary": "TTSR stream rules engine and context registry." },
     { "id": "recite", "type": "extension", "tier": "core", "path": "extensions/recite", "npm": false, "env": [], "requires": [], "summary": "Tail recitation of the live goal and todo block." },

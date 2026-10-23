@@ -329,28 +329,142 @@ async function promptTiers(prompter) {
 	return { ids: defaultSelection(), inspect: false };
 }
 
-function modelAdditions(prompter) {
-	const preset = HARNESS.presets?.models;
-	if (!preset) return {};
-	return preset;
+const PROVIDER_ENV = {
+	anthropic: "ANTHROPIC_API_KEY",
+	openai: "OPENAI_API_KEY",
+	deepseek: "DEEPSEEK_API_KEY",
+	gemini: "GEMINI_API_KEY",
+	mistral: "MISTRAL_API_KEY",
+	groq: "GROQ_API_KEY",
+	cerebras: "CEREBRAS_API_KEY",
+	xai: "XAI_API_KEY",
+	openrouter: "OPENROUTER_API_KEY",
+	zai: "ZAI_API_KEY",
+	fireworks: "FIREWORKS_API_KEY",
+	together: "TOGETHER_API_KEY",
+};
+
+function readJsonIfPresent(path) {
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return null;
+	}
 }
 
-async function chooseModelPreset(prompter, settings) {
-	const preset = modelAdditions(prompter);
-	if (!preset) return {};
-	const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY) || existsSync(join(target, "auth.json"));
-	log("\nModel roles (@smol/@slow/@plan/@task) and the router tiers are optional.");
-	if (!hasOpenRouter && !args.flags.has("yes")) {
-		log("  ! OPENROUTER_API_KEY is not set, so the OpenRouter preset would not work yet.");
+function configuredProviders() {
+	const providers = new Map();
+	const auth = readJsonIfPresent(join(target, "auth.json"));
+	for (const name of Object.keys(auth || {})) providers.set(name, { source: "auth.json" });
+	const store = readJsonIfPresent(join(target, "models-store.json"));
+	for (const [name, entry] of Object.entries(store || {})) {
+		const models = Array.isArray(entry?.models) ? entry.models : [];
+		providers.set(name, { ...(providers.get(name) || {}), source: providers.get(name)?.source ?? "catalog", models });
 	}
-	const choices = [
-		hasOpenRouter ? "Use the pi-harness OpenRouter preset" : "Use the preset anyway",
-		"Keep my current settings",
-		"Skip model setup",
-	];
-	const index = await prompter.choose(choices, 1);
-	if (index !== 0) return {};
-	return preset;
+	for (const [name, envName] of Object.entries(PROVIDER_ENV)) {
+		if (process.env[envName] && !providers.has(name)) providers.set(name, { source: "env" });
+	}
+	const settings = readJsonIfPresent(join(target, "settings.json"));
+	if (settings?.defaultProvider && !providers.has(settings.defaultProvider)) {
+		providers.set(settings.defaultProvider, { source: "settings" });
+	}
+	return providers;
+}
+
+function providerModels(name) {
+	const store = readJsonIfPresent(join(target, "models-store.json"));
+	const cached = store?.[name]?.models;
+	if (Array.isArray(cached)) return cached.map((model) => ({ id: model.id, name: model.name || model.id }));
+	const custom = readJsonIfPresent(join(target, "models.json"));
+	const listed = custom?.providers?.[name]?.models;
+	if (Array.isArray(listed)) {
+		return listed.map((model) =>
+			typeof model === "string" ? { id: model, name: model } : { id: model.id, name: model.name || model.id },
+		);
+	}
+	return [];
+}
+
+function listModels() {
+	const providers = configuredProviders();
+	if (!providers.size) {
+		log("No model providers detected. Run /login in pi, or set a provider API key, then retry.");
+		return;
+	}
+	for (const name of providers.keys()) {
+		const models = providerModels(name);
+		log(`${name} — ${models.length} model(s) available`);
+		for (const model of models.slice(0, 12)) log(`  ${model.id}`);
+		if (models.length > 12) log(`  … ${models.length - 12} more`);
+	}
+}
+
+async function pickModel(prompter, provider, label, current) {
+	const models = providerModels(provider);
+	if (!models.length) return prompter.ask(`${label} model id for ${provider}`, current || "");
+	const filter = await prompter.ask(`Search ${provider} models for ${label} (Enter = all)`, "");
+	const needle = filter.toLowerCase();
+	const matches = (needle
+		? models.filter((model) => model.id.toLowerCase().includes(needle) || model.name.toLowerCase().includes(needle))
+		: models
+	).slice(0, 10);
+	if (!matches.length) return prompter.ask(`No matches. Enter the ${label} model id`, current || "");
+	const options = matches.map((model) => `${model.id} — ${model.name}`);
+	if (current) {
+		const index = await prompter.choose([`Keep current: ${current}`, ...options], 0);
+		return index === 0 ? current : matches[index - 1].id;
+	}
+	const index = await prompter.choose(options, 0);
+	return matches[index].id;
+}
+
+async function configureModels(prompter) {
+	const providers = configuredProviders();
+	log("\nModel roles (@smol/@slow/@plan/@task) and the router tiers are optional.");
+	if (!providers.size) {
+		log("  = no provider detected; roles stay as they are. Run /login in pi, then /roles.");
+		return {};
+	}
+	log(`  detected: ${[...providers.keys()].join(", ")}`);
+
+	const choices = [];
+	const actions = [];
+	if (providers.has("openrouter") && HARNESS.presets?.models) {
+		choices.push("Use the pi-harness OpenRouter preset");
+		actions.push("preset");
+	}
+	for (const name of providers.keys()) {
+		const count = providerModels(name).length;
+		choices.push(`Pick models from ${name}${count ? ` (${count} available)` : ""}`);
+		actions.push(name);
+	}
+	choices.push("Keep my current settings", "Skip model setup");
+	const choice = await prompter.choose(choices, choices.length - 2);
+	const action = actions[choice];
+	if (!action) return {};
+	if (action === "preset") return HARNESS.presets.models.settings;
+
+	const current = readJsonIfPresent(join(target, "settings.json")) || {};
+	const picks = {};
+	for (const [key, label] of [
+		["smolModel", "@smol (fast)"],
+		["slowModel", "@slow (deep)"],
+		["planModel", "@plan"],
+		["taskModel", "@task"],
+	]) {
+		picks[key] = await pickModel(prompter, action, label, current[key]);
+	}
+	return {
+		...picks,
+		modelRouter: {
+			enabled: true,
+			threshold: 0.75,
+			timeoutMs: 1500,
+			fast: picks.smolModel,
+			mid: picks.taskModel,
+			deep: picks.slowModel,
+		},
+	};
 }
 
 function uninstall() {
@@ -383,7 +497,12 @@ function uninstall() {
 
 async function main() {
 	if (args.flags.has("help")) {
-		log("Usage: ./install.sh [--yes] [--tier core,jev] [--only id] [--skip id] [--dry-run] [--uninstall]");
+		log("Usage: ./install.sh [--yes] [--tier core,jev] [--only id] [--skip id] [--dry-run] [--uninstall] [--list-models]");
+		return;
+	}
+
+	if (args.flags.has("list-models")) {
+		listModels();
 		return;
 	}
 
@@ -441,9 +560,7 @@ async function main() {
 	}
 
 	if (interactive && !args.flags.has("yes")) {
-		const settings = readSettings();
-		const additions = await chooseModelPreset(prompter, settings);
-		selection.settings = additions;
+		selection.settings = await configureModels(prompter);
 	}
 
 	await apply(selection.ids, previous, args.flags.has("dry-run"), selection.settings);

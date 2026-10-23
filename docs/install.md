@@ -21,7 +21,8 @@ cd pi-harness
 The installer asks four things:
 
 1. **What to install** — recommended (core + subagents), everything, custom (choose tiers), or inspect only.
-2. **Model roles** — use the OpenRouter preset, keep your current settings, or skip.
+2. **Model roles** — lists every provider it detects. Choose the OpenRouter preset if you use
+   OpenRouter, pick per-role models from any other provider, keep your current settings, or skip.
 3. **Jev layer** — whether to include the `jev` tier. It checks for `JEV_API_KEY` and warns instead of failing.
 4. **Integrations** — per-component prompts for observatory, refine, and MCP auth hooks.
 
@@ -37,11 +38,31 @@ Nothing is written until the selection is confirmed.
 | `--skip id,id` | remove components from the selection |
 | `--add id,id` | add components to an existing install |
 | `--dry-run` | print the plan and write nothing |
+| `--list-models` | print detected providers and their available models, then exit |
 | `--update` | re-apply the recorded selection |
 | `--uninstall` | remove only what was recorded |
 | `--ask` | re-run the wizard on an existing install |
 | `--force-settings` | back up an unparseable `settings.json` and continue |
 | `--target <dir>` | install somewhere other than `~/.pi/agent` (testing) |
+
+## Model providers
+
+The core tier needs no specific provider — it uses whatever pi is already logged into. The installer
+detects providers from `~/.pi/agent/auth.json`, `~/.pi/agent/models-store.json`, a custom
+`models.json`, and known provider API-key environment variables.
+
+`./install.sh --list-models` prints what it found:
+
+```text
+openrouter — 361 model(s) available
+  anthropic/claude-haiku-4.5
+  anthropic/claude-opus-4.5
+  …
+```
+
+The OpenRouter preset is offered only when OpenRouter is detected. For any other provider, the
+installer lists that provider's models and asks for each role (`@smol`, `@slow`, `@plan`, `@task`).
+If no provider is detected, model setup is skipped — run `/login` then `/roles` inside pi.
 
 ## What gets written
 
