@@ -1,9 +1,13 @@
 # Docs
 
-Cross-cutting documentation that does not belong in a single directory README.
-
-| Doc | What it is |
+| Document | Read it when |
 |---|---|
-| [`extension-readme-template.md`](extension-readme-template.md) | Template and style rules for per-extension READMEs — sections, factual-accuracy requirements, and public-repo constraints. |
-| [`observatory-plan.md`](observatory-plan.md) | Design plan for the Pi Harness Observatory (`extensions/observatory/`): research findings, adapter architecture, page-by-page visual design, effectiveness methodology, build phases. |
-| [`postmortems/`](postmortems/) | Dated write-ups of notable failures and the fixes that followed. Start with [`2026-09-28-install-errors.md`](postmortems/2026-09-28-install-errors.md). |
+| [concepts.md](concepts.md) | you want the mental model: extensions, rules, agents, skills, Jev, delegation |
+| [install.md](install.md) | you are installing, updating, uninstalling, or troubleshooting the installer |
+| [compatibility.md](compatibility.md) | you need to know which tier or credential a component requires |
+| [maintainer.md](maintainer.md) | you are publishing changes from a live setup or cutting a release |
+| [extension-readme-template.md](extension-readme-template.md) | you are writing a README for a new extension |
+| [observatory-plan.md](observatory-plan.md) | you want the design notes behind the dashboard |
+
+The top-level [README.md](../README.md) is the index. Each directory also has its own README next to
+the code it documents.

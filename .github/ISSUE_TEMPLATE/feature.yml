@@ -1,0 +1,33 @@
+name: Feature or component proposal
+description: Propose a new extension, rule, agent, skill, or behaviour
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Which tier should it live in
+      options:
+        - core (works with pi alone)
+        - subagents (needs model roles)
+        - jev (needs JEV_API_KEY)
+        - integrations (needs external services)
+        - local (machine-specific, opt-in)
+    validations:
+      required: true
+  - type: textarea
+    id: fallback
+    attributes:
+      label: What happens when its dependency is missing
+      description: Every shipped component must degrade cleanly or be clearly opt-in.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

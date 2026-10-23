@@ -514,7 +514,8 @@ function newestInputWrite(sources: SnapshotSources): number {
 function isStale(snapshot: Snapshot, sources: SnapshotSources): boolean {
 	const generated = Date.parse(snapshot.generatedAt);
 	if (!Number.isFinite(generated)) return true;
-	return newestInputWrite(sources) > generated;
+	// generatedAt has millisecond granularity; a same-millisecond write is covered.
+	return Math.floor(newestInputWrite(sources)) > generated;
 }
 
 export function snapshotPath(sources: SnapshotSources, date: string): string {

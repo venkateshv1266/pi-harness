@@ -4,3 +4,11 @@ node_modules/
 tasks/
 # cmux installs and upgrades this in ~/.pi/agent — never vendored here
 extensions/cmux-session.ts
+
+# owner-only maintenance workflow
+sync.sh
+/MAINTAINER.md
+
+# local-only usage dashboard (not published)
+extensions/stats.ts
+utils/omp-stats/

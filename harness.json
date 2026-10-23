@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "name": "pi-harness",
+  "version": "0.1.0",
+  "tiers": [
+    { "id": "core", "label": "Core", "default": true, "description": "Rules, agents, skills, themes, and session UX. Works with pi alone." },
+    { "id": "subagents", "label": "Subagents", "description": "Delegation engines. Needs model roles configured." },
+    { "id": "jev", "label": "Jev judgment layer", "description": "Ask-Jev tools, memory, curation, supervision. Needs JEV_API_KEY." },
+    { "id": "integrations", "label": "Integrations", "description": "Observatory, refine, MCP auth hooks. Needs your own external services." },
+    { "id": "local", "label": "Local-only", "description": "YubiKey notifications and terminal helpers. Not installed by default." }
+  ],
+  "support": [
+    { "id": "utils", "path": "utils", "summary": "Shared helpers imported by extensions (Jev client, role resolution, decision contract)." },
+    { "id": "migrate-settings", "path": "scripts/migrate-jev-memory-settings.mjs", "summary": "One-time settings migration run by the installer." }
+  ],
+  "groups": [
+    { "id": "rules", "type": "rules", "tier": "core", "dir": "rules", "exclude": ["README.md"], "summary": "Generic TTSR stream rules." },
+    { "id": "agents", "type": "agents", "tier": "core", "dir": "agents", "exclude": ["README.md"], "summary": "User-scope subagent definitions." },
+    { "id": "themes", "type": "themes", "tier": "core", "dir": "themes", "exclude": ["README.md"], "summary": "Pi themes." },
+    { "id": "skills", "type": "skills", "tier": "core", "dir": "skills", "exclude": ["README.md"], "summary": "Reusable procedures (add-rule, add-agent, add-mcp-server, code-review, orchestrate)." }
+  ],
+  "components": [
+    { "id": "ttsr", "type": "extension", "tier": "core", "path": "extensions/ttsr", "npm": true, "env": [], "requires": [], "summary": "TTSR stream rules engine and context registry." },
+    { "id": "recite", "type": "extension", "tier": "core", "path": "extensions/recite", "npm": false, "env": [], "requires": [], "summary": "Tail recitation of the live goal and todo block." },
+    { "id": "repo-agents-guard", "type": "extension", "tier": "core", "path": "extensions/repo-agents-guard", "npm": false, "env": [], "requires": [], "summary": "Blocks repo tool calls until the nearest AGENTS.md is read." },
+    { "id": "setup", "type": "extension", "tier": "core", "path": "extensions/setup", "npm": false, "env": [], "requires": [], "summary": "Interactive /setup settings UI." },
+    { "id": "claude-compat", "type": "extension", "tier": "core", "path": "extensions/claude-compat.ts", "npm": false, "env": [], "requires": [], "summary": "Reads CLAUDE.md alongside AGENTS.md." },
+    { "id": "confirm-destructive", "type": "extension", "tier": "core", "path": "extensions/confirm-destructive.ts", "npm": false, "env": [], "requires": [], "summary": "Confirms destructive shell commands." },
+    { "id": "custom-footer", "type": "extension", "tier": "core", "path": "extensions/custom-footer.ts", "npm": false, "env": [], "requires": [], "summary": "Status footer with model, context, and cost." },
+    { "id": "dirty-repo-guard", "type": "extension", "tier": "core", "path": "extensions/dirty-repo-guard.ts", "npm": false, "env": [], "requires": [], "summary": "Warns before branching from a dirty tree." },
+    { "id": "handoff", "type": "extension", "tier": "core", "path": "extensions/handoff.ts", "npm": false, "env": [], "requires": [], "summary": "Writes a handoff brief for the next session or agent." },
+    { "id": "model-fallback", "type": "extension", "tier": "core", "path": "extensions/model-fallback.ts", "npm": false, "env": [], "requires": [], "summary": "Retries a turn on provider failure with a fallback model." },
+    { "id": "model-roles", "type": "extension", "tier": "core", "path": "extensions/model-roles.ts", "npm": false, "env": [], "requires": [], "summary": "Resolves @smol, @slow, @plan, @task role aliases." },
+    { "id": "model-router", "type": "extension", "tier": "core", "path": "extensions/model-router.ts", "npm": false, "env": [], "envOptional": ["JEV_API_KEY", "OPENROUTER_API_KEY"], "requires": [], "summary": "Routes each turn to a fast, mid, or deep tier." },
+    { "id": "plugins", "type": "extension", "tier": "core", "path": "extensions/plugins.ts", "npm": false, "env": [], "requires": [], "summary": "Loads Claude marketplace plugin skills." },
+    { "id": "rewind", "type": "extension", "tier": "core", "path": "extensions/rewind.ts", "npm": false, "env": [], "requires": [], "summary": "Checkpoint and rewind the working tree." },
+    { "id": "summarize", "type": "extension", "tier": "core", "path": "extensions/summarize.ts", "npm": false, "env": [], "requires": [], "summary": "On-demand conversation summary." },
+    { "id": "todo", "type": "extension", "tier": "core", "path": "extensions/todo.ts", "npm": false, "env": [], "requires": [], "summary": "Session todo list tool." },
+    { "id": "web-search", "type": "extension", "tier": "core", "path": "extensions/web-search.ts", "npm": false, "env": [], "envOptional": ["TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY"], "requires": [], "summary": "Web search and fetch; falls back to free providers without keys." },
+
+    { "id": "delegate", "type": "extension", "tier": "subagents", "path": "extensions/delegate", "npm": false, "env": [], "requires": ["subagent", "persistent-subagent"], "summary": "Single spawn door; routes between one-shot and persistent engines." },
+    { "id": "subagent", "type": "extension", "tier": "subagents", "path": "extensions/subagent", "npm": true, "env": [], "requires": [], "summary": "One-shot engine: blocking children, parallel batches, chains." },
+    { "id": "persistent-subagent", "type": "extension", "tier": "subagents", "path": "extensions/persistent-subagent", "npm": true, "env": [], "requires": [], "summary": "Persistent engine: named, steerable, resumable children." },
+
+    { "id": "ask-jev", "type": "extension", "tier": "jev", "path": "extensions/ask-jev", "npm": true, "env": ["JEV_API_KEY"], "requires": [], "summary": "Jev as tools: log triage, test triage, diff review, extraction, typed decisions." },
+    { "id": "jev-guard", "type": "extension", "tier": "jev", "path": "extensions/jev-guard", "npm": false, "env": [], "envOptional": ["JEV_API_KEY"], "requires": [], "summary": "Bash command gate and prompt-injection screen." },
+    { "id": "jev-memory", "type": "extension", "tier": "jev", "path": "extensions/jev-memory", "npm": true, "env": ["JEV_API_KEY"], "requires": [], "summary": "Persistent memory, session search, and skills." },
+    { "id": "jev-context-curator", "type": "extension", "tier": "jev", "path": "extensions/jev-context-curator", "npm": false, "env": ["JEV_API_KEY"], "requires": [], "summary": "GoalSpec-first context curation and evidence ledger." },
+    { "id": "course-check", "type": "extension", "tier": "jev", "path": "extensions/course-check", "npm": false, "env": ["JEV_API_KEY"], "requires": [], "summary": "Periodic trajectory supervision." },
+    { "id": "decision-tuner", "type": "extension", "tier": "jev", "path": "extensions/decision-tuner", "npm": false, "env": [], "requires": [], "summary": "Tunes decision thresholds from outcome logs." },
+    { "id": "decisions-report", "type": "extension", "tier": "jev", "path": "extensions/decisions-report.ts", "npm": false, "env": [], "requires": [], "summary": "Summarizes recorded routing decisions." },
+
+    { "id": "observatory", "type": "extension", "tier": "integrations", "path": "extensions/observatory", "npm": false, "env": [], "envOptional": ["OBSERVATORY_HOST", "OBSERVATORY_PORT"], "requires": [], "summary": "Web dashboard over sessions, decisions, rules, and improvements." },
+    { "id": "refine", "type": "extension", "tier": "integrations", "path": "extensions/refine", "npm": false, "env": ["JEV_API_KEY"], "requires": ["ttsr"], "summary": "Prompt-refinement loop over captured failures." },
+    { "id": "mcp-cookie-gate", "type": "extension", "tier": "integrations", "path": "extensions/mcp-cookie-gate.ts", "npm": false, "env": [], "envOptional": ["MCP_SERVERS_ROOT"], "requires": [], "summary": "Pre-call SSO cookie and OAuth re-login hooks for MCP servers." }
+  ],
+  "exclude": [
+    { "path": "extensions/cmux-session.ts", "reason": "installed and upgraded in place by cmux" },
+    { "path": "extensions/stats.ts", "reason": "local-only usage dashboard; not published" },
+    { "path": "utils/omp-stats", "reason": "local-only usage dashboard; not published" }
+  ]
+}

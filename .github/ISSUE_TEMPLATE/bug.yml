@@ -1,0 +1,44 @@
+name: Bug report
+description: Something broke while installing or running the harness
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the exact command and the output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: pi-version
+    attributes:
+      label: pi version
+      description: Output of `pi --version`.
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`. The harness needs >= 22.15.0.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: dry-run
+    attributes:
+      label: Installer dry run
+      description: Output of `./install.sh --dry-run`.
+      render: shell
