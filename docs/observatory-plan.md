@@ -1,5 +1,8 @@
 # Pi Harness Observatory — Plan
 
+> Historical design note. The `stats`/omp-stats dashboard is not shipped in this repo;
+> observatory is the shared observability surface.
+
 Status: **Shipped (v0.1).** P0 + P1 and most of P2 are implemented in
 [`extensions/observatory/`](../extensions/observatory/README.md): bun+SQLite server,
 auto-discovered adapters for all decision-log families, session parsing with

@@ -46,7 +46,6 @@ New docs follow
 | [`plugins`](#plugins) | `/plugins` browses and installs skills from local Claude plugin marketplaces. |
 | [`repo-agents-guard`](#repo-agents-guard) | Blocks repo-targeting tool calls until the nearest `AGENTS.md` is read. |
 | [`rewind`](#rewind) | `/rewind` checkpoints edits and restores code and/or conversation to any prompt. |
-| [`stats`](#stats) | `/stats [port]` launches the omp-stats usage dashboard. |
 | [`summarize`](#summarize) | `/summarize [role]` scrollable summary overlay; `/summarize view` reopens the cached one. |
 | [`todo`](#todo) | `todo` tool + `/todos` — todo state persisted in session entries, not files. |
 | [`web-search`](#web-search) | `web_search` + `web_fetch` tools with keyless defaults (DuckDuckGo → Jina proxy fallback), optional Tavily/Brave. |
@@ -320,32 +319,6 @@ Session-scoped todo list exposed to the model as a `todo` tool and to the user a
 **How it works** — On `session_start` and `session_tree`, the extension scans the current branch's entries for `todo` tool results in order and adopts the `todos`/`nextId` snapshot from the last one. IDs are sequential starting at 1; `clear` resets the counter. Tool results render as compact summaries — the collapsed list shows at most 5 items, expanding shows all.
 
 **Caveats** — `/todos` requires interactive (TUI) mode; elsewhere it notifies and does nothing. `add` without `text` and `toggle` with an unknown id return error results. Only the current branch's entries are replayed, so state is branch-scoped.
-
-## stats
-
-`/stats` launches the omp-stats web dashboard (cost, tokens, cache) against this machine's pi session logs.
-
-**What it does** — `/stats [port]` starts the `@oh-my-pi/omp-stats` dashboard as a detached background server and opens it in the browser. If something already answers on the target port's `/api/stats`, it just opens the browser. Otherwise it spawns the server, waits in the background for it to come up, then opens the browser.
-
-**Commands and tools**
-
-| Command | What it does |
-|---|---|
-| `/stats [port]` | Start (or reuse) the dashboard on `port` and open it in a browser |
-
-**Configuration**
-
-| Env var | Default | Effect |
-|---|---|---|
-| `PI_STATS_HOST` | `127.0.0.1` | Host the dashboard binds to and is reached at (local-only by default) |
-| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | Agent directory; also passed through to the server process |
-| `BUN_BIN` | unset | Explicit bun binary path (first fallback candidate) |
-
-The port comes from the command argument (1–65535, otherwise default `3847`). Server stdout/stderr is appended to `~/.pi/agent/utils/omp-stats/server.log`.
-
-**How it works** — One-time setup: the published `@oh-my-pi/omp-stats` package must be installed under `~/.pi/agent/utils/omp-stats/` (e.g. `bun add @oh-my-pi/omp-stats`); the extension does not install it. Bun is required: the extension probes `bun --version` and falls back to `BUN_BIN`, `~/.bun/bin/bun`, `/opt/homebrew/bin/bun`, `/usr/local/bin/bun` (first that exists), then plain `bun` — covering environments whose `PATH` lacks `~/.bun/bin`. It then spawns `bun run <agentDir>/utils/omp-stats/node_modules/@oh-my-pi/omp-stats/src/index.ts -p <port> --host <host>` detached and polls the API once per second for up to 120 s before opening the browser (`open` / `cmd /c start` / `xdg-open` per platform).
-
-**Caveats** — The command returns immediately; startup is awaited in the background ("first sync can take a minute"). If the server never comes up within 120 s, the error points at `server.log`. An invalid or missing port argument silently falls back to 3847. A dashboard already running on the chosen port is reused, not restarted.
 
 ## custom-footer
 

@@ -16,7 +16,7 @@ pi
 ## Extensions
 
 An extension is a module pi loads at startup. It can register tools (`ask_jev`, `delegate`, `todo`),
-slash commands (`/setup`, `/ttsr`, `/stats`), or hooks on the turn lifecycle (prompt construction,
+slash commands (`/setup`, `/ttsr`, `/contexts`), or hooks on the turn lifecycle (prompt construction,
 tool results, turn end). Directory extensions own a `README.md`; single-file extensions have a
 sibling `.md`.
 
