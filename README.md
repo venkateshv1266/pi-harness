@@ -11,8 +11,10 @@ installer asks before it installs those parts.
 
 **Prerequisites**
 
-- **Node.js >= 22.15.0** — pi needs it; older versions crash on `zlib.createZstdDecompress`.
-- **pi >= 0.87.0** — `npm i -g @earendil-works/pi-coding-agent`.
+- **Node.js >= 22.19.0** — pi's own minimum; older versions crash at startup.
+- **pi >= 0.87.0** — `context_edit` and the actionable `turn_end` boundary landed there; tested
+  with pi 1.4.0. Install with `curl -fsSL https://pi.dev/install.sh | sh` (recommended) or
+  `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`.
 - **git** and **rsync**. macOS has `rsync`; on Linux install it with your package manager.
 
 **No OpenRouter key is required.** The `core` tier works with whatever provider pi is already

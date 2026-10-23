@@ -24,6 +24,8 @@ const HARNESS = JSON.parse(readFileSync(join(REPO, "harness.json"), "utf8"));
 const args = parseArgs(process.argv.slice(2));
 const target = resolve(args.target || join(homedir(), ".pi", "agent"));
 const manifestPath = join(target, ".pi-harness.json");
+const MIN_NODE = [22, 19, 0];
+const MIN_PI = [0, 87, 0];
 
 function parseArgs(argv) {
 	const out = { tiers: [], only: [], skip: [], flags: new Set(), values: {} };
@@ -62,13 +64,32 @@ function which(command) {
 	return probe.status === 0 && probe.stdout.trim().length > 0;
 }
 
+function versionAtLeast(actual, minimum) {
+	const parts = String(actual).split(".").map((value) => Number.parseInt(value, 10) || 0);
+	for (let index = 0; index < minimum.length; index += 1) {
+		const value = parts[index] ?? 0;
+		if (value > minimum[index]) return true;
+		if (value < minimum[index]) return false;
+	}
+	return true;
+}
+
 function preflight(required) {
 	const missing = required.filter((command) => !which(command));
 	if (missing.length) {
 		fail(`missing prerequisites: ${missing.join(", ")}. Install them and re-run.`);
 	}
-	if (Number(process.versions.node.split(".")[0]) < 22) {
-		fail(`Node ${process.versions.node} is too old. Use Node >= 22.15.0.`);
+	if (!versionAtLeast(process.versions.node, MIN_NODE)) {
+		fail(`Node ${process.versions.node} is too old. Use Node >= ${MIN_NODE.join(".")}.`);
+	}
+	if (required.includes("pi")) {
+		const probe = spawnSync("pi", ["--version"], { encoding: "utf8" });
+		const match = `${probe.stdout ?? ""} ${probe.stderr ?? ""}`.match(/(\d+)\.(\d+)\.(\d+)/);
+		if (!match) fail("could not read the pi version. Run `pi --version` and retry.");
+		const current = `${match[1]}.${match[2]}.${match[3]}`;
+		if (!versionAtLeast(current, MIN_PI)) {
+			fail(`pi ${current} is too old. This harness needs pi >= ${MIN_PI.join(".")}.`);
+		}
 	}
 }
 
@@ -514,7 +535,7 @@ async function main() {
 	}
 
 	if (args.flags.has("update")) {
-		preflight(["node", "npm"]);
+		preflight(["node", "npm", "pi"]);
 		const selected = new Set(previous?.components || []);
 		if (args.add.length) for (const id of args.add) selected.add(id);
 		if (!selected.size) fail("no previous install recorded; run ./install.sh first.");

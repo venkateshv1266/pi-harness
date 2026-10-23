@@ -4,11 +4,14 @@
 
 | Requirement | Why |
 |---|---|
-| Node.js >= 22.15.0 | pi uses `zlib.createZstdDecompress`; older Node crashes at startup |
-| pi >= 0.87.0 | the extensions use `turn_end` boundary results and `context_edit` drafts |
+| Node.js >= 22.19.0 | pi's minimum; older Node crashes at startup |
+| pi >= 0.87.0 | `context_edit` and actionable `turn_end` boundaries; tested with pi 1.4.0 |
 | git | clone and `update.sh` |
 | rsync | macOS ships it; Linux needs `apt install rsync` |
 | Bun (optional) | only for the `observatory` tests and server |
+
+Install pi with `curl -fsSL https://pi.dev/install.sh | sh` (recommended) or
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`.
 
 ## The interactive flow
 

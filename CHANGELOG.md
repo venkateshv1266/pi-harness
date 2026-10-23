@@ -25,6 +25,9 @@ First public release.
 - Model-role defaults are offered as a preset instead of being written blindly.
 - `sync.sh` is now a maintainer-only local file, excluded from the repository.
 
+- Corrected the documented Node floor to 22.19.0 and the pi install command; the installer now
+  verifies the pi version before writing.
+
 ### Removed
 
 - The local-only `stats` extension and vendored `utils/omp-stats` dashboard. Observatory remains the

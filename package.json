@@ -5,7 +5,7 @@
   "description": "My pi coding agent setup: extensions, rules, agents, skills, and themes.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.15.0"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "setup": "node scripts/setup.mjs",
