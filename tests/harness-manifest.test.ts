@@ -57,6 +57,11 @@ test("component ids and paths are unique, tiers are declared", () => {
 	}
 });
 
+test("package.json and harness.json versions agree", () => {
+	const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+	assert.equal(pkg.version, manifest.version);
+});
+
 test("README counts match the tree", () => {
 	const extensions = manifest.components.filter(
 		(component: { type: string }) => component.type === "extension",

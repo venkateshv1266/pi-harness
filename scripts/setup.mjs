@@ -292,7 +292,7 @@ function summarise(jobs, selectedIds, envMissing) {
 		`${count("themes")} themes`,
 		`${skills.size} skills`,
 	].filter((part) => !part.startsWith("0 "));
-	log(`  ✓ installed ${parts.join(", ")} → ${target}`);
+	log(`  ✓ pi-harness v${HARNESS.version}: ${parts.join(", ")} → ${target}`);
 	if (envMissing.length) {
 		log(`\n  Set these before starting pi: ${envMissing.join(", ")}`);
 	}

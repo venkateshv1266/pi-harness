@@ -66,7 +66,7 @@ session and is unchanged since: the doc states what the rule body repeats, so
 the reminder is noise. Coverage is decided in `canFire` — before the verify gate
 and before any interrupt — so it costs no Jev call; each skip is logged to
 `ttsr-jev.jsonl` as `mode: "covered"` so a rule that goes quiet stays auditable.
-Example: `bitgo-commit-standards` is covered by the `/push-changes` skill, whose
+Example: a `commit-standards` rule is covered by the `/push-changes` skill, whose
 text already spells out the commit standard.
 
 ### Subagent children never enforce text/thinking rules

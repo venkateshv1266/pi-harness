@@ -2,7 +2,7 @@
  * Behavioral tests for `coveredBy`.
  *
  * A rule whose subject matter is already stated by a doc the agent read (the
- * push-changes skill for the BitGo commit standard) must not interrupt: the
+ * push-changes skill for the commit standard) must not interrupt: the
  * reminder repeats text that is already in context. Coverage is checked in
  * `canFire`, so the verify gate is not even called — but the skip is logged so
  * rule-noise audits can see why a rule went quiet.
