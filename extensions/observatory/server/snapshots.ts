@@ -540,14 +540,18 @@ export function ensureSnapshot(
 ): { date: string; path: string; created: boolean; snapshot: Snapshot } {
 	const path = snapshotPath(sources, date);
 	const existed = existsSync(path);
+	const existing = existed ? readJsonFile(path) : null;
 	if (!options.force && existed) {
-		const existing = readJsonFile(path);
 		if (isSnapshot(existing) && !isStale(existing, sources)) return { date, path, created: false, snapshot: existing };
 	}
 	// stamp the read, not the completion: a write landing mid-compute then keeps a
-	// newer mtime and revalidates next read instead of being silently lost
+	// newer mtime and revalidates next read instead of being silently lost.
+	// Keep the stamp strictly increasing so a forced rewrite is never dated equal
+	// to the snapshot it replaced on a fast or coarse-clock host.
 	const startedAt = Date.now();
-	const snapshot = { ...computeSnapshot(date, sources), generatedAt: new Date(startedAt).toISOString() };
+	const previous = isSnapshot(existing) ? Date.parse(existing.generatedAt) : Number.NaN;
+	const stamp = Number.isFinite(previous) && previous >= startedAt ? previous + 1 : startedAt;
+	const snapshot = { ...computeSnapshot(date, sources), generatedAt: new Date(stamp).toISOString() };
 	mkdirSync(sources.snapshotsDir, { recursive: true });
 	const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
 	writeFileSync(temp, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
