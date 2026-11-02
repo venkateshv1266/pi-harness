@@ -56,6 +56,7 @@
     { "id": "rewind", "type": "extension", "tier": "core", "path": "extensions/rewind.ts", "npm": false, "env": [], "requires": [], "summary": "Checkpoint and rewind the working tree." },
     { "id": "summarize", "type": "extension", "tier": "core", "path": "extensions/summarize.ts", "npm": false, "env": [], "requires": [], "summary": "On-demand conversation summary." },
     { "id": "todo", "type": "extension", "tier": "core", "path": "extensions/todo.ts", "npm": false, "env": [], "requires": [], "summary": "Session todo list tool." },
+    { "id": "questionnaire", "type": "extension", "tier": "core", "path": "extensions/questionnaire.ts", "npm": false, "env": [], "requires": [], "summary": "Interactive questions: pick an option or type an answer that is not listed." },
     { "id": "web-search", "type": "extension", "tier": "core", "path": "extensions/web-search.ts", "npm": false, "env": [], "envOptional": ["TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY"], "requires": [], "summary": "Web search and fetch; falls back to free providers without keys." },
 
     { "id": "delegate", "type": "extension", "tier": "subagents", "path": "extensions/delegate", "npm": false, "env": [], "requires": ["subagent", "persistent-subagent"], "summary": "Single spawn door; routes between one-shot and persistent engines." },

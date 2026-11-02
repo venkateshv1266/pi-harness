@@ -44,6 +44,7 @@ New docs follow
 | [`model-roles`](#model-roles) | `/roles` assigns the `@smol`/`@slow`/`@plan`/`@task`/`@designer` role settings. |
 | [`model-router`](#model-router) | Route-ahead: Jev classifies each new task and picks the tier before the first token. |
 | [`plugins`](#plugins) | `/plugins` browses and installs skills from local Claude plugin marketplaces. |
+| [`questionnaire`](#questionnaire) | Interactive question tool: pick an option or type an answer that isn't listed. |
 | [`repo-agents-guard`](#repo-agents-guard) | Blocks repo-targeting tool calls until the nearest `AGENTS.md` is read. |
 | [`rewind`](#rewind) | `/rewind` checkpoints edits and restores code and/or conversation to any prompt. |
 | [`summarize`](#summarize) | `/summarize [role]` scrollable summary overlay; `/summarize view` reopens the cached one. |
@@ -250,6 +251,25 @@ State: `~/.pi/agent/plugins.json` — `{version: 1, marketplaces: [{name, path}]
 | `PI_PLUGIN_MARKETPLACE` | unset | Seeds the first marketplace only while `plugins.json` is missing/unreadable and `<path>/.claude-plugin/marketplace.json` exists; ignored once state is saved |
 
 **Caveats** — Remote marketplace sources (`git:`/`github:`/`https:`) show in listings but cannot be installed. The picker matches by substring, not fuzzy search.
+
+## questionnaire
+
+Interactive question tool for the model: multiple-choice options plus a free-text escape hatch, so the user can select an answer or type one that isn't listed.
+
+**What it does** — Registers a `questionnaire` tool. The model passes one or more questions, each with a short `label`, the full `prompt`, and 2–4 `options` (`value`, `label`, optional `description`). With `allowOther` (default `true`), every question gets a final **"Type something."** entry that opens an inline editor; Enter submits the typed text, Escape returns to the options. A single question renders as a plain list; multiple questions render as tabs (`Tab`/`←→` switch, `↑↓` select, `Enter` confirm, `Esc` cancel).
+
+**Tool**
+
+| Field | What it does |
+|---|---|
+| `questions[].label` | Short name shown in the tab and the result |
+| `questions[].prompt` | Full question text |
+| `questions[].options[]` | `value`, `label`, optional `description` |
+| `questions[].allowOther` | Adds the free-text "Type something." entry (default `true`) |
+
+**How it works** — `ctx.ui.custom()` owns the interactive area while the questionnaire is open. Each answer comes back as `Label: user selected: 2. Postgres` or `Label: user wrote: <text>`, with structured `details` for renderers. Cancelling returns `User cancelled the questionnaire`.
+
+**Caveats** — Requires interactive (TUI) mode; print/RPC runs get `Error: UI not available (running in non-interactive mode)`. The [grill-me](../skills/grill-me/SKILL.md) skill uses this tool for its rounds and falls back to markdown questions when it is unavailable.
 
 ## summarize
 

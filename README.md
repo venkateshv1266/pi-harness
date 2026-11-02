@@ -1,6 +1,6 @@
 # pi-harness
 
-30 extensions · 9 subagent definitions · 22 generic TTSR rules · 6 skills · 3 themes
+31 extensions · 9 subagent definitions · 22 generic TTSR rules · 6 skills · 3 themes
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup, published so other
 people can borrow the pieces that work. It is a personal setup, not a product: some of it runs with
@@ -62,7 +62,7 @@ The full feature → credential matrix is in [docs/compatibility.md](docs/compat
 
 | Path | What it is | Docs |
 |---|---|---|
-| `extensions/` | 30 pi extensions — delegation, models, judgment, memory, supervision, observability, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
+| `extensions/` | 31 pi extensions — delegation, models, judgment, memory, supervision, observability, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
 | `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
 | `rules/` | 22 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
 | `skills/` | add-rule, add-agent, add-mcp-server, code-review, grill-me, orchestrate | [`skills/README.md`](skills/README.md) |
