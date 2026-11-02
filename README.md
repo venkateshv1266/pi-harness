@@ -1,6 +1,6 @@
 # pi-harness
 
-30 extensions · 9 subagent definitions · 22 generic TTSR rules · 5 skills · 3 themes
+30 extensions · 9 subagent definitions · 22 generic TTSR rules · 6 skills · 3 themes
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup, published so other
 people can borrow the pieces that work. It is a personal setup, not a product: some of it runs with
@@ -50,7 +50,7 @@ Then restart pi (or run `/reload`).
 
 | Tier | Contents | Needs |
 |---|---|---|
-| **core** (default) | TTSR rules engine and 22 rules, 9 agents, 5 skills, 3 themes, session UX (todo, recite, summarize, rewind, handoff, footer, guards, model roles and fallback, web search) | pi and Node |
+| **core** (default) | TTSR rules engine and 22 rules, 9 agents, 6 skills, 3 themes, session UX (todo, recite, summarize, rewind, handoff, footer, guards, model roles and fallback, web search) | pi and Node |
 | **subagents** | `delegate`, the one-shot engine, and the persistent engine | model roles configured |
 | **jev** | Ask-Jev tools, memory, context curation, guard, course-check, decision tuner | `JEV_API_KEY` |
 | **integrations** | Observatory dashboard, refine loop, MCP cookie/OAuth gate | your own Grafana / Redash / Snowflake / Linear / Orca setup |
@@ -65,7 +65,7 @@ The full feature → credential matrix is in [docs/compatibility.md](docs/compat
 | `extensions/` | 30 pi extensions — delegation, models, judgment, memory, supervision, observability, session UX, integrations | [`extensions/README.md`](extensions/README.md) |
 | `agents/` | 9 user-scope subagent definitions | [`agents/README.md`](agents/README.md) |
 | `rules/` | 22 generic TTSR stream rules | [`rules/README.md`](rules/README.md) |
-| `skills/` | add-rule, add-agent, add-mcp-server, code-review, orchestrate | [`skills/README.md`](skills/README.md) |
+| `skills/` | add-rule, add-agent, add-mcp-server, code-review, grill-me, orchestrate | [`skills/README.md`](skills/README.md) |
 | `themes/` | 3 custom pi themes | [`themes/README.md`](themes/README.md) |
 | `utils/` | Shared helpers: Jev client, role resolution, decision contract | [`utils/README.md`](utils/README.md) |
 | `scripts/` | Installer core, settings migration, YubiKey notification setup | [`scripts/README.md`](scripts/README.md) |

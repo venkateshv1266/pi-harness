@@ -22,6 +22,7 @@ A project-scope directory for skills is not documented in this repo's docs (proj
 | `add-mcp-server/` | `SKILL.md` | Adds an MCP server to pi by editing `~/.pi/agent/mcp.json` — local `stdio` or remote `http` endpoints, OAuth sign-in, exposure settings, cookie-gate auth-hook prefixes, verification. | Asked to add/configure/register a new MCP server in pi. |
 | `add-rule/` | `SKILL.md`, `scripts/validate-rule.js` | Authors a TTSR rule end to end: failure analysis, bucket decision tree, quality gates, trigger crafting, verify-gate adjudication, rule template, validation, rules-engine reload. | "Add a rule for X", "make a rule that the agent shouldn't do Y", "whenever I do Z, remind the agent to W". |
 | `code-review/` | `SKILL.md` | Reviews a PR, branch, or working diff by spawning one read-only `reviewer` subagent (persistent, resumable on failure; Jev-based triage of the changed files inside the reviewer) and relaying its consolidated review verbatim. | Asked to review a PR or diff. |
+| `grill-me/` | `SKILL.md` | Grills the user relentlessly about a plan, decision, or idea: maps it as a design tree, asks each round's whole frontier of questions with a recommended answer, dispatches sub-agents to find facts, and waits for the user's decisions before acting. | "Grill me", "grill this plan", "poke holes in this", "stress-test my thinking". |
 | `orchestrate/` | `SKILL.md` | Orchestrates multi-step implementation via cascade routing: plans in the main session with `explorer` agents, persistent `writer` subagents (`@smol`) implement parallel frozen specs under `.pi/tasks/orchestrate-<topic>/`, persistent `verifier` subagents (`@slow`, xhigh) grade in steerable fix-loops (max 3), and a final integration verifier checks the whole diff. Jev (`ask_jev`) decides triage, BLOCKED routing, FAIL root-cause, and stalemate calls. | Multi-step features, ticket-driven bug fixes, or any plan-then-execute-then-verify work too complex for a direct edit. |
 
 ### add-agent
@@ -53,6 +54,13 @@ A project-scope directory for skills is not documented in this repo's docs (proj
 - Failure and retry contract: failures resume the retained `reviewer` session (`subagent_wait` auto-resumes an aborted run; `subagent_send` retries only a failed nested lens/validator in-session). Re-running the full review flow via a fresh spawn is the forbidden outcome — a fresh spawn is a last resort after 2 failed resume/steer attempts, and never a duplicate while a handle is live. Jev being unavailable (ask-jev tool errors) is not a failure — the reviewer degrades to heuristic routing per its own instructions and notes it in the opener.
 - Fixes go to a writer/task agent, never the reviewer (read-only by design). Not for stack-specific review workflows.
 
+### grill-me
+
+- The skill is a **design tree**: every decision branches into the decisions that depend on it, and the work proceeds in rounds over the *frontier* — the questions answerable now without guessing at answers not yet heard.
+- Each round asks the whole frontier at once, numbered, each with a recommended answer worded so "yes" accepts it (the `❓ Q` / `➡️` format); the next round recomputes the frontier from the user's answers, and a question that depends on another still-open question waits for a later round.
+- Facts are the agent's job — an environment question is dispatched to a sub-agent rather than put to the user — while decisions stay with the user and block only their own downstream questions.
+- Done when the frontier is empty; the agent must not act on the plan until the user confirms shared understanding.
+
 ### orchestrate
 
 - All spawn doors are `delegate`; writer/verifier children are **persistent** with named handles (`orch-<topic>-t<n>-writer|verifier`) and fix iterations steer the same child via `subagent_send` — a fresh spawn happens only after a spec rewrite (`-r2` handles).
@@ -70,6 +78,7 @@ skills/
 ├── add-rule/SKILL.md
 ├── add-rule/scripts/validate-rule.js
 ├── code-review/SKILL.md
+├── grill-me/SKILL.md
 └── orchestrate/SKILL.md
 ```
 
@@ -85,7 +94,7 @@ Checks: frontmatter parses with required fields; bucket policy enforcement (TTSR
 
 `install.sh` (step 5) creates `~/.pi/agent/skills/` and rsyncs this repo's `skills/` into it, excluding `node_modules`. The copy uses no `--delete`, so re-running never removes locally added files.
 
-`sync.sh` mirrors live edits back into the repo; its skill step is a hardcoded file list covering `add-rule` (including the validator script), `add-agent`, `add-mcp-server`, `code-review`, and `orchestrate`. A new skill won't mirror back until its copy lines are added.
+`sync.sh` mirrors live edits back into the repo; its skill step is a hardcoded file list covering `add-rule` (including the validator script), `add-agent`, `add-mcp-server`, `code-review`, `grill-me`, and `orchestrate`. `grill-me`'s live canonical location is `~/.agents/skills/grill-me/` (user-level skill root), so `sync.sh` prefers that path and falls back to `~/.pi/agent/skills/grill-me/`. A new skill won't mirror back until its copy lines are added.
 
 ## Adding a new skill
 

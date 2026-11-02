@@ -17,7 +17,7 @@
     { "id": "rules", "type": "rules", "tier": "core", "dir": "rules", "exclude": ["README.md"], "summary": "Generic TTSR stream rules." },
     { "id": "agents", "type": "agents", "tier": "core", "dir": "agents", "exclude": ["README.md"], "summary": "User-scope subagent definitions." },
     { "id": "themes", "type": "themes", "tier": "core", "dir": "themes", "exclude": ["README.md"], "summary": "Pi themes." },
-    { "id": "skills", "type": "skills", "tier": "core", "dir": "skills", "exclude": ["README.md"], "summary": "Reusable procedures (add-rule, add-agent, add-mcp-server, code-review, orchestrate)." }
+    { "id": "skills", "type": "skills", "tier": "core", "dir": "skills", "exclude": ["README.md"], "summary": "Reusable procedures (add-rule, add-agent, add-mcp-server, code-review, grill-me, orchestrate)." }
   ],
   "presets": {
     "models": {
