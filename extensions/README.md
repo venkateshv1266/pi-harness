@@ -262,6 +262,7 @@ Interactive question tool for the model: multiple-choice options plus a free-tex
 
 | Field | What it does |
 |---|---|
+| `questions[].id` | Unique identifier for the question (required) |
 | `questions[].label` | Short name shown in the tab and the result |
 | `questions[].prompt` | Full question text |
 | `questions[].options[]` | `value`, `label`, optional `description` |

@@ -13,6 +13,7 @@ Put the round to the user with the `questionnaire` tool, not as prose. It render
 
 For every frontier question, pass:
 
+- `id` — a unique kebab-case identifier (for example `storage`); the tool requires it.
 - `label` — a short name (for example `Storage`), shown in the tab and the result.
 - `prompt` — the full question, including context and the choices.
 - `options` — 2–4 concrete answers, **recommended answer first**, worded so picking it means "yes, do that".
@@ -24,6 +25,7 @@ Call the tool once per round with the whole frontier:
 {
   "questions": [
     {
+      "id": "storage",
       "label": "Storage",
       "prompt": "Where should the event stream live?",
       "allowOther": true,
