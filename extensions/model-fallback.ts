@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, keyHint } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
-import type { Component, Focusable, KeybindingsManager, TUI } from "@earendil-works/pi-tui";
+import type { Component, Focusable, Keybinding, KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 import { Input, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -16,6 +16,13 @@ interface ModelFallbackSettings {
 }
 
 const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+function hintText(kb: KeybindingsManager, theme: Theme, id: Keybinding, description: string): string {
+	const keys = kb.getKeys(id);
+	return keys.length
+		? theme.fg("dim", keys.join("/")) + theme.fg("muted", ` ${description}`)
+		: description;
+}
 
 function writeFallbackPair(primary: string, fallback: string | null): void {
 	const settings = JSON.parse(readFileSync(SETTINGS_PATH, "utf8")) as Record<string, unknown>;
@@ -182,7 +189,7 @@ export class FilterablePicker implements Component, Focusable {
 		lines.push(
 			theme.fg(
 				"dim",
-				`  ${keyHint("tui.select.confirm", "select")} · ${keyHint("tui.select.cancel", "cancel")} · ↑↓ navigate`,
+				`  ${hintText(this.kb, theme, "tui.select.confirm", "select")} · ${hintText(this.kb, theme, "tui.select.cancel", "cancel")} · ↑↓ navigate`,
 			),
 		);
 		lines.push(...border.render(width));

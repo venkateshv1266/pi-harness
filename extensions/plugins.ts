@@ -1,10 +1,17 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, keyHint } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem, Component, Focusable, KeybindingsManager, SelectItem, SelectListTheme, TUI } from "@earendil-works/pi-tui";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem, Component, Focusable, Keybinding, KeybindingsManager, SelectItem, SelectListTheme, TUI } from "@earendil-works/pi-tui";
 import { Input, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+
+function hintText(kb: KeybindingsManager, theme: Theme, id: Keybinding, description: string): string {
+  const keys = kb.getKeys(id);
+  return keys.length
+    ? theme.fg("dim", keys.join("/")) + theme.fg("muted", ` ${description}`)
+    : description;
+}
 
 // pi "plugins" — browse/install skills from Claude Code plugin marketplaces.
 // Installed plugins are referenced in place (no copy): skills load via
@@ -270,7 +277,7 @@ class FilterablePicker implements Component, Focusable {
     lines.push(
       theme.fg(
         "dim",
-        `  ${keyHint("tui.select.confirm", "open")} · ${keyHint("tui.select.cancel", "back")} · ↑↓ navigate`,
+        `  ${hintText(this.kb, theme, "tui.select.confirm", "open")} · ${hintText(this.kb, theme, "tui.select.cancel", "back")} · ↑↓ navigate`,
       ),
     );
     lines.push(...new DynamicBorder((s: string) => theme.fg("accent", s)).render(width));
@@ -309,6 +316,7 @@ type DetailSection = { text: string; color: ThemeColor };
 class ActionsDialog implements Component {
   private readonly tui: TUI;
   private readonly theme: Theme;
+  private readonly kb: KeybindingsManager;
   private readonly title: string;
   private readonly sections: DetailSection[];
   private readonly list: SelectList;
@@ -316,6 +324,7 @@ class ActionsDialog implements Component {
   constructor(opts: {
     tui: TUI;
     theme: Theme;
+    keybindings: KeybindingsManager;
     title: string;
     sections: DetailSection[];
     actions: string[];
@@ -324,6 +333,7 @@ class ActionsDialog implements Component {
   }) {
     this.tui = opts.tui;
     this.theme = opts.theme;
+    this.kb = opts.keybindings;
     this.title = opts.title;
     this.sections = opts.sections;
     const items: SelectItem[] = opts.actions.map((a) => ({ value: a, label: a }));
@@ -346,7 +356,7 @@ class ActionsDialog implements Component {
     }
     lines.push("");
     lines.push(...this.list.render(width));
-    lines.push(theme.fg("dim", `  ${keyHint("tui.select.confirm", "select")} · ${keyHint("tui.select.cancel", "back")}`));
+    lines.push(theme.fg("dim", `  ${hintText(this.kb, theme, "tui.select.confirm", "select")} · ${hintText(this.kb, theme, "tui.select.cancel", "back")}`));
     lines.push(...new DynamicBorder((s: string) => theme.fg("accent", s)).render(width));
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "") : l));
   }
@@ -479,6 +489,7 @@ export default function (pi: ExtensionAPI) {
       new ActionsDialog({
         tui,
         theme,
+        keybindings: kb,
         title: `${entry.name}${entry.category ? ` (${entry.category})` : ""}`,
         sections: detailSections(entry, info),
         actions: actions.length > 0 ? actions : ["Back"],
@@ -550,6 +561,7 @@ export default function (pi: ExtensionAPI) {
         new ActionsDialog({
           tui,
           theme,
+          keybindings: kb,
           title: name,
           sections: [{ text: `${entry.marketplace} · ${entry.path}`, color: "dim" }],
           actions: [...(entry.enabled ? ["Disable", "Uninstall"] : ["Enable", "Uninstall"]), "Back"],

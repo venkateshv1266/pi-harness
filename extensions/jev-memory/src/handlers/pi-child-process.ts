@@ -15,6 +15,7 @@ interface PiExecResult {
   stdout?: string;
   stderr?: string;
   killed?: boolean;
+  truncated?: boolean;
 }
 
 export interface ChildPiModel {
@@ -49,6 +50,8 @@ const DEFAULT_EXEC_CHILD_PROMPT_DEPENDENCIES: ExecChildPromptDependencies = {
 };
 
 const WATCHDOG_EXIT_GRACE_MS = 5000;
+// A child transcript is orders of magnitude smaller than pi's 256 MiB default cap.
+const CHILD_EXEC_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const CHILD_PROCESS_WATCHDOG_PATH = fileURLToPath(
   new URL("./child-process-watchdog.mjs", import.meta.url),
 );
@@ -432,6 +435,7 @@ export async function execChildPrompt(
   const execOptions = {
     cwd: options.cwd,
     timeout: options.timeoutMs + WATCHDOG_EXIT_GRACE_MS,
+    maxBuffer: CHILD_EXEC_MAX_BUFFER_BYTES,
   };
   const temporaryPrompt = await writePromptToTemporaryFile(prompt);
   const promptReference = `@${temporaryPrompt.filePath}`;
@@ -456,6 +460,7 @@ export async function execChildPrompt(
       const result = await pi.exec(invocation.command, invocation.args, execOptions) as PiExecResult;
       if (
         result.code === 0 ||
+        result.truncated ||
         !options.retryWithoutOverrides ||
         !hasChildLlmOverrides(config) ||
         !shouldRetryWithoutOverrides(result)

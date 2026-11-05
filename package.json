@@ -13,6 +13,9 @@
     "test:node": "node --import tsx --test 'tests/*.test.ts' 'extensions/course-check/*.test.ts' 'extensions/decision-tuner/*.test.ts' 'extensions/jev-context-curator/*.test.ts' 'extensions/jev-memory/tests/*.test.ts' 'extensions/recite/*.test.ts' 'extensions/refine/*.test.ts' 'extensions/repo-agents-guard/*.test.ts' 'extensions/ttsr/*.test.ts' 'utils/*.test.ts'",
     "test:bun": "bun test extensions/observatory/test",
     "check:manifest": "node --test tests/harness-manifest.test.ts",
+    "check:deps": "node scripts/check-vendored-deps.mjs",
+    "check:models": "node scripts/check-models.mjs",
+    "check:upgrade": "npm run check:deps && npm run check:models",
     "install:deps": "npm install --prefix extensions/jev-memory --no-fund --no-audit && npm install --prefix extensions/ttsr --no-fund --no-audit && npm install --prefix extensions/subagent --no-fund --no-audit && npm install --prefix extensions/persistent-subagent --no-fund --no-audit"
   },
   "devDependencies": {

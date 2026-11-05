@@ -11,13 +11,15 @@
   ],
   "support": [
     { "id": "utils", "path": "utils", "summary": "Shared helpers imported by extensions (Jev client, role resolution, decision contract)." },
-    { "id": "migrate-settings", "path": "scripts/migrate-jev-memory-settings.mjs", "summary": "One-time settings migration run by the installer." }
+    { "id": "migrate-settings", "path": "scripts/migrate-jev-memory-settings.mjs", "summary": "One-time settings migration run by the installer." },
+    { "id": "check-upgrade-deps", "path": "scripts/check-vendored-deps.mjs", "summary": "Fails when a vendored @earendil-works package lags the installed pi version (npm run check:deps)." },
+    { "id": "check-upgrade-models", "path": "scripts/check-models.mjs", "summary": "Fails when a pinned model id is missing from the installed catalog (npm run check:models)." }
   ],
   "groups": [
     { "id": "rules", "type": "rules", "tier": "core", "dir": "rules", "exclude": ["README.md"], "summary": "Generic TTSR stream rules." },
     { "id": "agents", "type": "agents", "tier": "core", "dir": "agents", "exclude": ["README.md"], "summary": "User-scope subagent definitions." },
     { "id": "themes", "type": "themes", "tier": "core", "dir": "themes", "exclude": ["README.md"], "summary": "Pi themes." },
-    { "id": "skills", "type": "skills", "tier": "core", "dir": "skills", "exclude": ["README.md"], "summary": "Reusable procedures (add-rule, add-agent, add-mcp-server, code-review, grill-me, orchestrate)." }
+    { "id": "skills", "type": "skills", "tier": "core", "dir": "skills", "exclude": ["README.md"], "summary": "Reusable procedures (add-rule, add-agent, add-mcp-server, code-review, grill-me, orchestrate, pi-upgrade-review)." }
   ],
   "presets": {
     "models": {

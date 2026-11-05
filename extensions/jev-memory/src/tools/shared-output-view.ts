@@ -1,4 +1,4 @@
-import { keyHint, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type { KeybindingHints, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import stripAnsi from "strip-ansi";
 import {
   Text,
@@ -110,6 +110,7 @@ function renderView(
   options: ToolRenderResultOptions,
   theme: SharedOutputTheme | undefined,
   background: ToolCardBackground,
+  keyHint?: KeybindingHints["keyHint"],
 ): Component {
   if (options.expanded) {
     return new Text(
@@ -128,7 +129,9 @@ function renderView(
         : "";
       const fullSummary = `${partialPrefix}${view.summary}`;
       const hasHiddenText = view.expandedText.trim() !== view.summary.trim();
-      const hint = hasHiddenText ? ` (${keyHint("app.tools.expand", "to expand")})` : "";
+      const hint = hasHiddenText
+        ? ` (${keyHint ? keyHint("app.tools.expand", "to expand") : "to expand"})`
+        : "";
       const hintWidth = visibleWidth(hint);
       const visibleHint = hintWidth < availableWidth ? hint : "";
       const summaryWidth = Math.max(1, availableWidth - visibleWidth(visibleHint));
@@ -151,7 +154,7 @@ export function createSharedToolResultRenderer(
     result: unknown,
     options: ToolRenderResultOptions,
     theme: SharedOutputTheme,
-    context?: { isError?: boolean },
+    context?: { isError?: boolean } & Partial<KeybindingHints>,
   ): Component => {
     const adapted = adapt(result);
     const displayView = {
@@ -165,6 +168,6 @@ export function createSharedToolResultRenderer(
       : context?.isError
         ? "toolErrorBg"
         : "toolSuccessBg";
-    return renderView(view, options, theme, background);
+    return renderView(view, options, theme, background, context?.keyHint);
   };
 }

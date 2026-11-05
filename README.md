@@ -1,6 +1,6 @@
 # pi-harness
 
-31 extensions · 9 subagent definitions · 22 generic TTSR rules · 6 skills · 3 themes
+31 extensions · 9 subagent definitions · 22 generic TTSR rules · 7 skills · 3 themes
 
 My [pi coding agent](https://github.com/earendil-works/pi-coding-agent) setup, published so other
 people can borrow the pieces that work. It is a personal setup, not a product: some of it runs with

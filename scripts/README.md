@@ -9,6 +9,8 @@ migration that `./install.sh` runs for you, and an ask-jev adoption report.
 | `scripts/install-yubikey-notifications.sh` | Installs the YubiKey alert wrappers and default sound, then points Git at them |
 | `scripts/migrate-jev-memory-settings.mjs` | Removes the legacy `npm:pi-hermes-memory` entry from `~/.pi/agent/settings.json` (run automatically by `./install.sh`) |
 | `scripts/ask-jev-adoption.mjs` | Ask-jev adoption report: per-tool Jev-call usage vs read-call volume from real session files — `node scripts/ask-jev-adoption.mjs [--days 7]` (details in the [ask-jev README](../extensions/ask-jev/README.md)) |
+| `scripts/check-vendored-deps.mjs` | `npm run check:deps` — fails when an extension's vendored `@earendil-works/*` copy or declared range lags the installed pi version (a stale copy wins module resolution) |
+| `scripts/check-models.mjs` | `npm run check:models` — resolves every pinned model id (settings.json, harness presets, agent frontmatter) against `pi --list-models`; fails on ids a catalog bump retired. `--root <dir>` / `--agent <dir>` check a different tree |
 | `bin/git-gpg-yubikey-notify` | `gpg` wrapper that alerts before YubiKey signing operations |
 | `bin/git-ssh-yubikey-notify` | `ssh` wrapper that alerts before Git SSH authentication |
 | `bin/orca-focus-terminal` | Click-through helper: switches Orca to the exact terminal an alert came from |
