@@ -5,6 +5,10 @@
 The live setup is `~/.pi/agent/`. This repo is the published mirror. The owner edits the live files,
 then pulls the shareable subset back into the repo.
 
+The two trees are kept identical in **both** directions: a change made repo-side (a fix, a doc, a
+restored test) must be copied into the live tree in the same change. `sync.sh` only copies live → repo,
+so a repo-only edit would otherwise be reverted by the next sync; the preflight below refuses that.
+
 `sync.sh` is **untracked on purpose** (see `.gitignore`). It is a personal publishing tool, not part of
 what a user installs. Its behaviour:
 
@@ -15,6 +19,12 @@ what a user installs. Its behaviour:
    allowlist, so private or employer-specific resources never get published even though they live in
    the same live directories.
 4. Leaves `stats.ts` and `utils/omp-stats/` local. They are excluded from the public repo.
+
+Because live is authoritative, the sync overwrites repo files. A preflight guards the other direction:
+it refuses to run when a repo file changed since the last sync (a direct repo edit the live tree never
+received) or when a tracked extension/util file is missing live (the sync would delete it). Reconcile by
+copying repo → live, or pass `--force` to overwrite anyway. It keeps synced content hashes in
+`~/.pi/agent/.sync-state`, so the repo stays clean.
 
 After syncing: `git status --short`, `git diff`, update the affected README, then commit and push.
 
