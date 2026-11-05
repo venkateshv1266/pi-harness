@@ -1,9 +1,9 @@
 ---
 name: "code-review"
 description: "Review a PR, branch, or the current working diff by spawning the reviewer subagent (which runs a Jev-based triage of the changed files, then lens fan-out plus validator pass on @slow). Use when asked to review a PR or diff."
-version: 3
+version: 4
 created: "2026-09-03"
-updated: "2026-10-06"
+updated: "2026-10-30"
 ---
 ## When to Use
 Use when the user asks to review a PR (by number or URL), a branch, or the current diff/changes in a repo. Do not use for stack-specific review workflows or for reviewing specific files the user wants discussed interactively without the full review treatment.
@@ -13,6 +13,21 @@ Use when the user asks to review a PR (by number or URL), a branch, or the curre
 2. Determine the repo directory: the current working directory unless the PR belongs to another repo under the workspace.
 3. Check `subagent_list` for a live or retained handle named `reviewer`. If one exists for this target, do NOT spawn a duplicate — steer that session (`subagent_send`) or collect it (`subagent_wait`).
 4. If no handle exists, spawn the reviewer as a PERSISTENT subagent: one `delegate` call, single form, with `mode: "persistent"`, `name: "reviewer"`, agent `reviewer` (user scope), `cwd` set to the repo directory, tools `['read','bash','grep','find','ls','subagent','ask_jev_files','ask_jev_file_bool','ask_jev_file_score','pick_first_file','triage_log']` — this list must match the reviewer's frontmatter; a stale override strips the Jev tools and silently disables triage. NEVER spawn the reviewer without `mode: "persistent"` — a one-shot child exits on failure, and the reflexive retry (a fresh spawn) re-runs the entire review flow from scratch.
+
+   Exact call shape — copy it, do not improvise parameter names:
+
+   ```
+   delegate({
+     mode: "persistent",
+     agent: "reviewer",
+     name: "reviewer",
+     cwd: "<repo dir>",
+     tools: ["read","bash","grep","find","ls","subagent","ask_jev_files","ask_jev_file_bool","ask_jev_file_score","pick_first_file","triage_log"],
+     task: "<self-contained prompt from step 5>"
+   })
+   ```
+
+   `mode` selects the engine (`auto` | `oneshot` | `persistent`). `model` is a different parameter that takes a model ID or `@role` alias — there is no `persistent` model.
 5. Task prompt must be self-contained, e.g.: "Review <PR #123 / branch X / the current staged+unstaged diff> in this repo. To get the diff run `gh pr diff <num> --patch` (PR), `git diff <base>...<branch>` (branch), or `git diff HEAD` + `git diff --staged` (working tree). Follow your own review method: gather the diff, triage the changed files with your Jev routing step (degrade to heuristics if ask-jev tools error), decide single-pass versus fan-out, run the validator pass if you fan out, and emit your consolidated review in your mandated output format. Return the full review as your final output."
 6. Collect the result from the `reviewer` handle with `subagent_wait`. (A delegate call with default `wait: true` already blocks until the child settles; call `subagent_wait` when you spawned with `wait: false`, or after steering/resuming the child.)
 7. Relay the reviewer's consolidated review to the user verbatim — do not re-summarize, re-rank, or add your own findings on top.
@@ -31,9 +46,11 @@ On any failure, resume the existing `reviewer` session — re-running the full r
 - Do not use this for stack-specific review workflows; use the repository's stack-review workflow when one is available.
 - Do not ask the reviewer to edit files. Use a writer/task agent for confirmed fixes.
 - Do not spawn the reviewer one-shot (omitting `mode: "persistent"`). One-shot children exit on abort, so the only available retry is a fresh spawn that silently re-runs the whole review flow — the exact anti-pattern this skill forbids.
+- Never write `model: "persistent"`. `model` takes a model ID or `@role` alias; `persistent` is a value of `mode`, not `model`. Writing it as `model` leaves `mode` at its `auto` default, so the router may pick one-shot and the retention/retry contract silently disappears, and it passes the bogus string `persistent` as the child's model. Check the spawn call has `mode: "persistent"` and no `model` key.
 
 ## Verification
 1. The reviewer subagent returns a review containing an opener, findings ordered by severity with path:line citations, What's good, Test coverage, and a Review Summary table with a verdict.
 2. If handed a PR number, the review's opener correctly describes that PR's changes (not another PR or stale diff).
 3. The reviewer was spawned with `mode: "persistent"` and name `reviewer`, the review was collected via `subagent_wait` on that handle, and no second reviewer was spawned for the same target — including when a run aborted mid-flight.
-4. The review completed even if ask-jev tools errored mid-run — degradation to heuristic routing is handled inside the reviewer and is not a failure condition.
+4. The spawn call used `mode: "persistent"` (not `model: "persistent"`, and no `model` key was invented). If the transcript shows `model`, the spawn was malformed — fix it before collecting results.
+5. The review completed even if ask-jev tools errored mid-run — degradation to heuristic routing is handled inside the reviewer and is not a failure condition.
