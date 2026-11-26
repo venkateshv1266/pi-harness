@@ -123,6 +123,80 @@ function priceFor(list: Price[], model: string): Price | null {
 	);
 }
 
+// ------------------------------------------------------------------ cache
+
+/**
+ * Prompt-token split for one call, session or range.
+ *
+ * The provider bills three prompt buckets: uncached input, cache read and cache
+ * write. A hit rate computed over `input + cache_read` treats cache writes as
+ * free, so a model that rewrites its prefix every turn reports ~100% while
+ * paying the write rate for most of its tokens. Every rate here divides by the
+ * full prompt, and read and write are reported separately because a write costs
+ * more than uncached input on every sheet that bills it.
+ */
+export interface CacheSplit {
+	prompt: number;
+	readRate: number | null;
+	writeRate: number | null;
+	uncachedRate: number | null;
+}
+
+export function cacheSplit(input: number, cacheRead: number, cacheWrite: number): CacheSplit {
+	const prompt = input + cacheRead + cacheWrite;
+	if (!(prompt > 0)) return { prompt: 0, readRate: null, writeRate: null, uncachedRate: null };
+	return { prompt, readRate: cacheRead / prompt, writeRate: cacheWrite / prompt, uncachedRate: input / prompt };
+}
+
+/** Blended $/token for a cache-aware rate estimate: read and write priced apart. */
+function blendCacheRate(
+	readRate: number | null,
+	writeRate: number | null,
+	uncachedRate: number | null,
+	read: number | null,
+	write: number | null,
+	input: number | null,
+): number | null {
+	if (readRate == null || writeRate == null || uncachedRate == null) return input;
+	if (read == null || write == null || input == null) return input;
+	return readRate * read + writeRate * write + uncachedRate * input;
+}
+
+export interface CacheValue {
+	savingsUsd: number;
+	writePremiumUsd: number;
+	netUsd: number;
+	readTokens: number;
+	writeTokens: number;
+}
+
+/**
+ * What caching was worth, net of both buckets.
+ *
+ * Reads are cheaper than input; writes cost more than input on every sheet that
+ * bills them. Reporting only the read discount credits a model that rewrites its
+ * prefix every turn with a saving it did not earn, so the two are netted here.
+ */
+export function cacheValue(
+	rows: ReadonlyArray<{ cache_read: number; cache_write: number }>,
+	rateFor: (model: string) => Price | null,
+	modelOf: (row: { cache_read: number; cache_write: number }) => string,
+): CacheValue {
+	let savingsUsd = 0;
+	let writePremiumUsd = 0;
+	let readTokens = 0;
+	let writeTokens = 0;
+	for (const row of rows) {
+		const price = rateFor(modelOf(row));
+		readTokens += row.cache_read;
+		writeTokens += row.cache_write;
+		if (price?.input == null) continue;
+		if (price.cache_read != null) savingsUsd += (row.cache_read * (price.input - price.cache_read)) / 1_000_000;
+		if (price.cache_write != null) writePremiumUsd += (row.cache_write * (price.cache_write - price.input)) / 1_000_000;
+	}
+	return { savingsUsd, writePremiumUsd, netUsd: savingsUsd - writePremiumUsd, readTokens, writeTokens };
+}
+
 export interface CuratorMetrics {
 	trims: number;
 	tokensCondensed: number;
@@ -311,7 +385,11 @@ export function rateBook(db: Database, from = 0, to = Number.MAX_SAFE_INTEGER) {
 
 // ------------------------------------------------------------------ overview
 
-export function overview(db: Database, range: Range) {
+export function overview(db: Database, range: Range, model: string | null = null) {
+	// The model scope has to reach every model-derived figure, otherwise the KPI
+	// cards report the whole workspace while the picker says one model.
+	const scope = model ? " AND model = ?" : "";
+	const scopeArgs: Array<string | number> = model ? [range.from, range.to, model] : [range.from, range.to];
 	const totals = db
 		.query<
 			{
@@ -326,7 +404,7 @@ export function overview(db: Database, range: Range) {
 				errors: number;
 				sessions: number;
 			},
-			[number, number]
+			Array<string | number>
 		>(
 			`SELECT COUNT(*) calls, COALESCE(SUM(input),0) input, COALESCE(SUM(output),0) output,
 			        COALESCE(SUM(cache_read),0) cache_read, COALESCE(SUM(cache_write),0) cache_write,
@@ -334,9 +412,9 @@ export function overview(db: Database, range: Range) {
 			        COALESCE(SUM(cost),0) cost,
 			        COALESCE(SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END),0) errors,
 			        COUNT(DISTINCT session_id) sessions
-			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?`,
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?${scope}`,
 		)
-		.get(range.from, range.to);
+		.get(...scopeArgs);
 
 	const turns = db
 		.query<{ n: number }, [number, number]>("SELECT COUNT(*) n FROM messages WHERE role = 'user' AND ts_ms BETWEEN ? AND ?")
@@ -347,11 +425,12 @@ export function overview(db: Database, range: Range) {
 		.get(range.from, range.to);
 
 	const modelDaily = db
-		.query<{ day: string; cost: number; tokens: number; calls: number; cache_read: number }, [number, number]>(
-			`SELECT ${dayExpr} day, COALESCE(SUM(cost),0) cost, COALESCE(SUM(total_tokens),0) tokens, COUNT(*) calls, COALESCE(SUM(cache_read),0) cache_read
-			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? GROUP BY day ORDER BY day`,
+		.query<{ day: string; cost: number; tokens: number; calls: number; cache_read: number; cache_write: number }, Array<string | number>>(
+			`SELECT ${dayExpr} day, COALESCE(SUM(cost),0) cost, COALESCE(SUM(total_tokens),0) tokens, COUNT(*) calls,
+			        COALESCE(SUM(cache_read),0) cache_read, COALESCE(SUM(cache_write),0) cache_write
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?${scope} GROUP BY day ORDER BY day`,
 		)
-		.all(range.from, range.to);
+		.all(...scopeArgs);
 
 	const harnessDaily = db
 		.query<{ day: string; cost: number; events: number }, [number, number]>(
@@ -502,7 +581,10 @@ export function overview(db: Database, range: Range) {
 			cacheWrite: totals?.cache_write ?? 0,
 			reasoning: totals?.reasoning ?? 0,
 			totalTokens: totals?.total_tokens ?? 0,
-			cacheRate: totals && totals.input + totals.cache_read > 0 ? totals.cache_read / (totals.input + totals.cache_read) : null,
+			// Both rates, because a write-heavy model can read little and still pay the
+			// most; the read rate alone hid that.
+			cacheRate: totals ? cacheSplit(totals.input, totals.cache_read, totals.cache_write).readRate : null,
+			cacheWriteRate: totals ? cacheSplit(totals.input, totals.cache_read, totals.cache_write).writeRate : null,
 			errors: totals?.errors ?? 0,
 			events: harness?.n ?? 0,
 		},
@@ -548,8 +630,9 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	const priceList = prices(db);
 
 	const modelRows = db
-		.query<{ model: string; input: number; output: number; cache_read: number; calls: number }, Array<string | number>>(
-			`SELECT model, COALESCE(SUM(input),0) input, COALESCE(SUM(output),0) output, COALESCE(SUM(cache_read),0) cache_read, COUNT(*) calls
+		.query<{ model: string; input: number; output: number; cache_read: number; cache_write: number; calls: number }, Array<string | number>>(
+			`SELECT model, COALESCE(SUM(input),0) input, COALESCE(SUM(output),0) output, COALESCE(SUM(cache_read),0) cache_read,
+			        COALESCE(SUM(cache_write),0) cache_write, COUNT(*) calls
 			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL${model ? " AND model = ?" : ""} GROUP BY model`,
 		)
 		.all(...(model ? [range.from, range.to, model] : [range.from, range.to]));
@@ -559,8 +642,8 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 	let pricedCacheReadTokens = 0;
 	let pricedCacheReadCost = 0;
 	let totalInputTokens = 0;
-	let cacheSavingsUsd = 0;
-	let cacheReadTokens = 0;
+	let pricedCacheWriteTokens = 0;
+	let pricedCacheWriteCost = 0;
 	let pricedCalls = 0;
 	let unpricedCalls = 0;
 	const book = rateBook(db, range.from, range.to);
@@ -574,18 +657,24 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 		} else {
 			unpricedCalls += row.calls;
 		}
-		if (price?.input != null && price.cache_read != null) {
-			cacheSavingsUsd += (row.cache_read * (price.input - price.cache_read)) / 1_000_000;
-			cacheReadTokens += row.cache_read;
+		if (price?.cache_read != null) {
 			pricedCacheReadTokens += row.cache_read;
 			pricedCacheReadCost += (row.cache_read * price.cache_read) / 1_000_000;
 		}
+		if (price?.cache_write != null) {
+			pricedCacheWriteTokens += row.cache_write;
+			pricedCacheWriteCost += (row.cache_write * price.cache_write) / 1_000_000;
+		}
 	}
+	const value = cacheValue(modelRows, (name) => book.rateFor(name), (row) => row.model);
+	const cacheReadTokens = value.readTokens;
+	const cacheWriteTokens = value.writeTokens;
 	// $ per token, blended across priced models — the rate used to price saved chars.
 	const blendedInputRate = pricedInputTokens > 0 ? pricedInputCost / pricedInputTokens : null;
 	const blendedCacheRate = pricedCacheReadTokens > 0 ? pricedCacheReadCost / pricedCacheReadTokens : blendedInputRate;
-	const promptTokenTotal = totalInputTokens + cacheReadTokens;
-	const cacheHitRate = promptTokenTotal > 0 ? cacheReadTokens / promptTokenTotal : 1;
+	const blendedWriteRate = pricedCacheWriteTokens > 0 ? pricedCacheWriteCost / pricedCacheWriteTokens : blendedInputRate;
+	const split = cacheSplit(totalInputTokens, cacheReadTokens, cacheWriteTokens);
+	const cacheHitRate = split.readRate ?? 1;
 	// Saved tokens would mostly have been re-sent from cache, so they are worth
 	// the cache rate far more often than the full input rate. Pricing them at the
 	// input rate would overstate the saving.
@@ -598,8 +687,7 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 		)
 		.get(range.from, range.to);
 	const invoiceRate = billedRange && billedRange.tokens > 0 && billedRange.cost > 0 ? billedRange.cost / billedRange.tokens : null;
-	const blendedRate =
-		blendedInputRate != null && blendedCacheRate != null ? cacheHitRate * blendedCacheRate + (1 - cacheHitRate) * blendedInputRate : blendedInputRate;
+	const blendedRate = blendCacheRate(cacheHitRate, split.writeRate, split.uncachedRate, blendedCacheRate, blendedWriteRate, blendedInputRate);
 	const effectiveRate = invoiceRate ?? blendedRate;
 
 	// -------- curator condensation
@@ -899,7 +987,20 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 			savedCallsCarrying,
 			savedBySource,
 		},
-		cache: { savingsUsd: cacheSavingsUsd, cacheReadTokens, pricedCalls, unpricedCalls },
+		cache: {
+			// Gross read discount, the write premium it paid for, and the net. A model
+			// that rewrites its prefix every turn shows a positive gross saving and a
+			// negative net, which is the honest read of what caching did for it.
+			savingsUsd: value.savingsUsd,
+			writePremiumUsd: value.writePremiumUsd,
+			netUsd: value.netUsd,
+			cacheReadTokens,
+			cacheWriteTokens,
+			readRate: split.readRate,
+			writeRate: split.writeRate,
+			pricedCalls,
+			unpricedCalls,
+		},
 		overhead: { cost: overheadCost, decisions: overheadDecisions, bySystem: overheadRows },
 		guard: { screens: guardRows.length, blocked: guardBlocked, flagged: guardFlagged, destructive: destructive.slice(0, 6) },
 		ttsr: { ...ttsr, topRules: Object.entries(ttsrRules).map(([rule, v]) => ({ rule, ...v })).sort((a, b) => b.fired - a.fired).slice(0, 12) },
@@ -914,7 +1015,16 @@ export function impact(db: Database, range: Range, model: string | null = null) 
 			// Honest attribution: these are not attributable to a single model.
 			global: ["overhead", "verifierAgreement", "rulePrecision", "routerVerdicts", "guard", "goalHealth", "memory", "cacheResets"],
 		},
-		rates: { blendedInputPerToken: blendedInputRate, blendedCachePerToken: blendedCacheRate, cacheHitRate, effectivePerToken: effectiveRate, pricedCoverage: totalInputTokens > 0 ? pricedInputTokens / totalInputTokens : null },
+		rates: {
+			blendedInputPerToken: blendedInputRate,
+			blendedCachePerToken: blendedCacheRate,
+			blendedCacheWritePerToken: blendedWriteRate,
+			cacheHitRate,
+			cacheWriteRate: split.writeRate,
+			promptTokens: split.prompt,
+			effectivePerToken: effectiveRate,
+			pricedCoverage: totalInputTokens > 0 ? pricedInputTokens / totalInputTokens : null,
+		},
 	};
 }
 
@@ -1297,8 +1407,8 @@ export function harnessBenefits(db: Database, range: Range) {
 	const priceList = prices(db);
 
 	const modelRows = db
-		.query<{ model: string; input: number; cache_read: number }, [number, number]>(
-			`SELECT model, COALESCE(SUM(input),0) input, COALESCE(SUM(cache_read),0) cache_read
+		.query<{ model: string; input: number; cache_read: number; cache_write: number }, [number, number]>(
+			`SELECT model, COALESCE(SUM(input),0) input, COALESCE(SUM(cache_read),0) cache_read, COALESCE(SUM(cache_write),0) cache_write
 			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL GROUP BY model`,
 		)
 		.all(range.from, range.to);
@@ -1306,11 +1416,15 @@ export function harnessBenefits(db: Database, range: Range) {
 	let pricedInputCost = 0;
 	let pricedCacheTokens = 0;
 	let pricedCacheCost = 0;
+	let pricedWriteTokens = 0;
+	let pricedWriteCost = 0;
 	let inputTotal = 0;
 	let cacheReadTotal = 0;
+	let cacheWriteTotal = 0;
 	for (const row of modelRows) {
 		inputTotal += row.input;
 		cacheReadTotal += row.cache_read;
+		cacheWriteTotal += row.cache_write;
 		const price = priceFor(priceList, row.model);
 		if (price?.input != null) {
 			pricedInputTokens += row.input;
@@ -1320,12 +1434,17 @@ export function harnessBenefits(db: Database, range: Range) {
 			pricedCacheTokens += row.cache_read;
 			pricedCacheCost += (row.cache_read * price.cache_read) / 1_000_000;
 		}
+		if (price?.cache_write != null) {
+			pricedWriteTokens += row.cache_write;
+			pricedWriteCost += (row.cache_write * price.cache_write) / 1_000_000;
+		}
 	}
 	const blendedInput = pricedInputTokens > 0 ? pricedInputCost / pricedInputTokens : null;
 	const blendedCache = pricedCacheTokens > 0 ? pricedCacheCost / pricedCacheTokens : blendedInput;
-	const promptTokens = inputTotal + cacheReadTotal;
-	const cacheHitRate = promptTokens > 0 ? cacheReadTotal / promptTokens : 1;
-	const effectiveRate = blendedInput != null && blendedCache != null ? cacheHitRate * blendedCache + (1 - cacheHitRate) * blendedInput : blendedInput;
+	const blendedWrite = pricedWriteTokens > 0 ? pricedWriteCost / pricedWriteTokens : blendedInput;
+	const split = cacheSplit(inputTotal, cacheReadTotal, cacheWriteTotal);
+	const cacheHitRate = split.readRate ?? 1;
+	const effectiveRate = blendCacheRate(cacheHitRate, split.writeRate, split.uncachedRate, blendedCache, blendedWrite, blendedInput);
 
 	const callStats = db
 		.query<{ calls: number; cost: number; tokens: number }, [number, number]>(
@@ -1532,7 +1651,15 @@ export function harnessBenefits(db: Database, range: Range) {
 		calls,
 		spend,
 		avgCallCost,
-		rates: { effectivePerToken: effectiveRate, blendedInputPerToken: blendedInput, blendedCachePerToken: blendedCache, cacheHitRate },
+		rates: {
+			effectivePerToken: effectiveRate,
+			blendedInputPerToken: blendedInput,
+			blendedCachePerToken: blendedCache,
+			blendedCacheWritePerToken: blendedWrite,
+			cacheHitRate,
+			cacheWriteRate: split.writeRate,
+			promptTokens: split.prompt,
+		},
 		baseline: { chars: baselineChars, tokens: baselineTokens, calls, cost: baselineCost, sessions: baselineRow?.sessions ?? 0 },
 		rules: {
 			ruleCount: ruleFiles.length,
@@ -1626,7 +1753,8 @@ export function models(db: Database, range: Range) {
 			tokens: row.total_tokens,
 			errors: row.errors,
 			errorRate: row.calls ? row.errors / row.calls : null,
-			cacheRate: row.input + row.cache_read > 0 ? row.cache_read / (row.input + row.cache_read) : null,
+			cacheRate: cacheSplit(row.input, row.cache_read, row.cache_write).readRate,
+			cacheWriteRate: cacheSplit(row.input, row.cache_read, row.cache_write).writeRate,
 			costPerCall: row.calls ? row.cost / row.calls : null,
 			tokensPerCall: row.calls ? row.total_tokens / row.calls : null,
 			lastTs: row.last_ts ? new Date(row.last_ts).toISOString() : null,
@@ -3068,6 +3196,7 @@ export interface TrendWindow {
 	jevSpendPerCall: number | null;
 	cacheDiscountPerCall: number | null;
 	cacheRate: number | null;
+	cacheWriteRate: number | null;
 	offTrackRate: number | null;
 	promptTokensPerCall: number | null;
 	curatorTokensPerCall: number | null;
@@ -3084,24 +3213,36 @@ export interface TrendWindow {
 }
 
 /** Headline numbers for one window, computed from the same primitives as the Impact tab. */
-function summarizeWindow(db: Database, priceList: Price[], rules: Array<{ name: string; chars: number }>, from: number, to: number): TrendWindow {
+function summarizeWindow(
+	db: Database,
+	priceList: Price[],
+	rules: Array<{ name: string; chars: number }>,
+	from: number,
+	to: number,
+	model: string | null = null,
+): TrendWindow {
+	const scope = model ? " AND model = ?" : "";
+	const scopeArgs: Array<string | number> = model ? [from, to, model] : [from, to];
 	const callStats = db
-		.query<{ calls: number; input: number; cache_read: number; cost: number; errors: number }, [number, number]>(
+		.query<{ calls: number; input: number; cache_read: number; cache_write: number; cost: number; errors: number }, Array<string | number>>(
 			`SELECT COUNT(*) calls, COALESCE(SUM(input),0) input, COALESCE(SUM(cache_read),0) cache_read,
+			        COALESCE(SUM(cache_write),0) cache_write,
 			        COALESCE(SUM(cost),0) cost, COALESCE(SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END),0) errors
-			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?`,
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?${scope}`,
 		)
-		.get(from, to);
+		.get(...scopeArgs);
 	const calls = callStats?.calls ?? 0;
 	const input = callStats?.input ?? 0;
 	const cacheRead = callStats?.cache_read ?? 0;
+	const cacheWrite = callStats?.cache_write ?? 0;
+	const split = cacheSplit(input, cacheRead, cacheWrite);
 
 	let cacheDiscount = 0;
 	for (const row of db
-		.query<{ model: string | null; cache_read: number }, [number, number]>(
-			"SELECT model, COALESCE(SUM(cache_read),0) cache_read FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL GROUP BY model",
+		.query<{ model: string | null; cache_read: number }, Array<string | number>>(
+			`SELECT model, COALESCE(SUM(cache_read),0) cache_read FROM model_calls WHERE ts_ms BETWEEN ? AND ? AND model IS NOT NULL${scope} GROUP BY model`,
 		)
-		.all(from, to)) {
+		.all(...scopeArgs)) {
 		const price = row.model ? priceFor(priceList, row.model) : null;
 		if (price?.input != null && price.cache_read != null) cacheDiscount += (row.cache_read * (price.input - price.cache_read)) / 1_000_000;
 	}
@@ -3190,9 +3331,10 @@ function summarizeWindow(db: Database, priceList: Price[], rules: Array<{ name: 
 		costPerCall: perCall(callStats?.cost ?? 0),
 		jevSpendPerCall: perCall(jevRow?.cost ?? 0),
 		cacheDiscountPerCall: perCall(cacheDiscount),
-		cacheRate: input + cacheRead > 0 ? cacheRead / (input + cacheRead) : null,
+		cacheRate: split.readRate,
+		cacheWriteRate: split.writeRate,
 		offTrackRate: courseChecks > 0 ? offTrack / courseChecks : null,
-		promptTokensPerCall: perCall(input + cacheRead),
+		promptTokensPerCall: perCall(split.prompt),
 		curatorTokensPerCall: perCall(curatorTokens),
 		rulesTokensAvoidedPerCall: perCall(rulesTokensAvoided),
 		errorRate: calls > 0 ? (callStats?.errors ?? 0) / calls : null,
@@ -3210,14 +3352,18 @@ function summarizeWindow(db: Database, priceList: Price[], rules: Array<{ name: 
  * Per-day series plus the same headline numbers for this window and the one
  * before it, so "am I improving?" has an answer rather than a snapshot.
  */
-export function trends(db: Database, range: Range) {
+export function trends(db: Database, range: Range, model: string | null = null) {
 	const priceList = prices(db);
 	const rules = ruleSizes();
 	const dayExpr = "strftime('%Y-%m-%d', ts_ms / 1000, 'unixepoch', 'localtime')";
+	// Model metrics follow the picker; harness-event meters stay global, because an
+	// event is not attributable to one model. The page says so beside the picker.
+	const scope = model ? " AND model = ?" : "";
+	const scopeArgs: Array<string | number> = model ? [range.from, range.to, model] : [range.from, range.to];
 
 	const labels = db
-		.query<{ day: string }, [number, number]>(`SELECT ${dayExpr} day FROM model_calls WHERE ts_ms BETWEEN ? AND ? GROUP BY day ORDER BY day`)
-		.all(range.from, range.to)
+		.query<{ day: string }, Array<string | number>>(`SELECT ${dayExpr} day FROM model_calls WHERE ts_ms BETWEEN ? AND ?${scope} GROUP BY day ORDER BY day`)
+		.all(...scopeArgs)
 		.map((row) => row.day);
 	const index = new Map(labels.map((day, i) => [day, i]));
 	const zero = () => new Array(labels.length).fill(0) as number[];
@@ -3238,12 +3384,12 @@ export function trends(db: Database, range: Range) {
 	};
 
 	for (const row of db
-		.query<{ day: string; model: string | null; calls: number; cache_read: number; cost: number; errors: number }, [number, number]>(
+		.query<{ day: string; model: string | null; calls: number; cache_read: number; cost: number; errors: number }, Array<string | number>>(
 			`SELECT ${dayExpr} day, model, COUNT(*) calls, COALESCE(SUM(cache_read),0) cache_read, COALESCE(SUM(cost),0) cost,
 			        COALESCE(SUM(CASE WHEN stop_reason = 'error' THEN 1 ELSE 0 END),0) errors
-			 FROM model_calls WHERE ts_ms BETWEEN ? AND ? GROUP BY day, model`,
+			 FROM model_calls WHERE ts_ms BETWEEN ? AND ?${scope} GROUP BY day, model`,
 		)
-		.all(range.from, range.to)) {
+		.all(...scopeArgs)) {
 		const i = index.get(row.day);
 		if (i === undefined) continue;
 		series.calls[i] += row.calls;
@@ -3307,8 +3453,8 @@ export function trends(db: Database, range: Range) {
 	}
 
 	const span = range.to - range.from;
-	const current = summarizeWindow(db, priceList, rules, range.from, range.to);
-	const previous = summarizeWindow(db, priceList, rules, range.from - span, range.from);
+	const current = summarizeWindow(db, priceList, rules, range.from, range.to, model);
+	const previous = summarizeWindow(db, priceList, rules, range.from - span, range.from, model);
 
 	const pct = (now: number | null, before: number | null): number | null =>
 		now == null || before == null || before === 0 ? null : (now - before) / Math.abs(before);
@@ -3363,8 +3509,8 @@ export function sessionImpact(db: Database, sessionId: string) {
 	// today's sheet: the sheet is a current snapshot and older calls were billed higher.
 	const sessionRates = rateBook(db);
 	const session = db
-		.query<{ session_id: string; project: string; title: string | null; turns: number; calls: number; cost: number; total_tokens: number; cache_read: number; input: number; output: number; errors: number }, [string]>(
-			"SELECT session_id, project, title, turns, calls, cost, total_tokens, cache_read, input, output, errors FROM sessions WHERE session_id = ?",
+		.query<{ session_id: string; project: string; title: string | null; turns: number; calls: number; cost: number; total_tokens: number; cache_read: number; cache_write: number; input: number; output: number; errors: number }, [string]>(
+			"SELECT session_id, project, title, turns, calls, cost, total_tokens, cache_read, cache_write, input, output, errors FROM sessions WHERE session_id = ?",
 		)
 		.get(sessionId);
 	if (!session) return { session: null };
@@ -3542,7 +3688,8 @@ export function sessionImpact(db: Database, sessionId: string) {
 			rulesDelivered: delivered,
 			rulesTokens: Math.round(deliveredChars / 4),
 			contextEdits: edits,
-			cacheRate: session.input + session.cache_read > 0 ? session.cache_read / (session.input + session.cache_read) : null,
+			cacheRate: cacheSplit(session.input, session.cache_read, session.cache_write).readRate,
+			cacheWriteRate: cacheSplit(session.input, session.cache_read, session.cache_write).writeRate,
 			costPerTurn: session.turns > 0 ? session.cost / session.turns : null,
 		},
 		quality: {
@@ -3713,7 +3860,9 @@ export function digest(db: Database, range: Range, rangeLabel: string, adapters:
 	lines.push("");
 	lines.push("## Spend and context");
 	lines.push(`- Model cost ${usd(trendData.current.cost)} over ${trendData.current.calls.toLocaleString("en-US")} calls (${usd(trendData.current.costPerCall)}/call)`);
-	lines.push(`- Prompt tokens per call ${tokens(trendData.current.promptTokensPerCall)} · cache rate ${pct(trendData.current.cacheRate)}`);
+	lines.push(
+		`- Prompt tokens per call ${tokens(trendData.current.promptTokensPerCall)} · cache read ${pct(trendData.current.cacheRate)} · cache write ${pct(trendData.current.cacheWriteRate)}`,
+	);
 	lines.push(`- Cache discount ${usd(trendData.current.cacheDiscount)} (${usd(trendData.current.cacheDiscountPerCall)}/call)`);
 	lines.push("");
 	lines.push("## Harness benefit");

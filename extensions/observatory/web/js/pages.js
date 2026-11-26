@@ -493,7 +493,8 @@ async function overview(view, ctx) {
 			kpi({ label: "Model cost", value: fmtCost(t.costModel), sub: `${fmtInt(t.calls)} calls · ${fmtInt(t.sessions)} sessions` }),
 			kpi({ label: "Harness cost (logged)", value: fmtCost(t.costHarness), sub: `${fmtInt(t.events)} decisions`, tip: "Only subsystems that log a per-call cost (guard, router, ask-jev). Others are not priced in the log — shown as-is rather than estimated." }),
 			kpi({ label: "Tokens", value: fmtCompact(t.totalTokens), sub: `${fmtCompact(t.input)} in · ${fmtCompact(t.output)} out · ${fmtCompact(t.cacheRead)} cached` }),
-			kpi({ label: "Cache rate", value: fmtPct(t.cacheRate, 1), sub: `${fmtCompact(t.cacheRead)} of ${fmtCompact(t.cacheRead + t.input)} prompt tokens`, sparkHtml: spark(d.daily.map((x) => x.cacheRead ?? 0), { height: 26 }) }),
+			kpi({ label: "Cache read", value: fmtPct(t.cacheRate, 1), sub: `${fmtCompact(t.cacheRead)} read · ${fmtCompact(t.cacheWrite)} rewritten of ${fmtCompact(t.cacheRead + t.cacheWrite + t.input)} prompt tokens`, sparkHtml: spark(d.daily.map((x) => x.cacheRead ?? 0), { height: 26 }) }),
+			kpi({ label: "Cache write", value: fmtPct(t.cacheWriteRate, 1), sub: `${fmtCompact(t.cacheWrite)} tokens re-billed at the write rate — a rewrite of a prefix the provider already had` }),
 			kpi({ label: "Turns", value: fmtInt(t.turns), sub: `${fmtInt(t.errors)} errored calls` }),
 			kpi({ label: "Reasoning tokens", value: fmtCompact(t.reasoning), sub: "thinking / reasoning output" }),
 		];
@@ -602,7 +603,7 @@ async function impactPage(view, ctx) {
 		api("/api/findings", { from: state.range }),
 		api("/api/models", { from: state.range }),
 		api("/api/benefits", { from: state.range }),
-		api("/api/trends", { from: state.range }),
+		api("/api/trends", { from: state.range, model: state.impactModel }),
 		api("/api/ledger/stats", { from: state.range }),
 	]);
 	clear(view);
@@ -646,7 +647,7 @@ async function impactPage(view, ctx) {
 		scopeNote,
 	);
 
-	const netOf = (d) => (d.curator.savedUsdEst ?? 0) + d.cache.savingsUsd - (d.scope?.model ? 0 : d.overhead.cost);
+	const netOf = (d) => (d.curator.savedUsdEst ?? 0) + d.cache.netUsd - (d.scope?.model ? 0 : d.overhead.cost);
 
 	const ledgerRows = (d) => [
 		{
@@ -664,8 +665,8 @@ async function impactPage(view, ctx) {
 			trendKey: "cacheDiscount",
 			volume: `${fmtInt(d.cache.pricedCalls)} priced calls · ${fmtInt(d.cache.unpricedCalls)} unpriced`,
 			tokens: fmtCompact(d.cache.cacheReadTokens),
-			usd: fmtCost(d.cache.savingsUsd),
-			basis: "cache_read × (input rate − cache_read rate)",
+			usd: fmtCost(d.cache.netUsd),
+			basis: `cache_read × (input rate − cache_read rate) = ${fmtCost(d.cache.savingsUsd)} less the write premium cache_write × (cache_write rate − input rate) = ${fmtCost(d.cache.writePremiumUsd)}. A write costs more than uncached input, so a rewrite-heavy model shows a negative net.`,
 		},
 		{
 			key: "router",
@@ -991,7 +992,8 @@ async function impactPage(view, ctx) {
 			h(
 				"div",
 				{ class: "delta-grid" },
-				cell("Cache rate", fmtPct(current.cacheRate, 0), delta.cacheRate, "up-good", `was ${fmtPct(previous.cacheRate, 0)}`, ((current.cacheRate ?? 0) - (previous.cacheRate ?? 0)) * 100),
+				cell("Cache read", fmtPct(current.cacheRate, 0), delta.cacheRate, "up-good", `was ${fmtPct(previous.cacheRate, 0)}`, ((current.cacheRate ?? 0) - (previous.cacheRate ?? 0)) * 100),
+				cell("Cache write", fmtPct(current.cacheWriteRate, 0), null, "down-good", `was ${fmtPct(previous.cacheWriteRate, 0)}`, ((current.cacheWriteRate ?? 0) - (previous.cacheWriteRate ?? 0)) * 100),
 				cell("Context condensed per call", fmtCompact(current.curatorTokensPerCall ?? 0), delta.curatorTokensPerCall, "up-good", `${fmtCompact(current.curatorTokens ?? 0)} tok total`),
 				cell(
 					"Off-track (course check)",
@@ -1231,7 +1233,7 @@ async function impactPage(view, ctx) {
 			api("/api/impact", { from: state.range, model: state.impactModel }),
 			api("/api/findings", { from: state.range }),
 			api("/api/benefits", { from: state.range }),
-			api("/api/trends", { from: state.range }),
+			api("/api/trends", { from: state.range, model: state.impactModel }),
 			api("/api/ledger/stats", { from: state.range }),
 		]);
 		latestStats = nextEffectStats;
@@ -1258,8 +1260,13 @@ async function models(view, ctx) {
 			{ class: "stats-strip" },
 			kpi({ label: "Cost", value: fmtCost(totalCostOf(d)), sub: `${d.byModel.length} models` }),
 			kpi({ label: "Calls", value: fmtInt(totalCallsOf(d)) }),
-			kpi({ label: "Cache savings", value: fmtCost(d.cache.savingsUsd), sub: `${fmtInt(d.cache.pricedCalls)} priced calls`, tip: "Estimated from live model prices (cache read rate vs input rate) for calls whose model has a known price." }),
-			kpi({ label: "Tokens", value: fmtCompact(totalTokens), sub: totalTokens ? `${fmtPct(cachedTokens / totalTokens, 0)} cached` : "—" }),
+			kpi({
+				label: "Cache net",
+				value: fmtCost(d.cache.netUsd),
+				sub: `${fmtCost(d.cache.savingsUsd)} read discount − ${fmtCost(d.cache.writePremiumUsd)} write premium`,
+				tip: "Net of both cache buckets: reads are cheaper than input, but writes cost more than input on every sheet that bills them, so a model that rewrites its prefix can net negative.",
+			}),
+			kpi({ label: "Tokens", value: fmtCompact(totalTokens), sub: totalTokens ? `${fmtPct(cachedTokens / totalTokens, 0)} read from cache` : "—" }),
 		);
 	});
 	let dailyData = null;
@@ -1296,7 +1303,8 @@ async function models(view, ctx) {
 			{ label: "Model", width: "18%", render: (row) => modelCell(row.model) },
 			{ label: "Calls", right: true, width: "60px", render: (row) => fmtInt(row.calls) },
 			{ label: "Tokens", right: true, width: "74px", render: (row) => fmtCompact(row.tokens) },
-			{ label: "Cache rate", right: true, width: "78px", render: (row) => fmtPct(row.cacheRate, 0) },
+			{ label: "Cache read", right: true, width: "84px", render: (row) => fmtPct(row.cacheRate, 0) },
+			{ label: "Cache write", right: true, width: "84px", render: (row) => fmtPct(row.cacheWriteRate, 0) },
 			{ label: "Tokens / call", right: true, width: "88px", render: (row) => fmtCompact(row.tokensPerCall) },
 			{ label: "Cost / call", right: true, width: "80px", render: (row) => (row.costPerCall == null ? "—" : fmtCost(row.costPerCall)) },
 			{
@@ -1975,7 +1983,11 @@ async function sessionPage(view, ctx) {
 				valueClass: "good",
 				help: HELP.sessionImpact,
 			}),
-			kpi({ label: "Cache discount", value: fmtCost(b.cacheDiscount), sub: b.cacheRate == null ? "no prompt tokens" : `${fmtPct(b.cacheRate, 0)} of prompt tokens cached` }),
+			kpi({
+				label: "Cache discount",
+				value: fmtCost(b.cacheDiscount),
+				sub: b.cacheRate == null ? "no prompt tokens" : `${fmtPct(b.cacheRate, 0)} read · ${fmtPct(b.cacheWriteRate, 0)} rewritten of prompt tokens`,
+			}),
 			kpi({ label: "Rule deliveries", value: fmtInt(b.rulesDelivered), sub: `${fmtCompact(b.rulesTokens)} tok injected · ${fmtInt(b.contextEdits)} context edits` }),
 			kpi({ label: "Cost per turn", value: b.costPerTurn == null ? "—" : fmtCost(b.costPerTurn), sub: `${fmtCost(si.session.cost)} over ${fmtInt(si.session.turns)} turns` }),
 		];

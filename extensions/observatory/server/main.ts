@@ -221,11 +221,11 @@ const server = Bun.serve({
 			}
 
 			if (p === "/api/status") return json(await queries.status(db, { port: config.port, host: config.host, startedAt, dbPath: dbPath() }));
-			if (p === "/api/overview") return json(queries.overview(db, rangeFrom(url)));
+			if (p === "/api/overview") return json(queries.overview(db, rangeFrom(url), url.searchParams.get("model")));
 			if (p === "/api/impact") return json(queries.impact(db, rangeFrom(url), url.searchParams.get("model")));
 			if (p === "/api/findings") return json(queries.findings(db, rangeFrom(url), await loadAdapters()));
 			if (p === "/api/benefits") return json(queries.harnessBenefits(db, rangeFrom(url)));
-			if (p === "/api/trends") return json(queries.trends(db, rangeFrom(url)));
+			if (p === "/api/trends") return json(queries.trends(db, rangeFrom(url), url.searchParams.get("model")));
 			if (p === "/api/session/impact") {
 				const sessionId = url.searchParams.get("id");
 				if (!sessionId) return json({ error: "id parameter required" }, 400);
