@@ -29,7 +29,8 @@ export interface ReciteInput {
 	todos: ReciteTodo[];
 }
 
-export const RECITE_HEADER = "SESSION STATE (reference only — continue the task; do not restate this block)";
+export const RECITE_HEADER =
+	"SESSION STATE (reference only — the latest snapshot supersedes earlier ones; continue the task; do not restate this block)";
 export const DEFAULT_BUDGET_CHARS = 1200;
 
 interface Section {

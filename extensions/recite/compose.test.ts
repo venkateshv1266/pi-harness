@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { SessionBoundaryDraft, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { clip, composeRecitation, DEFAULT_BUDGET_CHARS, RECITE_HEADER, type ReciteSpec } from "./compose.ts";
 import { buildRecitationDrafts, firstUserText, lastRecitation, readGoalSpec, readTodos } from "./state.ts";
 
@@ -40,6 +40,12 @@ function goalspecEntry(id: string, data: unknown): SessionEntry {
 
 function reciteEntry(id: string, content: string): SessionEntry {
 	return entry({ id, type: "custom_message", customType: "recite", content, display: false });
+}
+
+function textOf(draft: SessionBoundaryDraft): string {
+	if (draft.type !== "custom_message") assert.fail("expected a custom message draft");
+	if (typeof draft.content !== "string") assert.fail("expected text content");
+	return draft.content;
 }
 
 test("clip collapses whitespace and truncates with an ellipsis", () => {
@@ -181,18 +187,64 @@ test("buildRecitationDrafts appends a hidden custom message on first emission", 
 	assert.match(draft.content, /OBJECTIVE: do the thing/);
 });
 
-test("buildRecitationDrafts omits the previous block before appending the new one", () => {
+test("buildRecitationDrafts appends one block without deleting the previous one", () => {
 	const entries: SessionEntry[] = [
 		userEntry("u1", "do the thing"),
 		reciteEntry("r1", "stale block"),
 		todoEntry("t1", [{ id: 1, text: "step one", done: false }]),
 	];
 	const drafts = buildRecitationDrafts(entries, DEFAULT_BUDGET_CHARS);
-	assert.equal(drafts.length, 2);
-	assert.deepEqual(drafts[0], { type: "context_edit", targetId: "r1", replacement: null });
-	assert.equal(drafts[1].type, "custom_message");
-	assert.match((drafts[1] as { content: string }).content, /#1 step one/);
+	assert.equal(drafts.length, 1);
+	assert.equal(drafts[0].type, "custom_message");
+	assert.equal(drafts[0].customType, "recite");
+	assert.match(textOf(drafts[0]), /#1 step one/);
 	assert.equal(lastRecitation(entries)?.id, "r1");
+});
+
+test("buildRecitationDrafts re-emits on unchanged state without removing the previous block", () => {
+	const entries = [userEntry("u1", "do the thing"), reciteEntry("r1", "same block")];
+	const first = buildRecitationDrafts(entries, DEFAULT_BUDGET_CHARS);
+	const second = buildRecitationDrafts(entries, DEFAULT_BUDGET_CHARS);
+	assert.equal(first.length, 1);
+	assert.equal(second.length, 1);
+	assert.deepEqual(second, first);
+	assert.equal(lastRecitation(entries)?.id, "r1");
+});
+
+test("buildRecitationDrafts prefers a pending GoalSpec draft without an id", () => {
+	const entries = [userEntry("u1", "old request"), goalspecEntry("g1", { userObjective: "committed objective" })];
+	const pending: SessionBoundaryDraft[] = [
+		{ type: "custom", customType: "jev-curator-goalspec", data: { userObjective: "pending objective" } },
+	];
+	const drafts = buildRecitationDrafts(entries, DEFAULT_BUDGET_CHARS, pending);
+	assert.equal(drafts.length, 1);
+	assert.match(textOf(drafts[0]), /OBJECTIVE: pending objective/);
+});
+
+test("successive goal and todo changes preserve the earlier projected prefix", () => {
+	let entries: SessionEntry[] = [userEntry("u1", "anchor")];
+	const projected: string[] = [];
+	const states = [
+		{ objective: "first objective", todos: [{ id: 1, text: "one", done: false }] },
+		{ objective: "second objective", todos: [{ id: 1, text: "one", done: true }, { id: 2, text: "two", done: false }] },
+		{ objective: "third objective", todos: [{ id: 2, text: "two", done: true }] },
+	];
+	states.forEach((state, i) => {
+		entries = [
+			...entries,
+			goalspecEntry(`g${i + 1}`, { userObjective: state.objective }),
+			todoEntry(`t${i + 1}`, state.todos),
+		];
+		const drafts = buildRecitationDrafts(entries, DEFAULT_BUDGET_CHARS);
+		assert.equal(drafts.length, 1);
+		const before = projected.slice();
+		for (const draft of drafts) projected.push(textOf(draft));
+		assert.deepEqual(projected.slice(0, before.length), before);
+		entries = [...entries, reciteEntry(`r${i + 1}`, projected[projected.length - 1])];
+	});
+	assert.equal(projected.length, states.length);
+	assert.match(projected[0], /OBJECTIVE: first objective/);
+	assert.match(projected[2], /OBJECTIVE: third objective/);
 });
 
 test("buildRecitationDrafts returns nothing when there is no state", () => {

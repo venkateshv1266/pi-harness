@@ -1,11 +1,11 @@
 /**
  * Tail recitation — keep the session's goal state at the tail of every turn.
  *
- * After each turn (assistant message + tool results appended), emit a compact,
+ * After each turn (assistant message + tool results appended), append a compact,
  * deterministic state block as a context-only custom message: GoalSpec fields
- * plus the live todo list. The block is re-emitted every turn so it always sits
- * at the most-attended position, and the previous copy is omitted from model
- * context so exactly one is ever live.
+ * plus the live todo list. Snapshots are append-only: the block is re-emitted
+ * every turn so it always sits at the most-attended position, and the latest
+ * snapshot supersedes earlier ones until normal compaction removes them.
  *
  * Runs independently of the curator: state comes from session entries, so with
  * JEVCURATOR=0 the objective falls back to the first user request and the todo
@@ -42,7 +42,7 @@ export default function (pi: ExtensionAPI) {
 	if (!ENABLED || ctx.mode === "print" || event.outcome !== "completed") return;
 		const entries = readBranch(ctx);
 		if (!entries) return;
-		const drafts = buildRecitationDrafts(entries, BUDGET);
+		const drafts = buildRecitationDrafts(entries, BUDGET, event.entries);
 		if (drafts.length === 0) return;
 		// Boundary entries compose by replacement, so keep earlier handlers' drafts.
 		return { entries: [...event.entries, ...drafts] };

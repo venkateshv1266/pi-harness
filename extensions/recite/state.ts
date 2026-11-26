@@ -7,13 +7,15 @@
  * extensions being loaded or enabled.
  */
 
-import type { ContextEditEntryDraft, CustomMessageEntryDraft, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { CustomMessageEntryDraft, SessionBoundaryDraft, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ReciteSpec, ReciteTodo } from "./compose.js";
 // .ts specifier: this module is also exercised directly by node --test (no jiti there).
 import { composeRecitation } from "./compose.ts";
 
 export const RECITE_TYPE = "recite";
 const GOALSPEC_TYPE = "jev-curator-goalspec";
+
+type StateEntry = SessionEntry | SessionBoundaryDraft;
 
 function strArray(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
@@ -39,7 +41,7 @@ function messageText(content: unknown): string {
 }
 
 /** Latest GoalSpec flushed by the curator, or null when none exists on the branch. */
-export function readGoalSpec(entries: readonly SessionEntry[]): ReciteSpec | null {
+export function readGoalSpec(entries: readonly StateEntry[]): ReciteSpec | null {
 	let latest: ReciteSpec | null = null;
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== GOALSPEC_TYPE) continue;
@@ -58,7 +60,7 @@ export function readGoalSpec(entries: readonly SessionEntry[]): ReciteSpec | nul
 }
 
 /** Current todo list, reconstructed from the latest todo tool result on the branch. */
-export function readTodos(entries: readonly SessionEntry[]): ReciteTodo[] {
+export function readTodos(entries: readonly StateEntry[]): ReciteTodo[] {
 	let todos: ReciteTodo[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "message") continue;
@@ -72,7 +74,7 @@ export function readTodos(entries: readonly SessionEntry[]): ReciteTodo[] {
 }
 
 /** First non-empty user message on the branch: the stable fallback objective without a GoalSpec. */
-export function firstUserText(entries: readonly SessionEntry[]): string {
+export function firstUserText(entries: readonly StateEntry[]): string {
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;
 		const candidate = messageText(entry.message.content).trim();
@@ -92,24 +94,24 @@ export function lastRecitation(entries: readonly SessionEntry[]): { id: string; 
 	return null;
 }
 
-/** Boundary drafts: omit the stale block, then append the fresh one. */
+/** Boundary draft: append the fresh block; earlier snapshots stay immutable. */
 export function buildRecitationDrafts(
 	entries: readonly SessionEntry[],
 	budget: number,
-): (ContextEditEntryDraft | CustomMessageEntryDraft)[] {
-	const spec = readGoalSpec(entries);
-	const block = composeRecitation({ spec, fallbackObjective: firstUserText(entries), todos: readTodos(entries) }, budget);
+	pending: readonly SessionBoundaryDraft[] = [],
+): CustomMessageEntryDraft[] {
+	const state: StateEntry[] = [...entries, ...pending];
+	const spec = readGoalSpec(state);
+	const block = composeRecitation({ spec, fallbackObjective: firstUserText(state), todos: readTodos(state) }, budget);
 	if (!block) return [];
 
-	const drafts: (ContextEditEntryDraft | CustomMessageEntryDraft)[] = [];
-	const previous = lastRecitation(entries);
-	if (previous) drafts.push({ type: "context_edit", targetId: previous.id, replacement: null });
-	drafts.push({
-		type: "custom_message",
-		customType: RECITE_TYPE,
-		content: block,
-		display: false,
-		details: { v: 1, chars: block.length, budget },
-	});
-	return drafts;
+	return [
+		{
+			type: "custom_message",
+			customType: RECITE_TYPE,
+			content: block,
+			display: false,
+			details: { v: 1, chars: block.length, budget },
+		},
+	];
 }

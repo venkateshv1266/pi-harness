@@ -70,7 +70,8 @@
  * suffix (e.g. openrouter/z-ai/glm-5.3:max).
  */
 
-import { Type, uuidv7, type AssistantMessage, type Context, type ThinkingLevel } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import { uuidv7, type AssistantMessage, type Context, type ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	defineTool,
@@ -98,6 +99,7 @@ import { jevCall as sharedJevCall, jevKey, scrubSecrets, type Question } from ".
 import { logDecision as logTelemetryDecision, logEvent, logOutcome } from "../../utils/jev-outcomes.ts";
 import { curatorEnabled, readTopLevelSetting, resolveCuratorConfig } from "./settings.ts";
 import { autoCompactDecision, pushPctSample, resolveGates, type Gates } from "./tiering.ts";
+import { planEmissions, representationAfterEmission } from "./cache-policy.ts";
 
 const GOAL_TYPE = "jev-curator-goal";
 const GOALSPEC_TYPE = "jev-curator-goalspec";
@@ -214,6 +216,18 @@ interface CurRecord {
 
 // a verdict ready for the batch queue (kind still pending emission)
 interface ReadyRec extends CurRecord {}
+
+interface EmissionView {
+	currentChars: ReadonlyMap<string, number>;
+	fresh: ReadonlySet<string>;
+	percent?: number;
+	gates: Gates;
+}
+
+interface EvidenceOutcome {
+	emitted: Set<string>;
+	deferred: Set<string>;
+}
 
 interface Verdict {
 	kind: "keep" | "stub" | "truncate";
@@ -381,7 +395,7 @@ interface LedgerItem {
 	verdict: "useExtract" | "indexOnly";
 	extract: string; // the replacement the model now sees
 	turn: number;
-	chars: number; // original raw size
+	chars: number; // effective model-visible size before this edit
 	inputShape: string;
 }
 
@@ -1493,77 +1507,63 @@ function emitEvidence(
 	results: ShadowResult[],
 	v2Outcome: Map<string, string>,
 	drafts: SessionBoundaryDraft[],
-): void {
-	// "evidence" = log/listing scope; "quality" extends to code/doc
-	if (MODE !== "evidence" && MODE !== "quality") return;
-	const emitted: LedgerItem[] = [];
+	view: EmissionView,
+): EvidenceOutcome {
+	const outcome: EvidenceOutcome = { emitted: new Set(), deferred: new Set() };
+	if (MODE !== "evidence" && MODE !== "quality") return outcome;
+	const edited = new Set(drafts.flatMap((d) => d.type === "context_edit" ? [d.targetId] : []));
+	const proposals = new Map<string, { result: ShadowResult; text: string; verdict: "useExtract" | "indexOnly" }>();
 	for (const r of results) {
 		if (r.verdict !== "useExtract" && r.verdict !== "indexOnly") continue;
-		if (!r.proposal || !EVIDENCE_SCOPE.has(r.role.sourceType)) continue;
-		// raw copy must exist for recall; rawStore holds it from collection
-		if (rawStore.get(r.cand.entryId) === undefined) continue;
-		// operational sanity, not a quality gate: when line scoring kept nearly
-		// everything, the "extract" is the source plus overhead — replacing it
-		// is a strictly worse representation with a cache-reset cost
-		const saved = r.cand.text.length - r.proposal.text.length;
-		if (saved < Math.max(500, r.cand.text.length * 0.2)) {
-			logShadowLine({
-				decision: "evidence-skip",
-				entryId: r.cand.entryId,
-				tool: r.cand.toolName,
-				sourceType: r.role.sourceType,
-				chars: r.cand.text.length,
-				replacementLen: r.proposal.text.length,
-				reason: "replacement not meaningfully smaller — keep full",
-			});
+		if (!r.proposal || !EVIDENCE_SCOPE.has(r.role.sourceType) || rawStore.get(r.cand.entryId) === undefined) continue;
+		const v2 = v2Outcome.get(r.cand.entryId);
+		if (v2 === "cap" || v2?.startsWith("emitted-") || edited.has(r.cand.entryId)) continue;
+		proposals.set(r.cand.entryId, { result: r, text: r.proposal.text, verdict: r.verdict });
+	}
+	const decisions = planEmissions([...proposals].map(([entryId, p]) => ({
+		entryId,
+		currentChars: view.currentChars.get(entryId),
+		replacementChars: p.text.length,
+		fresh: view.fresh.has(entryId),
+		turn: p.result.cand.turn,
+	})), { percent: view.percent, softFloorPct: CFG.softFloorPct, batchFloor: view.gates.floor, maxHoldTurns: CFG.maxHoldTurns, turnIndex: event.turnIndex });
+	const emitted: LedgerItem[] = [];
+	let historicalSaved = 0;
+	let historicalCount = 0;
+	for (const decision of decisions) {
+		const p = proposals.get(decision.entryId);
+		if (!p) continue;
+		const r = p.result;
+		const currentChars = view.currentChars.get(decision.entryId);
+		if (decision.action !== "emit" || currentChars === undefined) {
+			if (decision.action === "defer-pressure" || decision.action === "defer-batch") outcome.deferred.add(decision.entryId);
+			logShadowLine({ decision: "evidence-skip", entryId: decision.entryId, tool: r.cand.toolName, chars: r.cand.text.length, currentChars, replacementLen: p.text.length, reason: decision.action });
 			continue;
 		}
-		const v2 = v2Outcome.get(r.cand.entryId) ?? "not-judged";
-		if (v2 === "cap" || v2.startsWith("emitted-")) {
-			// V2 already replaced this entry this turn (cap-at-rest or batch
-			// emission); a second context_edit on the same target is undefined,
-			// so V3 stands down and the V2 representation stays
-			logShadowLine({ decision: "evidence-skip", entryId: r.cand.entryId, tool: r.cand.toolName, v2, reason: "v2 already edited this turn" });
-			continue;
-		}
-		// supersede V2's pending/ready plans for this source
-		pending.delete(r.cand.entryId);
-		ready.delete(r.cand.entryId);
-		judged.add(r.cand.entryId);
-		drafts.push({
-			type: "context_edit",
-			targetId: r.cand.entryId,
-			replacement: { content: [{ type: "text", text: r.proposal.text }] },
-		});
+		pending.delete(decision.entryId);
+		ready.delete(decision.entryId);
+		judged.add(decision.entryId);
+		drafts.push({ type: "context_edit", targetId: decision.entryId, replacement: { content: [{ type: "text", text: p.text }] } });
 		const item: LedgerItem = {
-			entryId: r.cand.entryId,
-			toolName: r.cand.toolName,
-			sourceType: r.role.sourceType,
-			role: r.role.role,
-			links: r.role.links,
-			verdict: r.verdict,
-			extract: r.proposal.text,
-			turn: event.turnIndex,
-			chars: r.cand.text.length,
-			inputShape: r.cand.inputShape,
+			entryId: decision.entryId, toolName: r.cand.toolName, sourceType: r.role.sourceType,
+			role: r.role.role, links: r.role.links, verdict: p.verdict, extract: p.text,
+			turn: event.turnIndex, chars: currentChars, inputShape: r.cand.inputShape,
 		};
 		ledger.set(item.entryId, item);
 		emitted.push(item);
-		logTelemetryDecision("curator", CURATOR_LOG_FILE, {
-			id: r.cand.entryId,
-			action: "emit",
-			entryId: r.cand.entryId,
-			tool: r.cand.toolName,
-			sourceType: r.role.sourceType,
-			verdict: r.verdict,
-			chars: r.cand.text.length,
-			replacementLen: r.proposal.text.length,
-			v2,
-		});
+		outcome.emitted.add(item.entryId);
+		if (!view.fresh.has(item.entryId)) {
+			historicalCount++;
+			historicalSaved += decision.saved;
+		}
+		logTelemetryDecision("curator", CURATOR_LOG_FILE, { id: item.entryId, action: "emit", entryId: item.entryId, tool: item.toolName, sourceType: item.sourceType, verdict: item.verdict, chars: currentChars, rawChars: r.cand.text.length, replacementLen: p.text.length, v2: v2Outcome.get(item.entryId) ?? "not-judged" });
 	}
-	if (emitted.length > 0) {
-		drafts.push({ type: "custom", customType: LEDGER_TYPE, data: { turn: event.turnIndex, items: emitted } });
+	if (emitted.length > 0) drafts.push({ type: "custom", customType: LEDGER_TYPE, data: { turn: event.turnIndex, items: emitted } });
+	if (historicalCount > 0) {
+		costProbeTurn = event.turnIndex + 1;
+		logBatch("emit", historicalCount, historicalSaved, "evidence-pressure");
 	}
+	return outcome;
 }
 
 // ─── V4 pipeline assembly ───────────────────────────────────────
@@ -1573,8 +1573,8 @@ function emitEvidence(
 // Both make curation a loop keyed to the live goal instead of a one-shot
 // compression. Bounded per turn; already-condensed sources are not re-judged
 // (edits are one-way; recall covers restoration).
-function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate[], pressure = 1): ShadowCandidate[] {
-	if (MODE !== "evidence" && MODE !== "quality") return [];
+function buildReclassCandidates(ctx: ExtensionContext, newCands: ShadowCandidate[], pressure = 1, percent = 0): ShadowCandidate[] {
+	if ((MODE !== "evidence" && MODE !== "quality") || !Number.isFinite(percent) || percent < CFG.softFloorPct) return [];
 	const out: ShadowCandidate[] = [];
 	const seen = new Set(newCands.map((c) => c.entryId));
 	if (spec) {
@@ -1643,23 +1643,24 @@ function assembleShadowBatch(newCands: ShadowCandidate[], reclassCands: ShadowCa
 }
 
 // every classified source lands in the registry — the exhaustive search index
-function registerResults(results: ShadowResult[], v2Outcome: Map<string, string>): RegistryItem[] {
+function registerResults(results: ShadowResult[], v2Outcome: Map<string, string>, outcome: EvidenceOutcome): RegistryItem[] {
 	const registered: RegistryItem[] = [];
 	for (const r of results) {
-		// V2 owns the representation when it already emitted this turn
 		const v2 = v2Outcome.get(r.cand.entryId);
 		if (v2?.startsWith("emitted-")) continue;
+		const verdict = representationAfterEmission(registry.get(r.cand.entryId)?.verdict ?? null, r.verdict, outcome.emitted.has(r.cand.entryId), v2 === "cap");
 		const item: RegistryItem = {
 			entryId: r.cand.entryId,
 			toolName: r.cand.toolName,
 			sourceType: r.role.sourceType,
 			role: r.role.role,
 			links: r.role.links,
-			verdict: r.verdict,
+			verdict,
 			chars: r.cand.text.length,
 			inputShape: r.cand.inputShape,
 			turn: r.cand.turn,
-			specVersion: spec?.version ?? 0,
+			// Held approvals must be re-verified against the live goal once pressure rises.
+			specVersion: outcome.deferred.has(r.cand.entryId) && verdict === "retainFull" ? 0 : spec?.version ?? 0,
 			path: pathOf(r.cand.inputShape),
 		};
 		registry.set(item.entryId, item);
@@ -1976,6 +1977,7 @@ async function v2DueAndEmit(
 	gates: Gates,
 	pct: number,
 	v2Outcome: Map<string, string>,
+	view: EmissionView,
 ): Promise<(ContextEditEntryDraft | CustomEntryDraft)[]> {
 	const out: (ContextEditEntryDraft | CustomEntryDraft)[] = [];
 	const due = [...pending.entries()].filter(([, c]) => event.turnIndex - c.turn >= CFG.recencyTurns);
@@ -1995,33 +1997,42 @@ async function v2DueAndEmit(
 		}
 	}
 	if (ready.size === 0) return out;
-	const savedTotal = [...ready.values()].reduce((n, r) => n + Math.max(r.chars - r.replacementLen, 0), 0);
-	const oldestTurn = Math.min(...[...ready.values()].map((r) => r.turn));
-	const agedOut = event.turnIndex - oldestTurn >= CFG.maxHoldTurns;
-	if (!(savedTotal >= gates.floor || agedOut)) {
-		logBatch("hold", ready.size, savedTotal, `turn=${event.turnIndex} pct=${pct.toFixed(1)}`);
-		return out;
-	}
-	const emitted: CurRecord[] = [];
+	const proposals = new Map<string, { rec: ReadyRec; text: string }>();
+	const edited = new Set((event.entries ?? []).flatMap((d) => d.type === "context_edit" ? [d.targetId] : []));
 	for (const [entryId, rec] of ready) {
-		if (rawStore.get(entryId) === undefined) {
-			// raw copy evicted; can't build a faithful replacement — keep
+		if (edited.has(entryId)) continue;
+		if (rawStore.get(entryId) === undefined || v2Outcome.get(entryId) === "cap") {
 			ready.delete(entryId);
 			continue;
 		}
-		const text =
-			rec.kind === "stub"
-				? stubText(rec.toolName, entryId, rec.chars, rec.prob)
-				: truncateText(rec.toolName, entryId, rec.chars, rec.prob);
-		out.push({ type: "context_edit", targetId: entryId, replacement: { content: [{ type: "text", text }] } });
-		v2Outcome.set(entryId, `emitted-${rec.kind}`);
-		emitted.push({ ...rec, replacementLen: text.length });
+		const text = rec.kind === "stub" ? stubText(rec.toolName, entryId, rec.chars, rec.prob) : truncateText(rec.toolName, entryId, rec.chars, rec.prob);
+		proposals.set(entryId, { rec, text });
 	}
-	ready.clear();
-	if (emitted.length === 0) return out;
+	const decisions = planEmissions([...proposals].map(([entryId, p]) => ({ entryId, currentChars: view.currentChars.get(entryId), replacementChars: p.text.length, fresh: view.fresh.has(entryId), turn: p.rec.turn })), { percent: view.percent, softFloorPct: CFG.softFloorPct, batchFloor: gates.floor, maxHoldTurns: CFG.maxHoldTurns, turnIndex: event.turnIndex });
+	const emitted: CurRecord[] = [];
+	let savedTotal = 0;
+	for (const decision of decisions) {
+		const p = proposals.get(decision.entryId);
+		if (!p) continue;
+		if (decision.action !== "emit") {
+			if (decision.action === "not-visible" || decision.action === "not-smaller") ready.delete(decision.entryId);
+			continue;
+		}
+		const currentChars = view.currentChars.get(decision.entryId);
+		if (currentChars === undefined) continue;
+		out.push({ type: "context_edit", targetId: decision.entryId, replacement: { content: [{ type: "text", text: p.text }] } });
+		v2Outcome.set(decision.entryId, `emitted-${p.rec.kind}`);
+		emitted.push({ ...p.rec, chars: currentChars, replacementLen: p.text.length });
+		savedTotal += decision.saved;
+		ready.delete(decision.entryId);
+	}
+	if (emitted.length === 0) {
+		logBatch("hold", ready.size, 0, `turn=${event.turnIndex} pct=${pct.toFixed(1)} cache-pressure/batch`);
+		return out;
+	}
 	costProbeTurn = event.turnIndex + 1;
 	curated.push(...emitted);
-	logBatch("emit", emitted.length, savedTotal, agedOut ? "aged" : gates.tier === "critical" ? "critical" : gates.tier === "soft" ? "soft" : "batch-floor");
+	logBatch("emit", emitted.length, savedTotal, gates.tier);
 	out.push({ type: "custom", customType: AUDIT_TYPE, data: { turn: event.turnIndex, emitted } });
 	return out;
 }
@@ -2332,6 +2343,12 @@ ${goalspecSummary()}` }],
 		const usage = ctx.getContextUsage();
 		const pct = usage?.percent ?? 0;
 		const gates = resolveGates(pct, CFG);
+		const view: EmissionView = {
+			currentChars: new Map((event.context?.contextEntries ?? []).map(({ sourceEntry, messages }) => [sourceEntry.id, messages.reduce((sum, message) => sum + (isRoleMessage(message) ? messageText(message).length : 0), 0)])),
+			fresh: new Set(event.toolResultEntryIds),
+			percent: usage?.percent ?? undefined,
+			gates,
+		};
 
 		// shadow candidates are collected before V2's cap pass so the same
 		// tool results feed both pipelines; classification runs after V2's
@@ -2423,7 +2440,7 @@ ${goalspecSummary()}` }],
 			}
 		}
 
-		drafts.push(...(await v2DueAndEmit(event, gates, pct, v2Outcome)));
+		drafts.push(...(await v2DueAndEmit(event, gates, pct, v2Outcome, view)));
 
 		// V3 pipeline: classify, propose, verify, log; evidence mode additionally
 		// activates the verifier-approved replacements for log/listing sources
@@ -2431,11 +2448,11 @@ ${goalspecSummary()}` }],
 			// pressure doubles the classification/reclassification budgets so
 			// queued extracts and the overflow backlog drain faster
 			const pressure = pct >= CFG.softFloorPct ? 2 : 1;
-			const reclassCands = buildReclassCandidates(ctx, shadowCands, pressure);
+			const reclassCands = view.percent === undefined ? [] : buildReclassCandidates(ctx, shadowCands, pressure, pct);
 			const batch = assembleShadowBatch(shadowCands, reclassCands, pressure);
 			const results = await runShadow(ctx, event, batch, v2Outcome, pct);
-			const registered = registerResults(results, v2Outcome);
-			emitEvidence(event, results, v2Outcome, drafts);
+			const outcome = emitEvidence(event, results, v2Outcome, drafts, view);
+			const registered = registerResults(results, v2Outcome, outcome);
 			registered.push(...registeredCaps);
 			if (registered.length > 0) {
 				drafts.push({ type: "custom", customType: REGISTRY_TYPE, data: { turn: event.turnIndex, items: registered } });

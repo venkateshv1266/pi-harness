@@ -1,16 +1,16 @@
 # recite
 
-> Tail recitation — after every completed turn, re-emit a compact session-state block at the tail of model context so the current goal, plan, and todo list always sit at the most-attended position.
+> Tail recitation — after every completed turn, append a compact session-state block at the tail of model context so the current goal, plan, and todo list always sit at the most-attended position. Snapshots are append-only and the latest one wins for reference.
 
 ## What it does
 
-After each turn, `recite` appends a deterministic block starting with `SESSION STATE (reference only — continue the task; do not restate this block)` as a hidden custom message: objective, goal refinements, plan, open questions, todo list, success criteria, and constraints. The previous copy is omitted from model context via a context edit, so exactly one block is ever live. State is read from session entries — the curator's GoalSpec and `todo` tool results — so the reciter runs independently of other extensions: with the curator disabled (`JEVCURATOR=0`), the objective falls back to the first user request and the todo list still recites.
+After every completed turn, `recite` appends a deterministic block starting with `SESSION STATE (reference only — the latest snapshot supersedes earlier ones; continue the task; do not restate this block)` as a hidden custom message: objective, goal refinements, plan, open questions, todo list, success criteria, and constraints. Reminders are append-only: each turn appends a fresh snapshot without editing earlier ones, so the latest snapshot supersedes older snapshots for reference while they remain in the transcript until normal compaction summarizes them away. State is read from committed session entries plus any pending boundary drafts — the curator's GoalSpec and `todo` tool results — so the reciter runs independently of other extensions: with the curator disabled (`JEVCURATOR=0`), the objective falls back to the first user request and the todo list still recites.
 
 ## Commands and tools
 
 | Command / tool | What it does |
 |---|---|
-| `/recite` | Show recitation status (enabled, char budget, size of the last live block) and a preview of the next block, or `next block: none (no goal or todo state yet)`. |
+| `/recite` | Show recitation status (enabled, char budget, size of the latest block) and a preview of the next block, or `next block: none (no goal or todo state yet)`. |
 
 ## Configuration
 
@@ -45,16 +45,17 @@ Sections are composed in a fixed priority order, whole items first, until the ch
 
 When nothing fits, no block is emitted at all.
 
-One copy live: on each emission, if a previous recitation exists on the branch, a `context_edit` draft replaces it with `null` (omitted from model context) before the fresh `custom_message` (`customType: "recite"`, `display: false`) is appended. Re-emitting every turn is what keeps the block at the tail.
+Append-only snapshots: each emission appends one fresh `custom_message` (`customType: "recite"`, `display: false`) and never emits a `context_edit` to remove a previous snapshot. The newest block is authoritative; older blocks stay reference-only until normal compaction removes their summarized history. Re-emitting every turn is what keeps the latest block at the tail.
 
-Composition with other `turn_end` extensions: the handler returns `{ entries: [...event.entries, ...drafts] }`, preserving boundary drafts returned by earlier handlers — boundary entries compose by replacement. The curator is the GoalSpec producer and also emits boundary drafts on `turn_end`.
+Pending-boundary freshness: the handler passes earlier `turn_end` handlers' `event.entries` to `buildRecitationDrafts`, so a GoalSpec flushed by the curator in the same boundary is reflected in this turn's snapshot — including `custom` drafts that have no entry id yet. Composition with other `turn_end` extensions: the handler returns `{ entries: [...event.entries, ...drafts] }`, preserving boundary drafts returned by earlier handlers — boundary entries compose by replacement. The curator is the GoalSpec producer and also emits boundary drafts on `turn_end`.
 
-Composition is pure and unit-tested without a live session: `node --test extensions/recite/compose.test.ts`.
+Composition is pure and unit-tested without a live session: `node --import tsx --test extensions/recite/compose.test.ts extensions/recite/index.test.ts`.
 
 ## Caveats
 
 - `RECITE_CHARS` outside `400`–`8000` is silently ignored; the default `1200` applies.
 - Print mode never emits the block — deliberate, to keep `pi -p` output intact.
 - With no objective or todo state on the branch, the reciter no-ops; no empty block is written.
+- Old snapshots are never deleted by recite; model context grows by one bounded block per completed turn until normal compaction summarizes it.
 - The GoalSpec entry shape is a persisted contract with the curator; recite reads entries, not the extension, so it never needs the curator loaded.
 - If the session branch cannot be read, the hook no-ops and `/recite` reports `Session branch unreadable.`
